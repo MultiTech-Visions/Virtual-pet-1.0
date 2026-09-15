@@ -1,0 +1,292 @@
+"""Procedural droid vocalisations (beeps, boops, warbles) synthesised with numpy.
+
+Everything here is pure numpy so it can be unit tested off-robot. The robot side
+only needs ``render_phrase`` to get a float32 mono buffer at the speaker sample
+rate and push it through ``reachy_mini.media.push_audio_sample``.
+
+Design notes
+- All primitives return float32 arrays in [-1, 1] at ``sample_rate``.
+- A "phrase" is a short sequence of primitives chosen by emotion, with random
+  variation so the pet never says exactly the same thing twice.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+
+import numpy as np
+
+SAMPLE_RATE = 16000  # ReSpeaker output rate on the wireless unit (AudioBase.SAMPLE_RATE)
+
+_TWO_PI = 2.0 * math.pi
+
+
+def _envelope(n: int, attack: float, release: float) -> np.ndarray:
+    """Linear attack / release envelope, attack+release expressed as fraction of n."""
+    env = np.ones(n, dtype=np.float32)
+    a = max(1, int(n * attack))
+    r = max(1, int(n * release))
+    env[:a] = np.linspace(0.0, 1.0, a, dtype=np.float32)
+    env[n - r :] = np.linspace(1.0, 0.0, r, dtype=np.float32)
+    return env
+
+
+def _time(duration: float, sample_rate: int) -> np.ndarray:
+    n = max(1, int(duration * sample_rate))
+    return np.arange(n, dtype=np.float32) / sample_rate
+
+
+def silence(duration: float, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Return ``duration`` seconds of silence."""
+    return np.zeros(max(1, int(duration * sample_rate)), dtype=np.float32)
+
+
+def tone(
+    freq: float,
+    duration: float,
+    sample_rate: int = SAMPLE_RATE,
+    harmonics: float = 0.25,
+    attack: float = 0.05,
+    release: float = 0.2,
+) -> np.ndarray:
+    """A steady beep with a little square-ish harmonic for a synthy timbre."""
+    t = _time(duration, sample_rate)
+    wave = np.sin(_TWO_PI * freq * t) + harmonics * np.sin(_TWO_PI * 3.0 * freq * t)
+    wave /= 1.0 + harmonics
+    return (wave * _envelope(len(t), attack, release)).astype(np.float32)
+
+
+def chirp(
+    f_start: float,
+    f_end: float,
+    duration: float,
+    sample_rate: int = SAMPLE_RATE,
+    curve: float = 1.0,
+    attack: float = 0.05,
+    release: float = 0.25,
+) -> np.ndarray:
+    """Frequency sweep from f_start to f_end. curve>1 bends toward the end, <1 toward the start."""
+    t = _time(duration, sample_rate)
+    frac = (t / t[-1]) ** curve if len(t) > 1 else t
+    inst_freq = f_start + (f_end - f_start) * frac
+    phase = np.cumsum(inst_freq) * (_TWO_PI / sample_rate)
+    wave = np.sin(phase) + 0.2 * np.sin(2.0 * phase)
+    wave /= 1.2
+    return (wave * _envelope(len(t), attack, release)).astype(np.float32)
+
+
+def warble(
+    freq: float,
+    duration: float,
+    rate: float = 12.0,
+    depth: float = 0.08,
+    sample_rate: int = SAMPLE_RATE,
+) -> np.ndarray:
+    """Vibrato-modulated tone: the classic 'happy droid' trill."""
+    t = _time(duration, sample_rate)
+    inst_freq = freq * (1.0 + depth * np.sin(_TWO_PI * rate * t))
+    phase = np.cumsum(inst_freq) * (_TWO_PI / sample_rate)
+    wave = np.sin(phase) + 0.3 * np.sin(2.0 * phase)
+    wave /= 1.3
+    return (wave * _envelope(len(t), 0.05, 0.3)).astype(np.float32)
+
+
+def purr(
+    duration: float,
+    base: float = 55.0,
+    pulse_rate: float = 22.0,
+    sample_rate: int = SAMPLE_RATE,
+) -> np.ndarray:
+    """Low rumbling purr: a low tone amplitude-modulated by a pulse train."""
+    t = _time(duration, sample_rate)
+    carrier = np.sin(_TWO_PI * base * t) + 0.5 * np.sin(_TWO_PI * base * 2.01 * t)
+    pulses = 0.55 + 0.45 * np.sin(_TWO_PI * pulse_rate * t)
+    wave = carrier * pulses / 1.5
+    return (wave * _envelope(len(t), 0.15, 0.3)).astype(np.float32)
+
+
+def noise_burst(duration: float, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Short filtered noise 'pfft' for raspberries and static."""
+    n = max(1, int(duration * sample_rate))
+    rng = np.random.default_rng()
+    white = rng.standard_normal(n).astype(np.float32)
+    # crude one-pole low pass so it is not harsh on a small speaker
+    out = np.empty_like(white)
+    acc = 0.0
+    for i in range(n):
+        acc = 0.85 * acc + 0.15 * white[i]
+        out[i] = acc
+    out /= max(1e-6, float(np.max(np.abs(out))))
+    return (0.6 * out * _envelope(n, 0.02, 0.5)).astype(np.float32)
+
+
+def concat(*parts: np.ndarray) -> np.ndarray:
+    """Join primitives into one buffer."""
+    return np.concatenate(parts).astype(np.float32)
+
+
+# --------------------------------------------------------------------------- phrases
+
+# Emotions the behavior layer can ask for. Keep this the single source of truth.
+EMOTIONS = (
+    "hello_new",  # first time meeting someone
+    "hello_friend",  # recognised someone it has met before
+    "hello_bestie",  # recognised a person with lots of history
+    "curious",
+    "happy",
+    "excited",
+    "content",  # gentle, when being held / petted
+    "purr",
+    "giggle",
+    "surprised",
+    "confused",
+    "sad",
+    "lonely",
+    "sleepy",
+    "yawn",
+    "wake",
+    "dizzy",
+    "annoyed",
+    "low_battery",
+)
+
+
+def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Return a float32 mono buffer for ``emotion``. Raises KeyError for an unknown emotion."""
+    if emotion not in EMOTIONS:
+        raise KeyError(f"Unknown emotion '{emotion}'. Known: {EMOTIONS}")
+    r = rng if rng is not None else random.Random()
+    j = lambda lo, hi: r.uniform(lo, hi)  # noqa: E731  jitter helper
+    sr = sample_rate
+
+    if emotion == "hello_new":
+        # rising two-note question, then a quick happy trill: "oh? hi!"
+        out = concat(
+            chirp(j(500, 650), j(900, 1100), j(0.12, 0.18), sr, curve=0.8),
+            silence(0.05, sr),
+            warble(j(1100, 1400), j(0.18, 0.28), rate=14, sample_rate=sr),
+        )
+    elif emotion == "hello_friend":
+        out = concat(
+            warble(j(900, 1100), j(0.12, 0.18), rate=10, sample_rate=sr),
+            silence(0.04, sr),
+            chirp(j(1000, 1200), j(1500, 1800), j(0.10, 0.16), sr),
+            silence(0.04, sr),
+            tone(j(1300, 1600), j(0.08, 0.14), sr),
+        )
+    elif emotion == "hello_bestie":
+        notes = [chirp(j(800, 1000) * k, j(1400, 1700) * k, 0.09, sr) for k in (1.0, 1.2, 1.5)]
+        out = concat(
+            *sum(([n, silence(0.03, sr)] for n in notes), []),
+            warble(j(1800, 2100), j(0.3, 0.45), rate=16, depth=0.1, sample_rate=sr),
+        )
+    elif emotion == "curious":
+        out = concat(
+            tone(j(700, 900), j(0.08, 0.12), sr),
+            silence(j(0.03, 0.08), sr),
+            chirp(j(800, 950), j(1300, 1600), j(0.14, 0.22), sr, curve=1.6),
+        )
+    elif emotion == "happy":
+        out = concat(
+            chirp(j(900, 1100), j(1300, 1500), j(0.08, 0.12), sr),
+            silence(0.03, sr),
+            chirp(j(1100, 1300), j(1600, 1900), j(0.08, 0.12), sr),
+            silence(0.03, sr),
+            warble(j(1500, 1800), j(0.15, 0.25), sample_rate=sr),
+        )
+    elif emotion == "excited":
+        parts = []
+        for _ in range(r.randint(4, 6)):
+            parts.append(chirp(j(1200, 1600), j(1900, 2600), j(0.05, 0.08), sr))
+            parts.append(silence(j(0.015, 0.03), sr))
+        parts.append(warble(j(2000, 2400), j(0.2, 0.3), rate=18, depth=0.12, sample_rate=sr))
+        out = concat(*parts)
+    elif emotion == "content":
+        out = concat(
+            warble(j(500, 650), j(0.3, 0.5), rate=6, depth=0.04, sample_rate=sr),
+            silence(0.05, sr),
+            chirp(j(600, 700), j(450, 550), j(0.2, 0.3), sr, curve=0.7),
+        )
+    elif emotion == "purr":
+        out = purr(j(1.2, 2.2), base=j(50, 65), pulse_rate=j(18, 26), sample_rate=sr)
+    elif emotion == "giggle":
+        parts = []
+        f = j(1000, 1300)
+        for i in range(r.randint(4, 7)):
+            parts.append(chirp(f * (1 + 0.06 * i), f * (1 + 0.06 * i) * 1.25, 0.045, sr, release=0.5))
+            parts.append(silence(0.035, sr))
+        out = concat(*parts)
+    elif emotion == "surprised":
+        out = concat(
+            chirp(j(600, 800), j(1900, 2400), j(0.10, 0.15), sr, curve=2.0),
+            silence(0.08, sr),
+            tone(j(1800, 2200), j(0.12, 0.2), sr, harmonics=0.4),
+        )
+    elif emotion == "confused":
+        out = concat(
+            chirp(j(900, 1000), j(700, 800), j(0.12, 0.18), sr),
+            silence(0.06, sr),
+            chirp(j(700, 800), j(1000, 1200), j(0.12, 0.18), sr),
+            silence(0.06, sr),
+            warble(j(850, 950), j(0.2, 0.3), rate=5, depth=0.06, sample_rate=sr),
+        )
+    elif emotion == "sad":
+        out = concat(
+            chirp(j(800, 900), j(500, 600), j(0.35, 0.5), sr, curve=0.8),
+            silence(0.1, sr),
+            chirp(j(550, 650), j(300, 380), j(0.4, 0.6), sr, curve=0.8),
+        )
+    elif emotion == "lonely":
+        out = concat(
+            chirp(j(600, 700), j(750, 850), j(0.25, 0.35), sr),
+            silence(0.3, sr),
+            chirp(j(700, 800), j(450, 520), j(0.5, 0.7), sr, curve=0.6),
+        )
+    elif emotion == "sleepy":
+        out = concat(
+            warble(j(350, 450), j(0.5, 0.8), rate=3, depth=0.05, sample_rate=sr),
+            silence(0.15, sr),
+            chirp(j(400, 450), j(250, 300), j(0.5, 0.8), sr, curve=0.5),
+        )
+    elif emotion == "yawn":
+        out = chirp(j(300, 380), j(700, 850), j(0.5, 0.7), sr, curve=1.3, attack=0.3, release=0.5)
+        out = concat(out, chirp(j(700, 850), j(250, 300), j(0.6, 0.9), sr, curve=0.6, attack=0.05, release=0.6))
+    elif emotion == "wake":
+        out = concat(
+            chirp(j(300, 400), j(1200, 1500), j(0.3, 0.45), sr, curve=1.8),
+            silence(0.05, sr),
+            tone(j(1400, 1700), 0.08, sr),
+            silence(0.03, sr),
+            tone(j(1700, 2000), 0.1, sr),
+        )
+    elif emotion == "dizzy":
+        t = _time(j(1.0, 1.5), sr)
+        inst = j(700, 900) * (1.0 + 0.35 * np.sin(_TWO_PI * j(2.0, 3.5) * t) * np.exp(-t))
+        phase = np.cumsum(inst) * (_TWO_PI / sr)
+        out = (np.sin(phase) * _envelope(len(t), 0.05, 0.4)).astype(np.float32)
+    elif emotion == "annoyed":
+        out = concat(
+            tone(j(300, 380), j(0.12, 0.18), sr, harmonics=0.6),
+            silence(0.05, sr),
+            tone(j(280, 340), j(0.15, 0.22), sr, harmonics=0.6),
+            noise_burst(j(0.15, 0.25), sr),
+        )
+    elif emotion == "low_battery":
+        out = concat(
+            tone(1000, 0.08, sr), silence(0.08, sr),
+            tone(800, 0.08, sr), silence(0.08, sr),
+            chirp(700, 350, 0.4, sr, curve=0.7),
+        )
+    else:  # pragma: no cover - guarded by the membership check above
+        raise KeyError(emotion)
+
+    peak = float(np.max(np.abs(out)))
+    if peak > 1.0:
+        out = out / peak
+    return (0.8 * out).astype(np.float32)
+
+
+def phrase_duration(buffer: np.ndarray, sample_rate: int = SAMPLE_RATE) -> float:
+    """Seconds of audio in ``buffer``."""
+    return len(buffer) / sample_rate

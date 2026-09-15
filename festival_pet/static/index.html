@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Festival Pet</title>
+<style>
+  :root { --bg:#0f1220; --fg:#e8e8f0; --dim:#8b8fa8; --card:#1a1e33; --acc:#7cf5c9; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui, sans-serif; }
+  h1 { font-size:20px; margin:0 0 12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+  .card { background:var(--card); border-radius:12px; padding:12px; }
+  .k { color:var(--dim); font-size:13px; }
+  .v { font-size:22px; font-weight:600; }
+  .state { color:var(--acc); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td, th { padding:4px 6px; text-align:left; border-bottom:1px solid #2a2f4a; }
+  button { background:#3a2030; color:#ffb3b3; border:0; border-radius:8px; padding:8px 12px; font-size:14px; }
+</style>
+</head>
+<body>
+<h1>Festival Pet</h1>
+<div class="grid">
+  <div class="card"><div class="k">State</div><div class="v state" id="state">…</div></div>
+  <div class="card"><div class="k">Energy / Social</div><div class="v" id="mood">…</div></div>
+  <div class="card"><div class="k">People remembered</div><div class="v" id="people">…</div></div>
+  <div class="card"><div class="k">Vision (detect / embed ms, faces)</div><div class="v" id="vision">…</div></div>
+</div>
+<div class="card" style="margin-top:12px">
+  <div class="k">Friends, by affection</div>
+  <table id="top"><thead><tr><th>#</th><th>tier</th><th>visits</th><th>attention s</th><th>pets</th><th>holds</th><th>affection</th></tr></thead><tbody></tbody></table>
+</div>
+<p><button onclick="if(confirm('Forget everyone?')) fetch('/api/forget',{method:'POST'})">Forget everyone</button></p>
+<script>
+async function refresh(){
+  try{
+    const r = await fetch('/api/status'); const s = await r.json();
+    document.getElementById('state').textContent = s.behavior.state + (s.behavior.engaged_person ? ' · #' + s.behavior.engaged_person : '');
+    document.getElementById('mood').textContent = s.behavior.energy + ' / ' + s.behavior.social;
+    const t = s.memory.tiers;
+    document.getElementById('people').textContent = s.memory.people + ' (' + t.bestie + ' besties, ' + t.friend + ' friends)';
+    document.getElementById('vision').textContent = s.vision.detect_ms.toFixed(0) + ' / ' + s.vision.embed_ms.toFixed(0) + ' ms, ' + s.vision.faces;
+    const tb = document.querySelector('#top tbody'); tb.innerHTML = '';
+    for (const p of s.memory.top) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${p.id}</td><td>${p.tier}</td><td>${p.encounters}</td><td>${p.attention_s}</td><td>${p.pets}</td><td>${p.holds}</td><td>${p.affection}</td>`;
+      tb.appendChild(tr);
+    }
+  }catch(e){ document.getElementById('state').textContent = 'offline'; }
+}
+refresh(); setInterval(refresh, 1500);
+</script>
+</body>
+</html>

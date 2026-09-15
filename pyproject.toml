@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "festival_pet"
+version = "0.1.0"
+description = "Offline, non-verbal virtual-pet behavior for Reachy Mini Wireless: beeps, boops, face memory, cuddles."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "reachy-mini>=1.10.0",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "opencv-python-headless>=4.8,<6",
+    "platformdirs",
+]
+keywords = ["reachy-mini-app"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.entry-points."reachy_mini_apps"]
+festival_pet = "festival_pet.main:FestivalPetApp"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["festival_pet*"]
+
+[tool.setuptools.package-data]
+festival_pet = ["static/*"]
