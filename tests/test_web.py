@@ -144,7 +144,8 @@ def test_sleep_does_not_wake_itself_from_antenna_droop():
     io.present = [-3.05, 3.05]  # torque off: antennas fall into the sleep position
     for k in range(40):
         pet.step(1000.3 + k * 0.1)  # 4 s
-    assert pet._touch_resync_at < 0 and pet.p.behavior.state == "SLEEPING"
+    assert pet._touch_resync_at < 0  # re-zeroed to the resting position, no false ear tickle woke it
+    assert pet.asleep
     pet.p.behavior.state = "SLEEPING"
     pet._dispatch(Action("wake", "name", 5), 1005.0)
     assert not pet.asleep and getattr(io, "woke", False)
