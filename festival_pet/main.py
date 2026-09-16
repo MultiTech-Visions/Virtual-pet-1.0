@@ -36,7 +36,7 @@ from festival_pet.audio_features import BeatTracker, RubDetector, ScratchDetecto
 from festival_pet.behavior import Action, Behavior, FaceObs, Observation
 from festival_pet.memory import FaceMemory
 from festival_pet.motion import MotionComposer
-from festival_pet.senses import LoudSoundDetector, PickupDetector, TouchDetector
+from festival_pet.senses import LoudSoundDetector, PickupDetector, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
 
 logger = logging.getLogger("festival_pet")
@@ -230,6 +230,7 @@ class Pet:
         self.sound = SoundPlayer(parts.io)
         self.audio = AudioSense(parts.io, parts.spotter)
         self.pickup = PickupDetector()
+        self.self_motion = SelfMotionGate()
         self.touch = TouchDetector()
         self.loud = LoudSoundDetector()
         self.move: MoveLike | None = None
@@ -242,6 +243,7 @@ class Pet:
         self._last = 0.0
         self.muted = False
         self.groove_scale = 1.0  # user knob on top of the brain's intensity
+        self.pickup_enabled = False  # IMU is in the head; off by default until tuned on the real robot
         self._last_obs = Observation()
 
     # ------------------------------------------------------------------ lifecycle
@@ -278,12 +280,16 @@ class Pet:
 
         # ---------------- senses
         obs = Observation()
+        # The IMU is in the head: ignore it while we are the ones moving the head.
+        self_moving = self.self_motion.update(self.last_pose, now)
         imu = io.imu()
         if imu is not None:
-            obs.held, obs.shaken = self.pickup.update(imu["accelerometer"], imu["gyroscope"], now)
+            held, shaken = self.pickup.update(imu["accelerometer"], imu["gyroscope"], now, self_moving)
+            if self.pickup_enabled:
+                obs.held, obs.shaken = held, shaken
         # Antennas lag their command while animated; the detector raises its threshold then.
         busy = self.move is not None or comp.gesture_active(now)
-        obs.touched = self.touch.update(self.last_ants, io.present_antennas(), busy)
+        obs.touched = self.touch.update(self.last_ants, io.present_antennas(), busy, dt)
         obs.touched_side = self.touch.last_side
         obs.petting = self.audio.rub.rubbing
         if now >= self._next_doa:
@@ -408,13 +414,13 @@ class Pet:
             "mind": self.p.behavior.mind(now),
             "senses": {
                 "face": None if o.face is None else {"track": o.face.track_id, "yaw": round(o.face.yaw_deg, 1), "pitch": round(o.face.pitch_deg, 1), "size": round(o.face.area_frac, 3), "person": None if o.face.person is None else o.face.person.person_id, "similarity": round(o.face.similarity, 2), "tilt": round(o.face.roll_deg, 1)},
-                "held": o.held, "shaken": o.shaken,
+                "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
                 "listening": self.audio.stats["listening"], "voice_yaw": self.audio.last_voice_yaw,
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch._onset_ratio, "rub_level_ratio": self.audio.rub._level_ratio, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch._onset_ratio, "rub_level_ratio": self.audio.rub._level_ratio, "match_threshold": self.p.memory.match_threshold},
             "recent_actions": [{"t": round(now - t, 1), "a": f"{k}:{n}"} for t, k, n in reversed(self.actions_log[-20:])],
             "memory": self.p.memory.summary(),
         }
@@ -440,6 +446,8 @@ class Pet:
             self._dispatch(Action("wake", "control", 5), now)
         elif cmd == "mute":
             self.muted = bool(value)
+        elif cmd == "pickup":
+            self.pickup_enabled = bool(value)
         elif cmd == "groove_scale":
             self.groove_scale = float(value)
         elif cmd == "scratch_onset_ratio":

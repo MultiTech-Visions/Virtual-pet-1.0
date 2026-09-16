@@ -57,8 +57,8 @@ def test_pickup_detector_lifecycle():
         held, shaken = d.update(*rest, t)
         t += 0.02
     assert not held and not shaken
-    for i in range(40):  # lift: wobbly accel + some gyro
-        held, shaken = d.update([0.5, 0.3, 9.81 + 2.5 * math.sin(i)], [0.8, 0.0, 0.0], t)
+    for i in range(50):  # lift: wobbly accel + some gyro
+        held, shaken = d.update([0.5, 0.3, 9.81 + 3.0 * math.sin(i)], [1.5, 0.0, 0.0], t)
         t += 0.02
     assert held and not shaken
     _, shaken = d.update([0.0, 0.0, 9.81], [6.0, 0.0, 0.0], t)
@@ -91,3 +91,61 @@ def test_loud_detector_rate_limits_and_maps_direction():
     assert yaw is not None and yaw > 0
     assert d.update((math.pi, True), 11.0) is None  # too soon / not quiet
     assert d.update((math.pi, True), 40.0) is not None
+
+
+
+def test_pickup_ignores_own_head_motion():
+    d = PickupDetector()
+    t = 0.0
+    for _ in range(30):
+        d.update([0.0, 0.0, 9.81], [0.0, 0.0, 0.0], t)
+        t += 0.02
+    # A fast gesture: big gyro and accel while the app says it is moving the head itself.
+    for i in range(60):
+        held, shaken = d.update([1.0, 0.5, 9.81 + 3.0 * math.sin(i)], [3.0, 1.0, 0.0], t, self_moving=True)
+        t += 0.02
+    assert not held and not shaken
+    # Slow idle breathing between gestures: small gyro, tiny accel -> still resting.
+    for _ in range(60):
+        held, _ = d.update([0.1, 0.0, 9.81 + 0.3], [0.3, 0.1, 0.0], t)
+        t += 0.02
+    assert not held
+
+
+def test_self_motion_gate():
+    from festival_pet.motion import head_pose
+    from festival_pet.senses import SelfMotionGate
+
+    g = SelfMotionGate()
+    t = 0.0
+    assert not g.update(head_pose(0, 0, 0, 0), t)
+    for i in range(1, 50):  # slow drift: 0.2 deg per tick = 10 deg/s = 0.17 rad/s
+        t += 0.02
+        busy = g.update(head_pose(0.2 * i, 0, 0, 0), t)
+    assert not busy
+    t += 0.02
+    assert g.update(head_pose(25.0, 0, 0, 0), t)  # a 15 deg snap in one tick
+    t += 0.3
+    assert g.update(head_pose(25.0, 0, 0, 0), t)  # still inside the hangover
+    t += 0.3
+    assert not g.update(head_pose(25.0, 0, 0, 0), t)
+
+
+def test_touch_ignores_motor_lag_and_learns_droop():
+    d = TouchDetector()
+    edge = False
+    for _ in range(5):
+        edge |= d.update([-0.17, 0.17], [-0.17, 0.17])
+    # Command snaps from 0.17 to 1.1 rad; the motor trails behind for a few ticks -> no touch.
+    for k in range(12):
+        cmd = [-0.17, 1.1]
+        present = [-0.17, 0.17 + (1.1 - 0.17) * min(1.0, k / 8)]
+        edge |= d.update(cmd, present, busy=True)
+    assert not edge
+    # At rest the left antenna droops 0.2 rad below command: learned as baseline, never a touch.
+    for _ in range(1500):
+        edge |= d.update([-0.17, 0.17], [-0.17, -0.03], busy=False, dt=0.02)
+    assert not edge
+    # Now a finger pushes it a further 0.5 rad.
+    hits = [d.update([-0.17, 0.17], [-0.17, -0.53], busy=False) for _ in range(6)]
+    assert any(hits) and d.last_side == 1

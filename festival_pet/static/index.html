@@ -112,7 +112,9 @@
       <button class="act" onclick="ctl('wake')">Wake</button>
       <button class="act" onclick="ctl('sleep')">Sleep</button>
       <button class="act" id="mute" onclick="toggleMute()">Mute</button>
+      <button class="act" id="pickup" onclick="togglePickup()">Pickup: off</button>
     </div>
+    <div class="sub">Pickup uses the IMU, which sits in the head. It is ignored while the pet moves itself, but leave it off unless the Senses tab shows it staying quiet on the desk.</div>
     <label>Groove intensity ×<span id="groove-v"></span></label>
     <input type="range" min="0" max="2" step="0.1" id="groove" oninput="setVal('groove_scale', this.value, 'groove-v')">
     <label>Face match strictness <span id="match-v"></span> <span class="sub">(lower = recognises more easily, more mix-ups)</span></label>
@@ -151,6 +153,8 @@ async function ctl(cmd, value) {
 }
 function setVal(cmd, value, label) { $(label).textContent = value; ctl(cmd, parseFloat(value)); }
 function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
+let pickup = false;
+function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off'); }
 async function loadCatalog() {
   const c = await (await fetch('/api/catalog')).json();
   for (const [id, kind, list] of [['btn-sound', 'sound', c.sounds], ['btn-gesture', 'gesture', c.gestures], ['btn-move', 'move', c.moves]])
@@ -196,7 +200,7 @@ async function refresh() {
     $('actions').innerHTML = d.recent_actions.map(a => `<li><small>${a.t}s ago</small>${a.a}</li>`).join('');
     kv('eyes', s.face ? s.face : {face: 'none'});
     kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '°'});
-    kv('body', {held: s.held, shaken: s.shaken, 'head being petted': s.head_pet.rubbing});
+    kv('body', {held: s.held, shaken: s.shaken, 'head being petted': s.head_pet.rubbing, 'imu accel dev / gyro': s.imu.accel_dev + ' / ' + s.imu.gyro, 'imu gated (self-moving)': s.imu.gated, 'head rate rad/s': s.head_rate, 'ear deviation': s.ears.dev.join(' / '), 'ear droop baseline': s.ears.baseline.join(' / ')});
     kv('scratch', s.scratch);
     kv('rub', s.head_pet);
     if (!slidersInit) { slidersInit = true;
@@ -204,7 +208,8 @@ async function refresh() {
       $('rubr').value = d.controls.rub_level_ratio; $('rub-v').textContent = d.controls.rub_level_ratio;
       $('groove').value = d.controls.groove_scale; $('groove-v').textContent = d.controls.groove_scale;
       $('match').value = d.controls.match_threshold; $('match-v').textContent = d.controls.match_threshold;
-      muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
+      muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute';
+      pickup = d.controls.pickup; $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off'); }
     const t = d.memory.tiers;
     $('people-sum').textContent = `${d.memory.people} people · ${t.bestie} besties · ${t.friend} friends`;
     const key = JSON.stringify(d.memory.top.map(p => [p.id, p.encounters, p.pets, p.holds, p.affection, p.has_face]));

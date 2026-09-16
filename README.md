@@ -14,7 +14,7 @@ is the one-time setup below.
 |---|---|---|
 | Faces | camera, YuNet at 320 px (~8 Hz) | locks onto the closest face, looks at it, micro-reacts every few seconds |
 | Who is it | SFace embeddings, only on new tracks / every 4 s | stranger → curious "oh? hi!", friend → happy trill + wiggle, bestie → fanfare + a library move |
-| Picked up | IMU accel/gyro in the base | startle, then purrs and snuggles; shaking → dizzy wobble |
+| Picked up (off by default) | IMU accel/gyro, which sits in the **head** | startle, then purrs and snuggles; shaking → dizzy wobble. The IMU is ignored while the pet moves itself; enable on the Controls tab once the Senses tab shows it quiet on a desk |
 | Head pets | hand rubbing the head, heard by the mics inside it | purrs and leans into the hand; keeps purring while it lasts; counts as affection for the person in front |
 | Ear tickles | an antenna pushed off its commanded angle | flicks that antenna away and ducks, like a dog with its ear touched; giggles; the fourth tickle in a row gets an annoyed huff |
 | Loud voice after quiet | mic array direction-of-arrival | perks up and looks toward it (heavily rate-limited: festivals are loud) |
