@@ -142,11 +142,38 @@ def test_sleep_does_not_wake_itself_from_antenna_droop():
     pet._dispatch(Action("sleep", "asked", 5), 1000.2)
     assert pet.asleep and getattr(io, "slept", False)
     io.present = [-3.05, 3.05]  # torque off: antennas fall into the sleep position
-    for k in range(80):
+    for k in range(130):
         pet.step(1000.3 + k * 0.1)
     assert pet._touch_settle_left < 0  # re-zeroed to the resting position, no false ear tickle woke it
     assert pet.asleep
     pet.p.behavior.state = "SLEEPING"
     pet._dispatch(Action("wake", "name", 5), 1005.0)
     assert not pet.asleep and getattr(io, "woke", False)
+    pet.stop()
+
+
+def test_ears_are_deaf_while_the_pet_itself_makes_noise():
+    import numpy as np
+
+    pet = _pet()
+    a = pet.audio
+    # A loud flat burst that would normally be a head pet...
+    rng = np.random.default_rng(0)
+    quiet = (rng.standard_normal(320) * 0.003).astype(np.float32)
+    loud = (rng.standard_normal(320) * 0.5).astype(np.float32)
+    # Drive the detector directly (thread-free) the way _run does.
+    def feed(chunk, now):
+        a.beat.push(chunk, now)
+        scratched = a.scratch.push(chunk, now)
+        rubbed = a.rub.push(chunk, now)
+        deaf = now < a.deaf_until or now < a.own_sound_until() + 0.5
+        return rubbed and not deaf
+    t = 0.0
+    for _ in range(150):
+        feed(quiet, t); t += 0.02
+    a.deaf_until = t + 2.0  # e.g. the sleep sound is playing
+    fired = False
+    for _ in range(80):
+        fired |= feed(loud, t); t += 0.02
+    assert not fired
     pet.stop()

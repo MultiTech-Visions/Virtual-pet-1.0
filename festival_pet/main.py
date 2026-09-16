@@ -118,6 +118,10 @@ class SoundPlayer:
         self._stop.set()
         self._thread.join(timeout=2.0)
 
+    @property
+    def busy_until(self) -> float:
+        return self._busy_until
+
     def request(self, emotion: str, priority: int, now: float) -> None:
         """Drop the request if something at least as important is still sounding."""
         if now < self._busy_until and self._busy_priority >= priority:
@@ -158,6 +162,8 @@ class AudioSense:
         self.calibration_result: dict | None = None
         self.last_speech_time = -1e9
         self.speech_edge = False  # set when speech starts after a pause; consumed by the main loop
+        self.deaf_until = 0.0  # the mics sit next to the speaker: ignore touch/voice events while we make noise
+        self.own_sound_until: Callable[[], float] = lambda: 0.0
         self.spotter = spotter  # NameSpotter or None
         self._events: queue.Queue[tuple[str, str, float | None]] = queue.Queue()
         self._stop = threading.Event()
@@ -237,9 +243,12 @@ class AudioSense:
             rubbed = self.rub.push(chunk, now)
             self.meter.push(chunk, now, {"rub": self.rub.stats["rub_energy"], "flat": self.rub.stats["flatness"], "band": self.scratch.stats["band_energy"], "clicks": self.scratch.stats["clicks_in_window"]})
             self._calibration_step(now)
-            if scratched:
+            deaf = now < self.deaf_until or now < self.own_sound_until() + 0.5
+            self.stats["deaf"] = deaf
+            # Our own beeps / the daemon's sleep and wake sounds must never count as pets or scratches.
+            if scratched and not deaf:
                 self._events.put(("scratch", "", None))
-            if rubbed:
+            if rubbed and not deaf:
                 self._events.put(("pet", "", None))
             if now >= next_doa and now >= self._doa_backoff_until:
                 next_doa = now + self._doa_period
@@ -299,6 +308,7 @@ class Pet:
         self.p = parts
         self.sound = SoundPlayer(parts.io)
         self.audio = AudioSense(parts.io, parts.spotter)
+        self.audio.own_sound_until = lambda: self.sound.busy_until
         self.pickup = PickupDetector()
         self.self_motion = SelfMotionGate()
         self.touch = TouchDetector()
@@ -369,7 +379,8 @@ class Pet:
             self._touch_settle_left -= min(dt, 0.05)
             if self._touch_settle_left < 0:  # motors settled: wherever the ears rest now is "untouched"
                 self.last_ants = list(present_ants)
-                self.touch = TouchDetector()
+                # Limp antennas can still creep; asleep we want a deliberate, held push before waking.
+                self.touch = TouchDetector(press_rad=0.45, persist_ticks=15) if self.asleep else TouchDetector()
             obs.touched = False
         else:
             obs.touched = self.touch.update(self.last_ants, present_ants, busy, dt)
@@ -377,7 +388,8 @@ class Pet:
         obs.petting = self.audio.rub.rubbing
         if now >= self._next_doa:
             self._next_doa = now + 0.2
-            obs.loud_yaw_deg = self.loud.update(self.audio.doa, now)
+            deaf = now < self.audio.deaf_until or now < self.sound.busy_until + 0.5
+            obs.loud_yaw_deg = None if deaf else self.loud.update(self.audio.doa, now)
         sighting = self.p.latest_sighting()
         if sighting is not None and now - sighting.ts < 1.0:
             if sighting.kind == "face":
@@ -474,10 +486,12 @@ class Pet:
                     self.p.io.play_file(str(move.sound_path))
         elif act.kind == "wake":
             if self.asleep:
+                self.audio.deaf_until = float("inf")
                 try:
                     self.p.io.wake_body()  # daemon wake_up: motors on, lift; blocks ~2 s
                 except Exception:
                     logger.exception("wake move failed; carrying on awake")
+                self.audio.deaf_until = time.time() + 1.5
                 self.asleep = False
                 self.set_vision_active(True)
                 comp.body_yaw = 0.0
@@ -489,13 +503,16 @@ class Pet:
             if not self.asleep:
                 self.set_vision_active(False)  # face detection off while asleep; ears stay on for name / noise / pets
                 self.move = None
+                self.audio.deaf_until = float("inf")  # the sleep move plays a sound and the motors whirr right next to the mics
                 try:
                     self.p.io.sleep_body()  # centre the body, then the daemon's own sleep move (ends limp); blocks ~6 s
                     self.asleep = True
                     comp.body_yaw = 0.0
-                    self._touch_settle_left = 3.0
+                    self._touch_settle_left = 5.0
+                    self.audio.deaf_until = time.time() + 3.0  # let the room settle before listening for a wake
                 except Exception:
                     logger.exception("sleep move failed; staying awake")
+                    self.audio.deaf_until = time.time() + 2.0
                     self.set_vision_active(True)
                     self.p.behavior.state, self.p.behavior._state_since = "IDLE", time.time()
         elif act.kind == "groove":
@@ -673,15 +690,55 @@ class ReachyIO:
             time.sleep(0.2)
         raise TimeoutError(f"daemon move {name} did not finish within {timeout}s")
 
+    def motor_mode(self) -> str:
+        import requests
+
+        return requests.get(f"{self._r._daemon_http_url}/api/motors/status", timeout=5).json()["mode"]
+
     def sleep_body(self):
         from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
 
         # Centre the body first: the daemon's sleep only moves the head, and a turned body leaves it nesting sideways.
         self._r.goto_target(head=INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=1.2, body_yaw=0.0)
-        self._daemon_move("goto_sleep", timeout=15.0)
+        self._daemon_move("goto_sleep", timeout=15.0)  # the dashboard's sleep: nest, then motors limp
+        mode = self.motor_mode()
+        if mode != "disabled":
+            logger.warning("daemon sleep left motors '%s'; disabling them explicitly", mode)
+            self._r.disable_motors()
+        logger.info("asleep: motor mode %s", self.motor_mode())
 
     def wake_body(self):
+        # A disabled robot ignores wake_up (reachy_mini issue #1306): torque must come back first.
+        self._r.enable_motors()  # pins targets to the present pose, so nothing snaps
         self._daemon_move("wake_up", timeout=10.0)
+        logger.info("awake: motor mode %s", self.motor_mode())
+
+    # --- things the sunset dashboard used to do
+    def get_volume(self) -> int:
+        import requests
+
+        return requests.get(f"{self._r._daemon_http_url}/api/volume/current", timeout=5).json()["volume"]
+
+    def set_volume(self, volume: int) -> int:
+        import requests
+
+        r = requests.post(f"{self._r._daemon_http_url}/api/volume/set", json={"volume": int(volume)}, timeout=10)
+        r.raise_for_status()
+        return r.json()["volume"]
+
+    def power(self, action: str) -> str:
+        """'shutdown' or 'reboot' the robot.
+
+        The wireless image's sudoers (/etc/sudoers.d/010-pollen-reachy) allows exact commands only; the
+        robot's own power button runs ``sudo shutdown -h now``, so we use that exact form (and -r for reboot).
+        """
+        import subprocess
+
+        cmd = {"shutdown": ["sudo", "shutdown", "-h", "now"], "reboot": ["sudo", "shutdown", "-r", "now"]}[action]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
+        if proc.returncode != 0:
+            raise RuntimeError(f"{' '.join(cmd)} failed ({proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}")
+        return f"{action} requested"
 
 
 def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool = True) -> tuple[Pet, object, ReachyIO]:
@@ -757,6 +814,34 @@ def install_routes(app, pet: Pet) -> None:
     @app.post("/api/forget")
     def forget() -> dict:
         return pet.control("forget", None)
+
+    @app.get("/api/volume")
+    def volume() -> dict:
+        io = pet.p.io
+        if not hasattr(io, "get_volume"):
+            raise HTTPException(status_code=501, detail="no volume control on this robot IO")
+        return {"volume": io.get_volume()}
+
+    @app.post("/api/volume")
+    def set_volume(c: Control) -> dict:
+        io = pet.p.io
+        if not hasattr(io, "set_volume"):
+            raise HTTPException(status_code=501, detail="no volume control on this robot IO")
+        return {"volume": io.set_volume(int(float(c.value)))}
+
+    @app.post("/api/power/{action}")
+    def power(action: str) -> dict:
+        io = pet.p.io
+        if action not in ("shutdown", "reboot"):
+            raise HTTPException(status_code=400, detail="action must be shutdown or reboot")
+        if not hasattr(io, "power"):
+            raise HTTPException(status_code=501, detail="no power control on this robot IO")
+        try:
+            if action == "shutdown" and not pet.asleep:
+                pet._dispatch(Action("sleep", "shutdown", 5), time.time())  # nest first so the head is not left standing
+            return {"ok": True, "detail": io.power(action)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/api/people/{person_id}/face.jpg")
     def face(person_id: int):

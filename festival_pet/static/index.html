@@ -138,7 +138,18 @@
     <input type="range" min="0" max="2" step="0.1" id="groove" oninput="setVal('groove_scale', this.value, 'groove-v')">
     <label>Face match strictness <span id="match-v"></span> <span class="sub">(lower = recognises more easily, more mix-ups)</span></label>
     <input type="range" min="0.3" max="0.6" step="0.01" id="match" oninput="setVal('match_threshold', this.value, 'match-v')">
-    <p class="sub">Speaker volume lives on the daemon dashboard (port 8000 → settings).</p>
+    <label>Speaker volume: <span id="vol-v">…</span></label>
+    <input type="range" min="0" max="100" step="5" id="vol" onchange="setVolume(this.value)">
+    <div class="sub">Releasing the slider plays the daemon's test sound at the new level.</div>
+  </div>
+  <div class="card">
+    <h2>Power</h2>
+    <div class="btns">
+      <button class="act danger" onclick="power('shutdown')">Shut down robot</button>
+      <button class="act danger" onclick="power('reboot')">Reboot robot</button>
+    </div>
+    <div class="sub">Shut down nests the head first, then powers the Pi off. Give it ~20 s before switching off the battery.</div>
+    <div class="sub" id="power-msg"></div>
   </div>
   <div class="card" style="grid-column:1/-1">
     <h2>Puppet it</h2>
@@ -186,7 +197,22 @@ function drawChart(hist, c) {
   g.fillStyle = '#5aa0ff'; hist.forEach((h, i) => { g.fillRect(x(i) - 1, H - 4 - h.flat * (H - 14), 2, 2); });
 }
 function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
-let pickup = false, bodyf = true;
+let pickup = false, bodyf = true, volLoaded = false;
+async function setVolume(v) {
+  $('vol-v').textContent = v;
+  const r = await fetch('/api/volume', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cmd:'volume', value: parseFloat(v)})});
+  if (!r.ok) alert((await r.json()).detail);
+}
+async function loadVolume() {
+  try { const r = await fetch('/api/volume'); if (!r.ok) throw 0; const v = (await r.json()).volume; $('vol').value = v; $('vol-v').textContent = v; volLoaded = true; }
+  catch (e) { $('vol-v').textContent = 'n/a'; }
+}
+async function power(action) {
+  if (!confirm(action === 'shutdown' ? 'Shut the robot down?' : 'Reboot the robot?')) return;
+  $('power-msg').textContent = action + '…';
+  try { const r = await fetch('/api/power/' + action, {method:'POST'}); const j = await r.json(); $('power-msg').textContent = r.ok ? j.detail : ('failed: ' + j.detail); }
+  catch (e) { $('power-msg').textContent = 'connection dropped (expected once it powers off)'; }
+}
 function toggleBody() { bodyf = !bodyf; ctl('body_finder', bodyf); $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
 function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off'); }
 async function loadCatalog() {
@@ -272,7 +298,7 @@ async function refresh() {
     }
   } catch (e) { $('conn').textContent = 'offline: ' + e; }
 }
-loadCatalog(); refresh(); setInterval(refresh, 500);
+loadCatalog(); loadVolume(); refresh(); setInterval(refresh, 500);
 </script>
 </body>
 </html>

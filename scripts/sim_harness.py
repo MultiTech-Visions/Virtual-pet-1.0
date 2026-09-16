@@ -175,6 +175,7 @@ class FakeIO:
 
     # Same daemon moves as on the real robot (the sim daemon serves them too).
     _daemon_move = ReachyIO._daemon_move
+    motor_mode = ReachyIO.motor_mode
     sleep_body = ReachyIO.sleep_body
     wake_body = ReachyIO.wake_body
 
@@ -231,7 +232,7 @@ def build_timeline() -> Timeline:
     tl.face += [(68.0, 72.0, 5.0, 0.0, 0.05)]
     tl.add_speech(74.0, "m3_reachy")  # "Reachy ... sleep" -> motors off
     tl.add_speech(76.0, "hello_there")  # (only 'hello' is in the fixtures; the sleep command is injected below)
-    tl.add_speech(84.0, "m3_reachy")  # its name wakes it back up
+    tl.add_speech(88.0, "m3_reachy")  # its name wakes it back up (after the post-sleep deaf window)
     return tl
 
 
@@ -252,14 +253,14 @@ EXPECTED = [  # (window t0, t1, kind, name)
     (60.0, 63.0, "sound", "dizzy"),
     (66.0, 69.0, "gesture", "shake_off"),  # set down
     (77.0, 80.0, "sleep", "asked"),  # told to sleep: motors off
-    (83.0, 88.0, "wake", "name|sound"),  # its voice/name wakes it (the loud-voice startle may win the race)
+    (87.0, 92.0, "wake", "name|sound"),  # its voice/name wakes it (the loud-voice startle may win the race)
 ]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--vosk", default=os.environ.get("VOSK_MODEL", ""))
-    ap.add_argument("--duration", type=float, default=90.0)
+    ap.add_argument("--duration", type=float, default=94.0)
     args = ap.parse_args()
 
     reachy = ReachyMini(media_backend="no_media", connection_mode="localhost_only")
