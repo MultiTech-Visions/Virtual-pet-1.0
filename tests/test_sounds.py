@@ -11,7 +11,7 @@ def test_every_emotion_renders_clean_float32():
         buf = sounds.render_phrase(e, rng=rng)
         assert buf.dtype == np.float32
         assert buf.ndim == 1
-        assert 0.2 < sounds.phrase_duration(buf) < 3.0, e
+        assert 0.04 < sounds.phrase_duration(buf) < 3.0, e
         assert np.max(np.abs(buf)) <= 0.8001, e
         assert np.isfinite(buf).all(), e
 

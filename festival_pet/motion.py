@@ -122,6 +122,42 @@ def g_search(u: float) -> Offsets:
     return Offsets(yaw=22.0 * math.sin(2 * math.pi * 0.7 * u), pitch=-4.0 * _pulse(u), ant_r=-0.3 * _pulse(u), ant_l=0.3 * _pulse(u))
 
 
+def g_shy(u: float, side: float) -> Offsets:
+    # look away and down, antennas fold, then a peek back at the very end
+    e = _ease(min(1.0, u * 2.5))
+    peek = max(0.0, (u - 0.75) / 0.25)
+    return Offsets(yaw=side * 30.0 * e * (1 - 0.7 * peek), pitch=12.0 * e * (1 - peek), roll=-side * 8.0 * e, z=-0.008 * e, ant_r=0.7 * e, ant_l=-0.7 * e)
+
+
+def g_nod_off(u: float) -> Offsets:
+    # head slowly sinks... then jerks awake
+    if u < 0.8:
+        e = _ease(u / 0.8)
+        return Offsets(pitch=18.0 * e, z=-0.01 * e, ant_r=0.5 * e, ant_l=-0.5 * e)
+    j = 1.0 - (u - 0.8) / 0.2
+    return Offsets(pitch=-6.0 * j, z=0.006 * j, ant_r=-0.4 * j, ant_l=0.4 * j)
+
+
+def g_sneeze(u: float) -> Offsets:
+    # inhale: head back, antennas up ... achoo: snap forward, antennas splay
+    if u < 0.45:
+        e = _ease(u / 0.45)
+        return Offsets(pitch=-12.0 * e, z=0.008 * e, ant_r=-0.8 * e, ant_l=0.8 * e)
+    j = (u - 0.45) / 0.55
+    snap = math.exp(-6 * j)
+    return Offsets(pitch=20.0 * snap, z=-0.012 * snap, ant_r=0.9 * snap, ant_l=-0.9 * snap, roll=4.0 * math.sin(20 * j) * snap)
+
+
+def g_hiccup(u: float) -> Offsets:
+    j = math.exp(-8 * u)
+    return Offsets(z=0.012 * j, pitch=-5.0 * j, ant_r=-0.5 * j, ant_l=0.5 * j)
+
+
+def g_tada(u: float) -> Offsets:
+    e = _pulse(u)
+    return Offsets(pitch=-10.0 * e, z=0.012 * e, ant_r=-1.2 * e, ant_l=1.2 * e, yaw=6.0 * math.sin(2 * math.pi * 1.5 * u) * e)
+
+
 def g_glance(u: float, side: float) -> Offsets:
     e = _pulse(u) ** 0.6
     return Offsets(yaw=side * 22.0 * e, pitch=-3.0 * e + 5.0 * math.sin(math.pi * u * 2) * e, roll=side * 4.0 * e)
@@ -141,13 +177,49 @@ GESTURES: dict[str, tuple[float, str]] = {
     "shake_off": (0.8, "plain"),
     "search": (2.4, "plain"),
     "glance": (2.0, "sided"),
+    "shy": (3.0, "sided"),
+    "nod_off": (4.0, "plain"),
+    "sneeze": (1.4, "plain"),
+    "hiccup": (0.5, "plain"),
+    "tada": (1.6, "plain"),
 }
 
 _FUNCS = {
     "nod": g_nod, "tilt": g_tilt, "wiggle": g_wiggle, "bounce": g_bounce, "perk": g_perk,
     "droop": g_droop, "startle": g_startle, "snuggle": g_snuggle, "dizzy": g_dizzy,
     "shake_off": g_shake_off, "search": g_search, "glance": g_glance,
+    "shy": g_shy, "nod_off": g_nod_off, "sneeze": g_sneeze, "hiccup": g_hiccup, "tada": g_tada,
 }
+
+
+def groove_offsets(phase: float, intensity: float, bar_phase: float, style: int) -> Offsets:
+    """Music bob. ``phase`` 0..1 within the beat (0 = on the beat), ``bar_phase`` 0..1 over 4 beats.
+
+    intensity 0.3 = subtle head nod you notice only if you look; 1.0 = little dance.
+    Three styles so it does not look like a metronome.
+    """
+    a = 2 * math.pi * phase
+    # Anticipation: the dip lands slightly *before* the beat, like a real nod.
+    dip = math.cos(a + 0.35)
+    off = Offsets()
+    off.pitch += 5.0 * intensity * dip
+    off.z += -0.004 * intensity * dip
+    if style == 0:  # head bob + antenna sway on the half beat
+        off.ant_r += -0.35 * intensity * math.sin(a)
+        off.ant_l += -0.35 * intensity * math.sin(a)
+    elif style == 1:  # side-to-side lean over two beats
+        b = 2 * math.pi * bar_phase * 2
+        off.roll += 7.0 * intensity * math.sin(b)
+        off.yaw += 5.0 * intensity * math.sin(b)
+        off.ant_r += 0.3 * intensity * math.sin(b)
+        off.ant_l += 0.3 * intensity * math.sin(b)
+    else:  # slow yaw sway over the bar with antennas flicking on beats 2 and 4
+        b = 2 * math.pi * bar_phase
+        off.yaw += 8.0 * intensity * math.sin(b)
+        flick = max(0.0, math.cos(2 * math.pi * (bar_phase * 4 - 1) / 2))
+        off.ant_r += -0.5 * intensity * flick
+        off.ant_l += 0.5 * intensity * flick
+    return off
 
 
 @dataclass
@@ -171,6 +243,12 @@ class MotionComposer:
         self._drift_phase = self.rng.uniform(0, 100)
         self._gesture: _ActiveGesture | None = None
         self._sleep_blend = 0.0  # 0 awake .. 1 asleep, eased over time
+        self.groove: tuple[float, float, float] | None = None  # (beat phase, bar phase, intensity) or None
+        self._groove_level = 0.0  # eased intensity so bobbing fades in/out
+        self._groove_style = 0
+        self._next_style_change = 0.0
+        self.mirror_roll = 0.0  # degrees, follows the person's head tilt
+        self._mirror = 0.0
 
     # ------------------------------------------------------------------ intent
     def set_gaze(self, target: tuple[float, float] | None) -> None:
@@ -235,6 +313,19 @@ class MotionComposer:
             target = np.array(self._gaze_target)
             rate = 6.0  # snappy but not twitchy; vision already filters
         self._gaze += (target - self._gaze) * min(1.0, dt * rate)
+
+        # music groove overlay, faded in and out
+        want = self.groove[2] if self.groove is not None else 0.0
+        self._groove_level += (want - self._groove_level) * min(1.0, dt * 0.8)
+        if self.groove is not None and self._groove_level > 0.02:
+            if now >= self._next_style_change:
+                self._groove_style = self.rng.randrange(3)
+                self._next_style_change = now + self.rng.uniform(12.0, 30.0)
+            off += groove_offsets(self.groove[0], self._groove_level, self.groove[1], self._groove_style)
+
+        # mirror the person's head tilt a little (slow, so it reads as empathy not tracking)
+        self._mirror += (self.mirror_roll * 0.5 - self._mirror) * min(1.0, dt * 0.8)
+        off.roll += self._mirror
 
         # gesture overlay
         off += self._gesture_offsets(now)

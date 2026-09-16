@@ -149,6 +149,13 @@ EMOTIONS = (
     "dizzy",
     "annoyed",
     "low_battery",
+    "name",  # "huh? me?" when it hears its name
+    "ticklish",  # belly scratch
+    "shy",
+    "sneeze",
+    "hiccup",
+    "sing",  # one blip on the beat
+    "tada",  # finished a trick
 )
 
 
@@ -272,6 +279,42 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
             tone(j(280, 340), j(0.15, 0.22), sr, harmonics=0.6),
             noise_burst(j(0.15, 0.25), sr),
         )
+    elif emotion == "name":
+        out = concat(
+            chirp(j(700, 850), j(1100, 1300), j(0.07, 0.10), sr, curve=1.5),
+            silence(0.05, sr),
+            chirp(j(1000, 1200), j(1700, 2100), j(0.16, 0.24), sr, curve=2.2),
+        )
+    elif emotion == "ticklish":
+        parts = []
+        f = j(1300, 1700)
+        for i in range(r.randint(6, 9)):
+            parts.append(warble(f * (1 + 0.05 * (i % 3)), 0.06, rate=30, depth=0.2, sample_rate=sr))
+            parts.append(silence(j(0.02, 0.05), sr))
+        parts.append(chirp(f * 1.2, f * 0.7, j(0.15, 0.25), sr, curve=0.7))
+        out = concat(*parts)
+    elif emotion == "shy":
+        out = concat(
+            chirp(j(900, 1000), j(650, 750), j(0.2, 0.3), sr, curve=0.8),
+            silence(0.12, sr),
+            tone(j(600, 700), j(0.08, 0.12), sr, harmonics=0.1),
+            silence(0.05, sr),
+            tone(j(650, 750), j(0.06, 0.1), sr, harmonics=0.1),
+        )
+    elif emotion == "sneeze":
+        out = concat(
+            chirp(j(500, 600), j(1200, 1500), j(0.25, 0.35), sr, curve=2.5, attack=0.6),  # ah... ah...
+            silence(0.04, sr),
+            noise_burst(j(0.12, 0.18), sr),  # choo
+            chirp(j(1400, 1800), j(500, 600), j(0.12, 0.18), sr, curve=0.5),
+        )
+    elif emotion == "hiccup":
+        out = concat(tone(j(500, 600), 0.03, sr, attack=0.02, release=0.3), chirp(j(900, 1100), j(1500, 1900), 0.06, sr, curve=1.8))
+    elif emotion == "sing":
+        out = tone(j(1100, 1700), j(0.06, 0.09), sr, harmonics=0.3)
+    elif emotion == "tada":
+        notes = [chirp(f, f * 1.15, 0.08, sr) for f in (j(900, 1000), j(1150, 1250), j(1400, 1500))]
+        out = concat(*sum(([n, silence(0.03, sr)] for n in notes), []), warble(j(1900, 2100), j(0.3, 0.4), rate=12, depth=0.08, sample_rate=sr))
     elif emotion == "low_battery":
         out = concat(
             tone(1000, 0.08, sr), silence(0.08, sr),

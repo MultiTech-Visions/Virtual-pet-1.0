@@ -25,6 +25,12 @@ curl -fsSL -o "$MODELS/face_recognition_sface_2021dec.onnx" \
   https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
 ls -la "$MODELS"
 
+echo "== downloading the Vosk keyword-spotting model (~40 MB zip)"
+if [ ! -d "$MODELS/vosk-model-small-en-us-0.15" ]; then
+  curl -fsSL -o /tmp/vosk-small.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+  (cd "$MODELS" && unzip -oq /tmp/vosk-small.zip) && rm -f /tmp/vosk-small.zip
+fi
+
 echo "== caching the emotions move library for offline use"
 "$PY" - <<'PYEOF'
 from huggingface_hub import snapshot_download
@@ -36,10 +42,12 @@ echo "== sanity check: models load, moves resolve"
 "$PY" - <<'PYEOF'
 import os; os.environ["HF_HUB_OFFLINE"] = "1"
 import cv2
-from festival_pet.main import YUNET_MODEL, SFACE_MODEL
+from festival_pet.main import YUNET_MODEL, SFACE_MODEL, VOSK_MODEL
+from festival_pet.hearing import NameSpotter
 from reachy_mini.motion.recorded_move import RecordedMoves, DEFAULT_EMOTIONS_DATASET
 cv2.FaceDetectorYN.create(str(YUNET_MODEL), "", (320, 320))
 cv2.FaceRecognizerSF.create(str(SFACE_MODEL), "")
+NameSpotter(VOSK_MODEL)
 lib = RecordedMoves(DEFAULT_EMOTIONS_DATASET)
 for m in ("curious1", "welcoming1", "loving1"):
     lib.get(m)

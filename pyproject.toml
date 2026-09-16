@@ -14,11 +14,12 @@ dependencies = [
     "scipy>=1.11",
     "opencv-python-headless>=4.8,<6",
     "platformdirs",
+    "vosk>=0.3.45",
 ]
 keywords = ["reachy-mini-app"]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "soundfile"]
 
 [project.entry-points."reachy_mini_apps"]
 festival_pet = "festival_pet.main:FestivalPetApp"

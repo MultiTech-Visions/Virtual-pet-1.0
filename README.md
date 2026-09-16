@@ -17,7 +17,14 @@ is the one-time setup below.
 | Picked up | IMU accel/gyro in the base | startle, then purrs and snuggles; shaking → dizzy wobble |
 | Petting | antenna pushed off its commanded angle | giggle + antenna wiggle, counts as affection for the person in front |
 | Loud voice after quiet | mic array direction-of-arrival | perks up and looks toward it (heavily rate-limited: festivals are loud) |
-| Time | – | energy drains while awake, refills asleep; lonely after 90 s alone, sleeps after 7 min |
+| Its name | Vosk keyword spotting, only while the mic array flags speech | "Reachy!" → "huh? me?" chirp, perks up, turns toward the voice, listens for a trick for 8 s |
+| Tricks | same grammar: `dance`, `hello`/`hi`, `good`, `sleep` | "Reachy, dance" → 6 s little groove; a second "dance" within 15 s → a lively library dance |
+| Belly scratch | fingernail clicks on the shell, heard by the mics | ticklish giggle + wiggle, counts as a pet |
+| Music | beat tracker on the mic stream (spectral flux + autocorrelation) | subtle head bob and antenna sway on the beat, three groove styles, the odd "sing-along" blip |
+| Peekaboo | face hidden 0.6–3.5 s then back | giggle + bounce |
+| Being stared at | same face very close for 14 s | goes shy: looks away, antennas fold, peeks back |
+| Empathy | the person's head tilt (eye line) | slowly mirrors the tilt |
+| Time | – | energy drains while awake, refills asleep; lonely after 90 s alone, nods off, sleeps after 7 min; rare sneezes and hiccups |
 
 Relationship memory is a JSON file of anonymous face embeddings plus stats (visits,
 attention seconds, pets, holds, affection). Two visits apart by 2 minutes makes a
@@ -27,6 +34,23 @@ All sounds are synthesised in `festival_pet/sounds.py` (chirps, warbles, purrs) 
 random variation so it never repeats itself exactly. Motion is layered in
 `festival_pet/motion.py`: breathing + gaze + short cartoon gestures, plus optional
 full-body moves from Pollen's emotions library for big moments.
+
+### Notes on the harder senses
+
+- **Name**: "reachy" is not in Vosk's English lexicon, so the grammar spots in-vocabulary
+  sound-alikes ("ricci", "richie", "reach it"…) that fire on the spoken name, with decoys
+  ("peachy", "reach", "beach") to absorb near-misses. Verified on synthesized speech in
+  several voices (`tests/test_hearing.py`). Recognition only runs while the ReSpeaker flags
+  speech, so it costs nothing while music plays.
+- **Belly scratch**: fingernails on the shell reach the mics as structure-borne clicks that
+  are very short, broadband and strong above 3 kHz. The detector wants 4+ such clicks within
+  1.2 s that each decay within ~30 ms (consonants and hi-hats ring longer). Tested against
+  synthetic clicks over music and against speech clips; **the thresholds in
+  `audio_features.ScratchDetector` will need a tuning pass on the real shell** (watch
+  `band_energy` vs `median` on the status page while you scratch).
+- **Beat tracking**: 60–180 BPM, needs ~4 s of stable tempo before the pet starts grooving,
+  and it stops when the beat goes away. Intensity scales with energy; it never does big moves
+  on its own, the lively dance only happens when asked twice.
 
 ## Layout
 
@@ -38,9 +62,12 @@ festival_pet/
   vision.py     YuNet detection, single-target tracking, SFace recognition thread
   memory.py     persistent face memory / relationship stats
   senses.py     pickup, shake, antenna-touch, loud-sound detectors
+  audio_features.py  beat tracker + shell-scratch detector (mic stream)
+  hearing.py    Vosk name / trick-word spotting
   sounds.py     procedural droid vocalisations
   static/       tiny status page served at http://reachy-mini.local:8042
 scripts/setup_offline.sh   one-time install + model/move-library download on the robot
+scripts/sim_harness.py     drives the whole pet against the SDK's MuJoCo simulator
 tests/                     pytest suite for everything that does not need the robot
 ```
 
@@ -54,8 +81,9 @@ ssh pollen@reachy-mini.local 'bash /home/pollen/festival_pet/scripts/setup_offli
 ```
 
 The script installs the app into the daemon's apps venv (`/venvs/apps_venv`), downloads
-the two OpenCV Zoo ONNX models (~39 MB) into `~/.local/share/festival_pet/models/`, caches
-the `pollen-robotics/reachy-mini-emotions-library` dataset, and runs a load check.
+the two OpenCV Zoo ONNX models (~39 MB) and the Vosk small English model (~40 MB) into
+`~/.local/share/festival_pet/models/`, caches the
+`pollen-robotics/reachy-mini-emotions-library` dataset, and runs a load check.
 
 Then open the dashboard at `http://reachy-mini.local:8000`, find **festival_pet** in the
 installed apps and start it. The status page is at `http://reachy-mini.local:8042`.
@@ -90,12 +118,33 @@ the robot boots asleep and **touching an antenna wakes it and launches the pet**
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest                                   # 29 tests, no robot needed
+VOSK_MODEL=/path/to/vosk-model-small-en-us-0.15 pytest tests/test_hearing.py
 ```
 
 The behavior engine takes a fake clock, so you can script whole interactions in tests
-(see `tests/test_behavior.py`). The `festival_pet.vision.Vision.process_frame` method can be
-driven with any BGR numpy frame off-robot.
+(see `tests/test_behavior.py`). `Vision.process_frame` can be driven with any BGR frame.
+
+### Virtual robot
+
+The SDK ships its own simulator: the daemon has a MuJoCo backend. In one terminal:
+
+```bash
+pip install "reachy-mini[mujoco]"
+MUJOCO_GL=disable reachy-mini-daemon --sim --headless --no-wake-up-on-start   # drop --headless to watch it
+```
+
+then run the scripted scenario, which moves the simulated head for real while injecting a
+stranger, a peekaboo, "Reachy… dance… dance", a 112 BPM track, a belly scratch, an antenna
+touch, a pickup, a shake and a set-down, and checks that each reaction fires:
+
+```bash
+python scripts/sim_harness.py --vosk /path/to/vosk-model-small-en-us-0.15
+```
+
+It prints the state transitions, every action, the tempo it locked onto, and the gaze error
+between the simulated head and the injected face (≈1°). `Pet` in `main.py` takes a
+`RobotIO`, so the harness swaps in fake senses without touching the control loop.
 
 ## Credits and sources
 

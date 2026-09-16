@@ -70,13 +70,17 @@ def test_pickup_detector_lifecycle():
 
 
 def test_touch_detector_edges():
-    d = TouchDetector()
+    d = TouchDetector(persist_ticks=2)
     cmd = [-0.17, 0.17]
     assert not d.update(cmd, [-0.17, 0.17])
-    assert d.update(cmd, [-0.17, 0.6])  # pushed
+    assert not d.update(cmd, [-0.17, 0.6])  # pushed, but must persist
+    assert d.update(cmd, [-0.17, 0.6])  # edge
     assert not d.update(cmd, [-0.17, 0.6])  # still held: no new edge
     assert not d.update(cmd, [-0.17, 0.2])  # released
-    assert d.update(cmd, [-0.17, 0.6])
+    assert not d.update(cmd, [-0.17, 0.5], busy=True)  # 0.33 rad while animated is not a touch
+    assert not d.update(cmd, [-0.17, 0.5], busy=True)
+    d.update(cmd, [-0.17, 0.9], busy=True)
+    assert d.update(cmd, [-0.17, 0.9], busy=True)
 
 
 def test_loud_detector_rate_limits_and_maps_direction():

@@ -69,15 +69,23 @@ class TouchDetector:
 
     press_rad: float = 0.25
     release_rad: float = 0.10
+    busy_scale: float = 1.8  # larger threshold while the antennas are being animated (they lag their command)
+    persist_ticks: int = 3  # deviation must hold this many consecutive updates
 
     def __post_init__(self) -> None:
         self._pressed = [False, False]
+        self._over = [0, 0]
 
-    def update(self, commanded: list[float], present: list[float]) -> bool:
+    def update(self, commanded: list[float], present: list[float], busy: bool = False) -> bool:
         edge = False
+        press = self.press_rad * (self.busy_scale if busy else 1.0)
         for i in range(2):
             dev = abs(present[i] - commanded[i])
-            if not self._pressed[i] and dev > self.press_rad:
+            if dev > press:
+                self._over[i] += 1
+            else:
+                self._over[i] = 0
+            if not self._pressed[i] and self._over[i] >= self.persist_ticks:
                 self._pressed[i] = True
                 edge = True
             elif self._pressed[i] and dev < self.release_rad:
@@ -112,6 +120,10 @@ class LoudSoundDetector:
         if not was_quiet or now - self._last_event < self.cooldown_s:
             return None
         self._last_event = now
-        # DoA convention: 0 = left, pi/2 = front, pi = right. Head yaw: + = left.
+        return self.doa_to_yaw(angle)
+
+    @staticmethod
+    def doa_to_yaw(angle: float) -> float:
+        """DoA convention: 0 = left, pi/2 = front, pi = right. Head yaw: + = left."""
         yaw = math.degrees(math.pi / 2 - angle)
         return max(-60.0, min(60.0, yaw))

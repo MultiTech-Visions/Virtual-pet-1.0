@@ -30,7 +30,8 @@ DETECT_WIDTH = 320
 DETECT_INTERVAL = 0.12  # ~8 detections per second
 EMBED_RECHECK = 4.0  # seconds between re-identifications of a locked track
 EMBED_MIN_FACE_PX = 44  # skip embedding tiny faces (in detect-resolution pixels)
-LOST_AFTER = 0.7  # seconds without a detection before the track is dropped
+LOST_AFTER = 0.7  # seconds without a detection before we stop reporting the track
+FORGET_AFTER = 4.0  # seconds before a returning face nearby counts as a new track (peekaboo keeps identity)
 ASSOC_MAX_NORM = 0.35  # max normalised centre jump to keep associating a track
 UNKNOWN_VOTES_TO_ENROLL = 3  # consecutive "no match" embeddings before we create a new person
 
@@ -61,6 +62,7 @@ class Sighting:
     similarity: float
     head_pose_at_capture: np.ndarray  # 4x4, so gaze math is not skewed by stale poses
     ts: float  # wall-clock time of the frame
+    roll_deg: float  # head tilt of the person (from the eye line), + = their head tilts to their left
 
 
 class FaceRecognizer:
@@ -152,7 +154,7 @@ class Vision:
 
         chosen = self._select(faces, sw, sh, now)
         if chosen is None:
-            if self._track is not None and now - self._track.last_seen > LOST_AFTER:
+            if self._track is not None and now - self._track.last_seen > FORGET_AFTER:
                 self._track = None
             return None
 
@@ -165,7 +167,10 @@ class Vision:
         x, y, w, h = row[:4]
         u = (x + w / 2) / scale
         v = (y + h * 0.45) / scale  # aim a little above bbox centre: between the eyes
-        return Sighting(track.track_id, float(u), float(v), track.area_frac, track.person, track.similarity, head_pose, now)
+        # YuNet row: x, y, w, h, right_eye(x,y), left_eye(x,y), nose, mouth_r, mouth_l, score
+        rex, rey, lex, ley = row[4], row[5], row[6], row[7]
+        roll = float(np.degrees(np.arctan2(ley - rey, lex - rex)))
+        return Sighting(track.track_id, float(u), float(v), track.area_frac, track.person, track.similarity, head_pose, now, roll)
 
     def _select(self, faces: np.ndarray, sw: int, sh: int, now: float) -> tuple[np.ndarray, Track] | None:
         if len(faces) == 0:
@@ -173,12 +178,15 @@ class Vision:
         centres = np.stack([(faces[:, 0] + faces[:, 2] / 2) / sw * 2 - 1, (faces[:, 1] + faces[:, 3] / 2) / sh * 2 - 1], axis=1)
         areas = faces[:, 2] * faces[:, 3] / float(sw * sh)
         track = self._track
-        if track is not None and now - track.last_seen <= LOST_AFTER:
+        if track is not None and now - track.last_seen <= FORGET_AFTER:
             d = np.linalg.norm(centres - np.array([track.cx, track.cy]), axis=1)
             i = int(np.argmin(d))
-            if d[i] > ASSOC_MAX_NORM:
-                return None  # someone else; keep waiting for our target briefly
-        else:
+            recently = now - track.last_seen <= LOST_AFTER
+            if d[i] > (ASSOC_MAX_NORM if recently else 1.6 * ASSOC_MAX_NORM):
+                if recently:
+                    return None  # someone else; keep waiting for our target briefly
+                track = None  # they left and someone else showed up elsewhere
+        if track is None:
             i = int(np.argmax(areas))  # new lock: the biggest (closest) face wins
             track = Track(self._next_track_id, 0.0, 0.0, 0.0, now)
             self._next_track_id += 1

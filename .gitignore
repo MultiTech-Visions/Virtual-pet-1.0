@@ -5,4 +5,5 @@ build/
 dist/
 .pytest_cache/
 *.onnx
+*.zip
 memory.json
