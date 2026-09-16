@@ -474,20 +474,30 @@ class Pet:
                     self.p.io.play_file(str(move.sound_path))
         elif act.kind == "wake":
             if self.asleep:
-                self.p.io.wake_body()  # torque on, lift the head; blocks ~2 s
+                try:
+                    self.p.io.wake_body()  # daemon wake_up: motors on, lift; blocks ~2 s
+                except Exception:
+                    logger.exception("wake move failed; carrying on awake")
                 self.asleep = False
                 self.set_vision_active(True)
+                comp.body_yaw = 0.0
                 self.move, self.blend_from = None, None
                 self._touch_settle_left = 1.5
             self.sound.request("wake", 5, now)
             comp.request_gesture("perk", now, 5)
         elif act.kind == "sleep":
             if not self.asleep:
-                self.set_vision_active(False)  # camera off while asleep; ears stay on for name / noise / pets
-                self.p.io.sleep_body()  # nest the head, then torque off; blocks ~4 s
-                self.asleep = True
+                self.set_vision_active(False)  # face detection off while asleep; ears stay on for name / noise / pets
                 self.move = None
-                self._touch_settle_left = 3.0
+                try:
+                    self.p.io.sleep_body()  # centre the body, then the daemon's own sleep move (ends limp); blocks ~6 s
+                    self.asleep = True
+                    comp.body_yaw = 0.0
+                    self._touch_settle_left = 3.0
+                except Exception:
+                    logger.exception("sleep move failed; staying awake")
+                    self.set_vision_active(True)
+                    self.p.behavior.state, self.p.behavior._state_since = "IDLE", time.time()
         elif act.kind == "groove":
             beat = self.audio.beat
             if beat.music:
@@ -646,15 +656,32 @@ class ReachyIO:
     def goto(self, head, antennas, duration):
         self._r.goto_target(head=head, antennas=antennas, duration=duration)
 
-    def sleep_body(self):
-        self._r.goto_sleep()  # SDK: lift if needed, "pfiou" sound, nest the head over 2 s
-        self._r.disable_motors()  # torque off: the head rests in its cradle, no motor hum
+    # The daemon owns the canonical sleep/wake moves (the same ones the dashboard uses):
+    # goto_sleep quiesces tracking, lifts to neutral, plays the sound, nests the head and
+    # ends with the motors limp; wake_up re-enables them and lifts. We call those over REST
+    # and wait for the move task to finish.
+    def _daemon_move(self, name: str, timeout: float) -> None:
+        import requests
 
-    def wake_body(self):
+        base = self._r._daemon_http_url
+        uuid = requests.post(f"{base}/api/move/play/{name}", timeout=10).json()["uuid"]
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            running = [m["uuid"] for m in requests.get(f"{base}/api/move/running", timeout=5).json()]
+            if uuid not in running:
+                return
+            time.sleep(0.2)
+        raise TimeoutError(f"daemon move {name} did not finish within {timeout}s")
+
+    def sleep_body(self):
         from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
 
-        self._r.enable_motors()
-        self._r.goto_target(head=INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=1.5)
+        # Centre the body first: the daemon's sleep only moves the head, and a turned body leaves it nesting sideways.
+        self._r.goto_target(head=INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=1.2, body_yaw=0.0)
+        self._daemon_move("goto_sleep", timeout=15.0)
+
+    def wake_body(self):
+        self._daemon_move("wake_up", timeout=10.0)
 
 
 def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool = True) -> tuple[Pet, object, ReachyIO]:

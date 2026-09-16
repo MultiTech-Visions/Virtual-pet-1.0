@@ -190,7 +190,8 @@ let pickup = false, bodyf = true;
 function toggleBody() { bodyf = !bodyf; ctl('body_finder', bodyf); $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
 function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off'); }
 async function loadCatalog() {
-  const c = await (await fetch('/api/catalog')).json();
+  let c;
+  try { c = await (await fetch('/api/catalog')).json(); } catch (e) { setTimeout(loadCatalog, 2000); return; }  // app still starting
   for (const [id, kind, list] of [['btn-sound', 'sound', c.sounds], ['btn-gesture', 'gesture', c.gestures], ['btn-move', 'move', c.moves]])
     $(id).innerHTML = list.map(x => `<button onclick="ctl('${kind}', '${x}')">${x.replace(/_/g, ' ')}</button>`).join('');
 }

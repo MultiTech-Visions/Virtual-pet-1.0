@@ -35,7 +35,7 @@ from reachy_mini.vision.look_at import default_head_to_camera_transform  # noqa:
 from scipy.spatial.transform import Rotation as R  # noqa: E402
 
 from festival_pet.behavior import Behavior  # noqa: E402
-from festival_pet.main import AUDIO_RATE, Pet, PetParts  # noqa: E402
+from festival_pet.main import AUDIO_RATE, Pet, PetParts, ReachyIO  # noqa: E402
 from festival_pet.memory import FaceMemory  # noqa: E402
 from festival_pet.motion import MotionComposer  # noqa: E402
 from festival_pet.vision import Sighting  # noqa: E402
@@ -173,15 +173,10 @@ class FakeIO:
         self._commanded = list(antennas)
         self._r.set_target(head=head, antennas=antennas, body_yaw=body_yaw)
 
-    def sleep_body(self):
-        self._r.goto_sleep()
-        self._r.disable_motors()
-
-    def wake_body(self):
-        from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
-
-        self._r.enable_motors()
-        self._r.goto_target(head=INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=1.0)
+    # Same daemon moves as on the real robot (the sim daemon serves them too).
+    _daemon_move = ReachyIO._daemon_move
+    sleep_body = ReachyIO.sleep_body
+    wake_body = ReachyIO.wake_body
 
     def goto(self, head, antennas, duration):
         self._r.goto_target(head=head, antennas=antennas, duration=duration)
