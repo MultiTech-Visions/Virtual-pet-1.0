@@ -13,6 +13,7 @@ scripts/setup_offline.sh.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -118,6 +119,31 @@ class Sighting:
     ts: float  # wall-clock time of the frame
     roll_deg: float  # head tilt of the person (from the eye line), + = their head tilts to their left
     kind: str = "face"  # "face", or "body" when only a torso was found and (u, v) is where the head should be
+    head_yaw_deg: float = 0.0  # where the person's head is turned, + = toward image-left (rough, from landmarks)
+    head_pitch_deg: float = 0.0  # + = looking down (rough)
+    cx: float = 0.0  # normalised centre in [-1, 1], for rhythm detection
+    cy: float = 0.0
+
+
+def head_pose_from_landmarks(row: np.ndarray) -> tuple[float, float, float]:
+    """Rough (yaw, pitch, roll) in degrees of the person's head from YuNet's 5 landmarks.
+
+    Row: x, y, w, h, right_eye(x,y), left_eye(x,y), nose(x,y), mouth_right(x,y), mouth_left(x,y), score.
+    yaw   + = their nose moved toward image-left of the eye midpoint (they turned toward image-left).
+    pitch + = looking down (nose sits low between eyes and mouth).
+    roll  + = their head top leans toward image-left.
+    Good enough for mirroring games; not a measurement.
+    """
+    rex, rey, lex, ley, nx, ny, mrx, mry, mlx, mly = (float(v) for v in row[4:14])
+    eye_mid = ((rex + lex) / 2, (rey + ley) / 2)
+    mouth_mid = ((mrx + mlx) / 2, (mry + mly) / 2)
+    eye_dist = max(1.0, math.hypot(lex - rex, ley - rey))
+    face_h = max(1.0, mouth_mid[1] - eye_mid[1])
+    roll = math.degrees(math.atan2(ley - rey, lex - rex))
+    yaw = -60.0 * (nx - eye_mid[0]) / eye_dist  # nose left of the eye midpoint = turned toward image-left
+    ratio = (ny - eye_mid[1]) / face_h  # ~0.55 frontal
+    pitch = 120.0 * (ratio - 0.55)
+    return max(-45.0, min(45.0, yaw)), max(-30.0, min(30.0, pitch)), roll
 
 
 def _jpeg(crop_bgr: np.ndarray) -> bytes:
@@ -245,10 +271,9 @@ class Vision:
         x, y, w, h = row[:4]
         u = (x + w / 2) / scale
         v = (y + h * 0.45) / scale  # aim a little above bbox centre: between the eyes
-        # YuNet row: x, y, w, h, right_eye(x,y), left_eye(x,y), nose, mouth_r, mouth_l, score
-        rex, rey, lex, ley = row[4], row[5], row[6], row[7]
-        roll = float(np.degrees(np.arctan2(ley - rey, lex - rex)))
-        return Sighting(track.track_id, float(u), float(v), track.area_frac, track.person, track.similarity, head_pose, now, roll)
+        yaw_p, pitch_p, roll = head_pose_from_landmarks(row)
+        return Sighting(track.track_id, float(u), float(v), track.area_frac, track.person, track.similarity, head_pose, now, roll,
+                        "face", yaw_p, pitch_p, track.cx, track.cy)
 
     def _body_fallback(self, small: np.ndarray, scale: float, head_pose: np.ndarray, now: float) -> Sighting | None:
         """No face: look for a torso (cheaper rate) and report where the head should be, above it."""
@@ -267,7 +292,8 @@ class Vision:
         u = (x1 + x2) / 2 / scale
         v = max(1.0, (y1 - 0.15 * (y2 - y1))) / scale
         area = (x2 - x1) * (y2 - y1) / float(sw * sh)
-        return Sighting(-1, float(u), float(v), float(area), None, 0.0, head_pose, now, 0.0, "body")
+        return Sighting(-1, float(u), float(v), float(area), None, 0.0, head_pose, now, 0.0, "body",
+                        0.0, 0.0, (x1 + x2) / sw - 1.0, (y1 + y2) / sh - 1.0)
 
     def _select(self, faces: np.ndarray, sw: int, sh: int, now: float) -> tuple[np.ndarray, Track] | None:
         if len(faces) == 0:

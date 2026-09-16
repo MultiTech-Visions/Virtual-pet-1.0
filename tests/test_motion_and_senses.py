@@ -15,7 +15,7 @@ def _euler(pose):
 def test_gestures_stay_in_envelope_and_finish():
     m = MotionComposer()
     for name, (dur, _) in GESTURES.items():
-        assert m.request_gesture(name, 0.0, 5)
+        assert m.request_gesture(name, 0.0, 5, reps=1)
         for t in np.linspace(0.0, dur + 0.2, 60):
             head, ants, _ = m.sample(float(t), 0.02)
             roll, pitch, yaw = _euler(head)
@@ -187,3 +187,12 @@ def test_beep_sway_only_while_talking():
         m.voice_level = 0.0
         head, _, _ = m.sample(i * 0.02, 0.02)
     assert m._voice < 0.01
+
+
+def test_repeatable_nod_varies_and_lasts_longer():
+    m = MotionComposer()
+    assert m.request_gesture("nod", 0.0, 5, reps=3)
+    assert m.gesture_active(2.0) and not m.gesture_active(2.8)  # 3 x 0.9 s
+    m2 = MotionComposer()
+    m2.request_gesture("nod", 0.0, 5)
+    assert 2 <= m2._gesture.reps <= 4

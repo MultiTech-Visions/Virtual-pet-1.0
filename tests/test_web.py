@@ -177,3 +177,17 @@ def test_ears_are_deaf_while_the_pet_itself_makes_noise():
         fired |= feed(loud, t); t += 0.02
     assert not fired
     pet.stop()
+
+
+def test_settings_persist(tmp_path):
+    pet = _pet()
+    pet.settings_file = tmp_path / "settings.json"
+    pet.control("ears", False)
+    pet.control("groove_scale", 1.5)
+    pet.control("mimic_flip", False)
+    assert (tmp_path / "settings.json").exists()
+    pet2 = _pet()
+    pet2.settings_file = tmp_path / "settings.json"
+    pet2.load_settings()
+    assert pet2.audio.enabled is False and pet2.groove_scale == 1.5 and pet2.p.composer.mimic_flip is False
+    pet.stop(); pet2.stop()

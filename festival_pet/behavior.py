@@ -40,6 +40,8 @@ class FaceObs:
     person: Person | None  # None while unknown / not yet embedded
     similarity: float
     roll_deg: float = 0.0  # the person's head tilt
+    head_yaw_deg: float = 0.0  # where their head is turned (rough)
+    head_pitch_deg: float = 0.0
 
 
 @dataclass
@@ -63,13 +65,14 @@ class Observation:
     voice_started: bool = False  # someone began talking after a pause (edge)
     music_bpm: float = 0.0  # 0 when no confident beat
     music_confidence: float = 0.0
+    dance_bpm: float = 0.0  # someone visibly bobbing at this tempo (0 = nobody dancing)
 
 
 @dataclass
 class Action:
     """A request for the robot layer."""
 
-    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror", "heard"]
+    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror", "heard", "mimic"]
     name: str
     priority: int = 1  # higher preempts lower for gestures/moves
 
@@ -116,6 +119,10 @@ class Timers:
     sneeze_max: float = 900.0
     hiccup_chance_per_s: float = 0.002
     voice_glance_cooldown: float = 4.0
+    mimic_min_area: float = 0.08  # face must fill this much of the frame to start the mirror game...
+    mimic_hold: float = 2.0  # ...and stay for this long
+    mimic_max_s: float = 60.0
+    mimic_exit_area: float = 0.04  # they backed away
 
 
 @dataclass
@@ -168,6 +175,11 @@ class Behavior:
     _last_greet_person: int | None = None
     _face_hist: deque = field(default_factory=lambda: deque(maxlen=40))  # (t, yaw, pitch) for nod/shake mimicry
     _last_mimic: float = -1e9
+    _mimic_candidate_since: float = 0.0
+    _mimic_since: float = 0.0
+    mimicking: bool = False
+    _dance_since: float = 0.0
+    _dance_greeted: bool = False
 
     # gaze the motion layer should aim for (None = free to idle-drift)
     gaze: tuple[float, float] | None = None
@@ -333,9 +345,22 @@ class Behavior:
                 if now >= self._next_sing and self.state in ("IDLE", "ENGAGED") and self.mood.energy > 0.3:
                     self._next_sing = now + self.rng.uniform(6.0, 20.0)
                     actions.append(Action("sound", "sing", 0))
+        elif obs.dance_bpm > 0 and awake and self.state != "HELD" and now > self._dizzy_until:
+            # No music to hear, but someone is visibly dancing: dance along to what we see.
+            self._music_since = 0.0
+            if self._dance_since == 0.0:
+                self._dance_since = now
+            if not self._dance_greeted and now - self._dance_since > 1.0:
+                self._dance_greeted = True
+                self._think(now, f"they're dancing! (~{obs.dance_bpm:.0f} bpm) I'll dance too")
+                actions.append(Action("sound", "excited", 2))
+                actions.append(Action("gesture", "bounce", 2))
+            actions.append(Action("groove", f"{0.5 + 0.4 * self.mood.energy:.2f}|visual", 0))
         else:
             self._music_since = 0.0
             self._music_greeted = False
+            self._dance_since = 0.0
+            self._dance_greeted = False
             if now < self._little_dance_until and awake and self.state != "HELD":
                 actions.append(Action("groove", "0.90", 1))  # no music: dance to its own inner tempo
 
@@ -464,9 +489,29 @@ class Behavior:
                     self.memory.add_attention(self._engaged_person, dt)
                 self._last_interaction = now
 
+                # The mirror game: a close, steady face for a couple of seconds and it goes quiet and copies you.
+                if not self.mimicking:
+                    if face.area_frac >= t.mimic_min_area:
+                        if self._mimic_candidate_since == 0.0:
+                            self._mimic_candidate_since = now
+                        elif now - self._mimic_candidate_since >= t.mimic_hold and obs.dance_bpm == 0:
+                            self.mimicking, self._mimic_since = True, now
+                            self._think(now, "you're right up close... let's play mirror. I'll copy you")
+                            actions.append(Action("sound", "curious", 1))
+                    else:
+                        self._mimic_candidate_since = 0.0
+                elif face.area_frac < t.mimic_exit_area or now - self._mimic_since > t.mimic_max_s or obs.dance_bpm > 0:
+                    self.mimicking = False
+                    self._mimic_candidate_since = 0.0
+                    self._think(now, "mirror game over")
+                    actions.append(Action("gesture", "wiggle", 1))
+                if self.mimicking:
+                    actions.append(Action("mimic", f"{face.head_yaw_deg:.1f},{face.head_pitch_deg:.1f},{face.roll_deg:.1f}", 0))
+                    self._next_react = now + 5.0  # no micro-reactions while mirroring
+
                 # Mirror them: nod back at a nod, shake back at a shake (tilt is mirrored continuously by the body).
                 self._face_hist.append((now, face.yaw_deg, face.pitch_deg))
-                if now - self._last_mimic > t.mimic_cooldown:
+                if not self.mimicking and now - self._last_mimic > t.mimic_cooldown:
                     mimic = self._detect_nod_or_shake(now)
                     if mimic is not None:
                         self._last_mimic = now
@@ -507,6 +552,10 @@ class Behavior:
             else:  # no face this tick
                 self._close_since = 0.0
                 self._body_since = 0.0
+                self._mimic_candidate_since = 0.0
+                if self.mimicking and now - self._last_face_time > 1.0:
+                    self.mimicking = False
+                    self._think(now, "mirror game over (lost you)")
                 if self.state == "ENGAGED":
                     if now - self._last_face_time > t.face_lost_grace:
                         engaged_for = now - self._engaged_since
@@ -660,6 +709,7 @@ class Behavior:
             "engaged_person": None if self._engaged_person is None else self._engaged_person.person_id,
             "engaged_tier": None if self._engaged_person is None else self._engaged_person.tier(),
             "gaze": self.gaze,
+            "mimicking": self.mimicking,
         }
 
     def mind(self, now: float) -> dict:

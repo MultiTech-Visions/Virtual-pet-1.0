@@ -231,11 +231,35 @@ def test_nods_back_when_the_person_nods():
     import math
 
     b, _ = _brain()
-    still = FaceObs(1, 0.0, 0.0, 0.08, None, 0.0)
+    still = FaceObs(1, 0.0, 0.0, 0.04, None, 0.0)
     _run(b, lambda t: Observation(face=still), 0.0, 3.0)
-    nodding = lambda t: Observation(face=FaceObs(1, 0.0, 6.0 * math.sin(2 * math.pi * 1.5 * t), 0.08, None, 0.0))
+    nodding = lambda t: Observation(face=FaceObs(1, 0.0, 6.0 * math.sin(2 * math.pi * 1.5 * t), 0.04, None, 0.0))
     acts = _run(b, nodding, 3.0, 5.5)
     assert any(a.kind == "gesture" and a.name == "nod" for a in acts)
-    shaking = lambda t: Observation(face=FaceObs(1, 8.0 * math.sin(2 * math.pi * 1.5 * t), 0.0, 0.08, None, 0.0))
+    shaking = lambda t: Observation(face=FaceObs(1, 8.0 * math.sin(2 * math.pi * 1.5 * t), 0.0, 0.04, None, 0.0))
     acts = _run(b, shaking, 12.0, 14.5)
     assert any(a.kind == "gesture" and a.name == "shake" for a in acts)
+
+
+def test_mirror_game_starts_when_close_and_quiet_then_copies():
+    b, _ = _brain()
+    far = FaceObs(1, 0.0, 0.0, 0.03, None, 0.0)
+    _run(b, lambda t: Observation(face=far), 0.0, 3.0)
+    assert not b.mimicking
+    close = FaceObs(1, 0.0, 0.0, 0.12, None, 0.0, roll_deg=10.0, head_yaw_deg=20.0, head_pitch_deg=-5.0)
+    acts = _run(b, lambda t: Observation(face=close), 3.0, 6.0)
+    assert b.mimicking
+    mim = [a for a in acts if a.kind == "mimic"]
+    assert mim and mim[-1].name == "20.0,-5.0,10.0"
+    assert not any(a.kind == "sound" and a.name in ("giggle", "happy", "excited") for a in acts[-50:])
+    _run(b, lambda t: Observation(face=far), 6.0, 7.0)
+    assert not b.mimicking
+
+
+def test_visual_dancing_makes_it_groove():
+    b, _ = _brain()
+    face = FaceObs(1, 0.0, 0.0, 0.05, None, 0.0)
+    acts = _run(b, lambda t: Observation(face=face, dance_bpm=120.0), 0.0, 4.0)
+    grooves = [a for a in acts if a.kind == "groove"]
+    assert grooves and grooves[-1].name.endswith("|visual")
+    assert any(a.name == "excited" for a in acts)

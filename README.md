@@ -26,7 +26,9 @@ is the one-time setup below.
 | Music | beat tracker on the mic stream (spectral flux + autocorrelation) | subtle head bob and antenna sway on the beat, three groove styles, the odd "sing-along" blip |
 | Peekaboo | face hidden 0.6–3.5 s then back | giggle + bounce |
 | Being stared at | same face very close for 14 s | goes shy: looks away, antennas fold, peeks back |
-| Empathy | the person's head tilt (eye line) | slowly mirrors the tilt |
+| Empathy | the person's head tilt (eye line) | slowly mirrors the tilt; nods back 2–4 times when you nod, shakes back when you shake |
+| Mirror game | a face filling the frame (≥ 8 %) and holding for 2 s | goes quiet and copies your head pose (yaw, pitch, roll estimated from the five face landmarks), mirror-image by default (flip on the Controls tab); ends when you back away or after a minute |
+| Dancing (seen) | the tracked face/body bobbing rhythmically at 50–150 BPM for 2.5 s | dances along at the tempo it sees; no microphone needed |
 | Time | – | energy drains while awake, refills asleep; lonely after 90 s alone, nods off, sleeps after 7 min; rare sneezes and hiccups |
 | Sleep | – | nests its head using the SDK's sleep pose, then **motors off** and **camera paused**. The ears stay on: its name, a loud voice after quiet, a head pet or an ear tickle wake it (motors on, head lifts) |
 
@@ -148,8 +150,11 @@ Polls the app twice a second. Tabs:
   affection. Tap two cards and **merge** them when it split one person into two entries
   (the first tapped is kept; embeddings and stats combine). **Forget** a single person, or
   everyone.
-- **Controls** – wake/sleep, mute, groove intensity, face-match strictness, and a puppet
-  panel: every sound, gesture and library move as a tap-to-fire button.
+- **Controls** – wake/sleep, mute, pickup on/off, body finder on/off, **ears on/off** (stops all
+  microphone processing, for dead mics or CPU), mirror-game direction, groove intensity,
+  face-match strictness, speaker volume, shut down / reboot, and a puppet panel: every sound,
+  gesture and library move as a tap-to-fire button. All switches and sliders are remembered
+  across restarts (`~/.local/share/festival_pet/settings.json`).
 - **Log** – the app's own log ring (last 400 lines). The daemon's per-app log is on the
   dashboard too.
 

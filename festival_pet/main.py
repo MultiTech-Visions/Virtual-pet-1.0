@@ -16,6 +16,7 @@ MuJoCo simulator with fake senses (see scripts/sim_harness.py).
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -39,6 +40,7 @@ from festival_pet.memory import FaceMemory
 from festival_pet.motion import MotionComposer
 from festival_pet.senses import LoudSoundDetector, PickupDetector, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
+from festival_pet.visual_rhythm import DanceDetector
 
 logger = logging.getLogger("festival_pet")
 
@@ -63,6 +65,7 @@ SFACE_MODEL = DATA_DIR / "models" / "face_recognition_sface_2021dec.onnx"
 VOSK_MODEL = DATA_DIR / "models" / "vosk-model-small-en-us-0.15"
 PERSON_MODEL = DATA_DIR / "models" / "person_detection_mediapipe_2023mar.onnx"
 MEMORY_FILE = DATA_DIR / "memory.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
 
 CONTROL_HZ = 50.0
 PLAY_LIBRARY_SOUNDS = False  # True = play Pollen's sidecar sound with library moves instead of our beeps
@@ -178,6 +181,7 @@ class AudioSense:
         self.speech_edge = False  # set when speech starts after a pause; consumed by the main loop
         self.deaf_until = 0.0  # the mics sit next to the speaker: ignore touch/voice events while we make noise
         self.own_sound_until: Callable[[], float] = lambda: 0.0
+        self.enabled = True  # "ears off": drain the mic but do no processing (dead mics, or to save CPU)
         self.spotter = spotter  # NameSpotter or None
         self._events: queue.Queue[tuple[str, str, float | None]] = queue.Queue()
         self._stop = threading.Event()
@@ -252,6 +256,8 @@ class AudioSense:
                 time.sleep(0.005)
                 continue
             self.stats["chunks"] += 1
+            if not self.enabled:
+                continue
             self.beat.push(chunk, now)
             scratched = self.scratch.push(chunk, now)
             rubbed = self.rub.push(chunk, now)
@@ -342,6 +348,9 @@ class Pet:
         self._touch_settle_left = -1.0  # seconds of ticks to wait after sleep/wake before re-zeroing the ear detector
         self.set_vision_active: Callable[[bool], None] = lambda active: None
         self.transcript: deque[tuple[float, str, list[str]]] = deque(maxlen=30)
+        self.dance = DanceDetector()
+        self._last_rhythm_ts = 0.0
+        self.settings_file: Path | None = None
         self._last_obs = Observation()
 
     # ------------------------------------------------------------------ lifecycle
@@ -410,6 +419,13 @@ class Pet:
                 obs.face = self._to_face_obs(sighting)
             else:
                 obs.body = self._to_face_obs(sighting)
+            if sighting.ts != self._last_rhythm_ts:  # one rhythm sample per detection
+                self._last_rhythm_ts = sighting.ts
+                self.dance.push(sighting.ts, sighting.cx, sighting.cy)
+        elif self.dance.state.dancing and now - self._last_rhythm_ts > 2.0:
+            self.dance.push(now, 0.0, 0.0)  # nobody in view: let the rhythm decay
+        if self.dance.state.dancing:
+            obs.dance_bpm = self.dance.state.bpm
         for kind, value, yaw in self.audio.poll():
             if kind == "scratch":
                 obs.scratched = True
@@ -440,6 +456,7 @@ class Pet:
         comp.set_gaze(beh.gaze)
         comp.groove = None
         comp.mirror_roll = 0.0
+        comp.mimic = None
         comp.voice_level = self.sound.level(now)  # the body moves with every beep it makes
         for act in actions:
             self._dispatch(act, now)
@@ -477,7 +494,7 @@ class Pet:
         io = self.p.io
         pose = look_at_image_pose(s.u, s.v, io.K, io.D, s.head_pose_at_capture, io.T_head_cam)
         roll, pitch, yaw = R.from_matrix(pose[:3, :3]).as_euler("xyz", degrees=True)
-        return FaceObs(s.track_id, float(yaw), float(pitch), s.area_frac, s.person, s.similarity, s.roll_deg)
+        return FaceObs(s.track_id, float(yaw), float(pitch), s.area_frac, s.person, s.similarity, s.roll_deg, s.head_yaw_deg, s.head_pitch_deg)
 
     def _dispatch(self, act: Action, now: float) -> None:
         comp = self.p.composer
@@ -532,13 +549,20 @@ class Pet:
                     self.p.behavior.state, self.p.behavior._state_since = "IDLE", time.time()
         elif act.kind == "groove":
             beat = self.audio.beat
-            if beat.music:
+            intensity, _, source = act.name.partition("|")
+            if source == "visual" and self.dance.state.dancing:  # dance along with what it sees
+                period, t0 = 60.0 / self.dance.state.bpm, 0.0
+                phase = self.dance.phase(now)
+            elif beat.music:
                 phase, period, t0 = beat.phase(now), beat.state.period, beat._last_beat_time
             else:  # no music: the little-dance trick bobs to its own inner tempo
                 period, t0 = 60.0 / FREE_DANCE_BPM, 0.0
                 phase = (now / period) % 1.0
             bar = ((now - t0) / (4 * period)) % 1.0
-            comp.groove = (phase, bar, float(act.name) * self.groove_scale)
+            comp.groove = (phase, bar, float(intensity) * self.groove_scale)
+        elif act.kind == "mimic":
+            y, p_, r = (float(x) for x in act.name.split(","))
+            comp.mimic = (y, p_, r)
         elif act.kind == "mirror":
             comp.mirror_roll = float(act.name)
         elif act.kind == "heard":
@@ -568,6 +592,8 @@ class Pet:
                 "face": None if o.face is None else {"track": o.face.track_id, "yaw": round(o.face.yaw_deg, 1), "pitch": round(o.face.pitch_deg, 1), "size": round(o.face.area_frac, 3), "person": None if o.face.person is None else o.face.person.person_id, "similarity": round(o.face.similarity, 2), "tilt": round(o.face.roll_deg, 1)},
                 "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
+                "dance": {"dancing": self.dance.state.dancing, "bpm": round(self.dance.state.bpm, 1), "confidence": round(self.dance.state.confidence, 2), "amplitude": round(self.dance.state.amplitude, 3)},
+                "mimic": None if comp.mimic is None else {"yaw": round(comp.mimic[0], 1), "pitch": round(comp.mimic[1], 1), "roll": round(comp.mimic[2], 1)},
                 "listening": self.audio.stats["listening"], "voice_yaw": self.audio.last_voice_yaw,
                 "doa": None if self.audio.doa is None else {"angle_deg": round(math.degrees(self.audio.doa[0]), 0), "speech": self.audio.doa[1]},
                 "speech_s_ago": round(now - self.audio.last_speech_time, 1) if self.audio.last_speech_time > 0 else None,
@@ -575,7 +601,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "audio_history": self.audio.meter.history(),
             "recent_actions": [{"t": round(now - t, 1), "a": f"{k}:{n}"} for t, k, n in reversed(self.actions_log[-20:])],
@@ -605,6 +631,10 @@ class Pet:
             self.muted = bool(value)
         elif cmd == "pickup":
             self.pickup_enabled = bool(value)
+        elif cmd == "ears":
+            self.audio.enabled = bool(value)
+        elif cmd == "mimic_flip":
+            self.p.composer.mimic_flip = bool(value)
         elif cmd == "groove_scale":
             self.groove_scale = float(value)
         elif cmd == "scratch_onset_ratio":
@@ -632,7 +662,36 @@ class Pet:
             self.p.memory.save(force=True)
         else:
             raise KeyError(f"unknown control '{cmd}'")
+        self.save_settings()
         return {"ok": True}
+
+    # ------------------------------------------------------------------ settings persistence
+    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+
+    def _settings(self) -> dict:
+        c = self.mind()["controls"]
+        return {k: c[k] for k in self._SETTING_KEYS if k in c and c[k] is not None}
+
+    def save_settings(self) -> None:
+        if self.settings_file is None:
+            return
+        self.settings_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.settings_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._settings(), indent=1))
+        tmp.replace(self.settings_file)
+
+    def load_settings(self) -> None:
+        if self.settings_file is None or not self.settings_file.exists():
+            return
+        data = json.loads(self.settings_file.read_text())
+        names = {"muted": "mute"}  # setting key -> control name where they differ
+        for k, v in data.items():
+            if k not in self._SETTING_KEYS:
+                continue
+            if k == "body_finder" and getattr(self, "vision", None) is None:
+                continue
+            self.control(names.get(k, k), v)
+        logger.info("settings restored from %s: %s", self.settings_file, data)
 
 
 # ============================================================================ real robot
@@ -781,6 +840,8 @@ def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool 
     pet = Pet(parts)
     pet.set_vision_active = vision.set_active
     pet.vision = vision
+    pet.settings_file = SETTINGS_FILE
+    pet.load_settings()
     return pet, vision, io
 
 

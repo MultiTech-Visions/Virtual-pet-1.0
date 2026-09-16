@@ -73,8 +73,9 @@ def _pulse(u: float) -> float:
     return math.sin(math.pi * u)
 
 
-def g_nod(u: float) -> Offsets:
-    return Offsets(pitch=12.0 * math.sin(2 * math.pi * u * 2) * (1 - u), ant_r=-0.15 * _pulse(u), ant_l=0.15 * _pulse(u))
+def g_nod(u: float, reps: float = 2.0) -> Offsets:
+    """``reps`` full nods over the gesture; the last one fades out."""
+    return Offsets(pitch=12.0 * math.sin(2 * math.pi * u * reps) * (1 - 0.6 * u), ant_r=-0.15 * _pulse(u), ant_l=0.15 * _pulse(u))
 
 
 def g_tilt(u: float, side: float) -> Offsets:
@@ -182,9 +183,9 @@ def g_flinch(u: float, side: float) -> Offsets:
     return off
 
 
-def g_shake(u: float) -> Offsets:
-    """A clear 'no'/shake-back: two yaw swings, antennas along for the ride."""
-    sw = math.sin(2 * math.pi * 2 * u) * (1 - 0.3 * u)
+def g_shake(u: float, reps: float = 2.0) -> Offsets:
+    """A clear shake-back: ``reps`` yaw swings, antennas along for the ride."""
+    sw = math.sin(2 * math.pi * reps * u) * (1 - 0.3 * u)
     return Offsets(yaw=14.0 * sw, ant_r=0.25 * sw, ant_l=0.25 * sw)
 
 
@@ -201,7 +202,7 @@ def g_glance(u: float, side: float) -> Offsets:
 
 GESTURES: dict[str, tuple[float, str]] = {
     # name: (duration s, kind)  kind "sided" gestures get a random left/right sign
-    "nod": (0.9, "plain"),
+    "nod": (0.9, "repeat"),  # duration is per repetition
     "tilt": (1.1, "sided"),
     "wiggle": (0.8, "plain"),
     "bounce": (1.2, "plain"),
@@ -220,7 +221,7 @@ GESTURES: dict[str, tuple[float, str]] = {
     "tada": (1.6, "plain"),
     "flinch": (1.2, "sided"),
     "lean": (2.4, "plain"),
-    "shake": (1.1, "plain"),
+    "shake": (0.55, "repeat"),
 }
 
 _FUNCS = {
@@ -269,6 +270,7 @@ class _ActiveGesture:
     duration: float
     priority: int
     side: float
+    reps: int = 1
 
 
 class MotionComposer:
@@ -291,6 +293,10 @@ class MotionComposer:
         self._mirror = 0.0
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
+        self.mimic: tuple[float, float, float] | None = None  # (yaw, pitch, roll) of the person's head to copy, or None
+        self.mimic_flip = True  # mirror-image (True) or same-direction copy (False) for yaw and roll
+        self.mimic_gain = 0.9
+        self._mimic_pose = np.zeros(3)
         self.voice_level = 0.0  # 0..1 loudness of the pet's own beeps; drives a little "talking" sway
         self._voice = 0.0
         self._voice_phases = [self.rng.uniform(0, 2 * math.pi) for _ in range(4)]
@@ -299,8 +305,11 @@ class MotionComposer:
     def set_gaze(self, target: tuple[float, float] | None) -> None:
         self._gaze_target = target
 
-    def request_gesture(self, name: str, now: float, priority: int, side: float | None = None) -> bool:
-        """Start a gesture unless a higher-priority one is still running. ``side`` forces ±1 for sided gestures."""
+    def request_gesture(self, name: str, now: float, priority: int, side: float | None = None, reps: int | None = None) -> bool:
+        """Start a gesture unless a higher-priority one is still running.
+
+        ``side`` forces ±1 for sided gestures; ``reps`` sets repetitions for repeatable ones (random 2-4 if None).
+        """
         if name not in GESTURES:
             raise KeyError(f"Unknown gesture '{name}'")
         active = self._gesture
@@ -308,7 +317,11 @@ class MotionComposer:
             return False
         duration, kind = GESTURES[name]
         side = (side if side is not None else self.rng.choice((-1.0, 1.0))) if kind == "sided" else 1.0
-        self._gesture = _ActiveGesture(name, now, duration, priority, side)
+        n = 1
+        if kind == "repeat":
+            n = reps if reps is not None else self.rng.randint(2, 4)
+            duration *= n
+        self._gesture = _ActiveGesture(name, now, duration, priority, side, n)
         return True
 
     def gesture_active(self, now: float) -> bool:
@@ -325,8 +338,11 @@ class MotionComposer:
             self._gesture = None
             return Offsets()
         fn = _FUNCS[g.name]
-        if GESTURES[g.name][1] == "sided":
+        kind = GESTURES[g.name][1]
+        if kind == "sided":
             return fn(u, g.side)  # type: ignore[call-arg]
+        if kind == "repeat":
+            return fn(u, float(g.reps))  # type: ignore[call-arg]
         return fn(u)  # type: ignore[call-arg]
 
     def sample(self, now: float, dt: float) -> tuple[np.ndarray, list[float], float]:
@@ -380,8 +396,22 @@ class MotionComposer:
             off.ant_r += -0.15 * v
             off.ant_l += 0.15 * v
 
-        # mirror the person's head tilt a little (slow, so it reads as empathy not tracking)
-        self._mirror += (max(-20.0, min(20.0, self.mirror_roll * 0.8)) - self._mirror) * min(1.0, dt * 1.5)
+        # mimic game: copy the person's head pose (mirror-image by default), smoothly, on top of looking at them
+        if self.mimic is not None:
+            sign = -1.0 if self.mimic_flip else 1.0
+            target = np.array([sign * self.mimic[0], self.mimic[1], sign * self.mimic[2]]) * self.mimic_gain
+        else:
+            target = np.zeros(3)
+        self._mimic_pose += (target - self._mimic_pose) * min(1.0, dt * 3.0)
+        off.yaw += float(self._mimic_pose[0])
+        off.pitch += float(self._mimic_pose[1])
+        off.roll += float(self._mimic_pose[2])
+
+        # otherwise mirror the person's head tilt a little (slow, so it reads as empathy not tracking)
+        if self.mimic is None:
+            self._mirror += (max(-20.0, min(20.0, self.mirror_roll * 0.8)) - self._mirror) * min(1.0, dt * 1.5)
+        else:
+            self._mirror += (0.0 - self._mirror) * min(1.0, dt * 1.5)
         off.roll += self._mirror
 
         # gesture overlay
