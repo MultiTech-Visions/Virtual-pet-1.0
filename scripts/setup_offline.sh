@@ -7,7 +7,7 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PY=/venvs/apps_venv/bin/python
+PY="${FESTIVAL_PET_PYTHON:-/venvs/apps_venv/bin/python}"  # override only for testing the installer
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/festival_pet"
 MODELS="$DATA_DIR/models"
 
@@ -15,7 +15,7 @@ echo "== installing app into the daemon's apps venv"
 if [ ! -x "$PY" ]; then
   echo "apps venv not found at $PY (is this the wireless unit?)" >&2; exit 1
 fi
-"$PY" -m pip install --upgrade "$APP_DIR"
+"$PY" -m pip install --upgrade --timeout 180 --retries 8 "$APP_DIR"
 
 echo "== downloading face models to $MODELS"
 mkdir -p "$MODELS"

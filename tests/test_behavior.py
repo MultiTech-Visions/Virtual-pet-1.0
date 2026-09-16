@@ -86,13 +86,14 @@ def test_sleeping_wakes_on_persistent_face_only():
     assert b.state == "WAKING"
 
 
-def test_touch_while_engaged_counts_as_pet():
+def test_ear_touch_while_engaged_is_a_tickle_not_a_pet():
     b, mem = _brain()
     p = mem.enroll(np.ones(4), now=0.0)
     face = FaceObs(1, 0.0, 0.0, 0.1, p, 0.9)
     _run(b, lambda t: Observation(face=face), 0.0, 1.0)
-    _run(b, lambda t: Observation(face=face, touched=(t < 1.1)), 1.0, 2.0)
-    assert p.pets == 1
+    acts = _run(b, lambda t: Observation(face=face, touched=(t < 1.1), touched_side=0), 1.0, 2.0)
+    assert any(a.name == "flinch:-" for a in acts)
+    assert p.pets == 0
 
 
 def test_name_call_perks_and_turns_toward_voice():
@@ -151,3 +152,24 @@ def test_peekaboo_and_shy():
     close = FaceObs(1, 0.0, 0.0, 0.2, None, 0.0)
     acts = _run(b, lambda t: Observation(face=close), 4.5, 22.0)
     assert any(a.name == "shy" for a in acts)
+
+
+def test_ear_tickle_flinches_then_gets_annoyed():
+    b, _ = _brain()
+    acts = _run(b, lambda t: Observation(touched=(t < 0.05), touched_side=1), 0.0, 1.5)
+    flinch = [a for a in acts if a.kind == "gesture" and a.name.startswith("flinch")]
+    assert flinch and flinch[0].name == "flinch:+"
+    for k in range(3):
+        t0 = 1.5 + k * 1.5
+        acts = _run(b, lambda t, t0=t0: Observation(touched=(t < t0 + 0.05), touched_side=0), t0, t0 + 1.5)
+    assert any(a.name == "annoyed" for a in acts)
+
+
+def test_head_pet_leans_in_and_purrs_while_it_lasts():
+    b, mem = _brain()
+    p = mem.enroll(np.ones(4), now=0.0)
+    face = FaceObs(1, 0.0, 0.0, 0.1, p, 0.9)
+    _run(b, lambda t: Observation(face=face), 0.0, 1.0)
+    acts = _run(b, lambda t: Observation(face=face, petted=(t < 1.05), petting=True), 1.0, 8.0)
+    assert any(a.name == "lean" for a in acts) and p.pets == 1
+    assert sum(1 for a in acts if a.name == "purr") >= 2

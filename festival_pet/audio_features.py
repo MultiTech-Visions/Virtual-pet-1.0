@@ -240,3 +240,80 @@ class ScratchDetector:
                     self._clicks.clear()
                     event = True
         return event
+
+
+class RubDetector:
+    """Detects a hand rubbing the head: the mics sit in the head, so petting is loud, noisy, sustained.
+
+    Handling noise is broadband and flat (noise-like, spectral flatness high), far
+    above the ambient level in the low-mid band, and lasts a good fraction of a
+    second. Music is harmonic (low flatness); a scratch is a train of clicks
+    (too short); speech is neither flat nor that loud at the mic capsules.
+    Emits an edge when a rub starts and keeps ``rubbing`` true while it lasts.
+    """
+
+    def __init__(
+        self,
+        sample_rate: int = SAMPLE_RATE,
+        hop: int = 512,
+        band_hz: tuple[float, float] = (80.0, 2500.0),
+        level_ratio: float = 12.0,
+        flatness_min: float = 0.35,
+        floor: float = 3e-3,
+        min_duration_s: float = 0.5,
+        release_s: float = 0.4,
+        cooldown_s: float = 4.0,
+    ) -> None:
+        self._sr = sample_rate
+        self._hop = hop
+        self._framer = _Framer(hop)
+        self._win = np.hanning(hop).astype(np.float32)
+        freqs = np.fft.rfftfreq(hop, 1.0 / sample_rate)
+        self._band = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+        self._level_ratio = level_ratio
+        self._flatness_min = flatness_min
+        self._floor = floor
+        self._min_duration = min_duration_s
+        self._release = release_s
+        self._cooldown = cooldown_s
+        self._history: deque[float] = deque(maxlen=int(3.0 * sample_rate / hop))  # ~3 s of band energy
+        self._rub_since: float | None = None
+        self._last_rub_frame_t = -1e9
+        self._last_event = -1e9
+        self._frames_in_rub = 0
+        self._loud_in_rub = 0
+        self.rubbing = False
+        self.stats = {"rub_energy": 0.0, "rub_baseline": 0.0, "flatness": 0.0}
+
+    def push(self, mono: np.ndarray, now: float) -> bool:
+        """Feed audio; returns True once when a rub is recognised (``rubbing`` stays True while it lasts)."""
+        event = False
+        for frame in self._framer.push(mono):
+            spec = np.abs(np.fft.rfft(frame * self._win)) ** 2
+            band = spec[self._band]
+            energy = float(np.mean(band))
+            # Spectral flatness: geometric mean / arithmetic mean of the band power.
+            flat = float(np.exp(np.mean(np.log(band + 1e-12))) / (energy + 1e-12))
+            base = float(np.median(self._history)) if len(self._history) >= 10 else energy
+            self._history.append(energy)
+            self.stats["rub_energy"], self.stats["rub_baseline"], self.stats["flatness"] = energy, base, flat
+            loud_flat = energy > self._floor and energy > self._level_ratio * base and flat > self._flatness_min
+            if loud_flat:
+                self._last_rub_frame_t = now
+                if self._rub_since is None:
+                    self._rub_since = now
+                    self._frames_in_rub = self._loud_in_rub = 0
+            if self._rub_since is not None:
+                self._frames_in_rub += 1
+                self._loud_in_rub += int(loud_flat)
+            if self._rub_since is not None and now - self._last_rub_frame_t > self._release:
+                self._rub_since = None
+                self.rubbing = False
+            # A rub is *continuously* loud; a train of clicks is loud only a few frames out of ten.
+            dense = self._frames_in_rub > 0 and self._loud_in_rub / self._frames_in_rub >= 0.6
+            if self._rub_since is not None and now - self._rub_since >= self._min_duration and dense and not self.rubbing:
+                self.rubbing = True
+                if now - self._last_event > self._cooldown:
+                    self._last_event = now
+                    event = True
+        return event

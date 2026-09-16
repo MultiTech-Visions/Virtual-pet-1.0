@@ -7,3 +7,6 @@ dist/
 *.onnx
 *.zip
 memory.json
+dist/
+build/
+*.spec

@@ -15,7 +15,8 @@ is the one-time setup below.
 | Faces | camera, YuNet at 320 px (~8 Hz) | locks onto the closest face, looks at it, micro-reacts every few seconds |
 | Who is it | SFace embeddings, only on new tracks / every 4 s | stranger → curious "oh? hi!", friend → happy trill + wiggle, bestie → fanfare + a library move |
 | Picked up | IMU accel/gyro in the base | startle, then purrs and snuggles; shaking → dizzy wobble |
-| Petting | antenna pushed off its commanded angle | giggle + antenna wiggle, counts as affection for the person in front |
+| Head pets | hand rubbing the head, heard by the mics inside it | purrs and leans into the hand; keeps purring while it lasts; counts as affection for the person in front |
+| Ear tickles | an antenna pushed off its commanded angle | flicks that antenna away and ducks, like a dog with its ear touched; giggles; the fourth tickle in a row gets an annoyed huff |
 | Loud voice after quiet | mic array direction-of-arrival | perks up and looks toward it (heavily rate-limited: festivals are loud) |
 | Its name | Vosk keyword spotting, only while the mic array flags speech | "Reachy!" → "huh? me?" chirp, perks up, turns toward the voice, listens for a trick for 8 s |
 | Tricks | same grammar: `dance`, `hello`/`hi`, `good`, `sleep` | "Reachy, dance" → 6 s little groove; a second "dance" within 15 s → a lively library dance |
@@ -42,6 +43,9 @@ full-body moves from Pollen's emotions library for big moments.
   ("peachy", "reach", "beach") to absorb near-misses. Verified on synthesized speech in
   several voices (`tests/test_hearing.py`). Recognition only runs while the ReSpeaker flags
   speech, so it costs nothing while music plays.
+- **Head pets**: the four mics sit in the head, so a hand rubbing it produces loud, flat
+  (noise-like), continuous handling noise, unlike music (harmonic) or a scratch (sparse
+  clicks). Tuning readout and slider on the Senses tab.
 - **Belly scratch**: fingernails on the shell reach the mics as structure-borne clicks that
   are very short, broadband and strong above 3 kHz. The detector wants 4+ such clicks within
   1.2 s that each decay within ~30 ms (consonants and hi-hats ring longer). Tested against
@@ -71,7 +75,27 @@ scripts/sim_harness.py     drives the whole pet against the SDK's MuJoCo simulat
 tests/                     pytest suite for everything that does not need the robot
 ```
 
-## One-time setup (robot online)
+## Installing and updating: the double-click installer
+
+`installer/` holds a small desktop app that does everything below for you. Download
+**FestivalPetInstaller** for your computer from the GitHub Actions "Build installer" run
+(Artifacts section) of this branch, open it, and press *Install / Update*:
+
+1. It asks for the robot's address (`reachy-mini.local`), the SSH user and password
+   (factory default `pollen` / `root`).
+2. It checks it can reach the robot, that the daemon is the wireless version, and that the
+   robot has internet (needed the first time for the ~80 MB of models; later updates work
+   offline once the models are cached).
+3. It uploads the app files bundled inside the installer (or, if you untick that box, the
+   latest from GitHub), runs the setup script on the robot, streams its output into the
+   window, then makes the pet the start-up app and starts it.
+
+Run it again whenever there is a new version: the same steps upgrade in place. On macOS the
+first launch may need right-click → Open (unsigned app). Developers can also run it from
+source with `python installer/reachy_installer.py` (needs `paramiko`), or headless with
+`--cli`.
+
+## Manual setup (terminal, robot online)
 
 From your laptop, on the same Wi-Fi as the robot:
 

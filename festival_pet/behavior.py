@@ -24,6 +24,10 @@ from festival_pet.memory import FaceMemory, Person
 State = Literal["SLEEPING", "WAKING", "IDLE", "ENGAGED", "SEARCHING", "HELD"]
 
 
+def awake_now(state: str) -> bool:
+    return state not in ("SLEEPING", "WAKING")
+
+
 @dataclass
 class FaceObs:
     """One tracked face for this tick (from the vision thread)."""
@@ -44,7 +48,10 @@ class Observation:
     face: FaceObs | None = None
     held: bool = False
     shaken: bool = False
-    touched: bool = False  # antenna pushed this tick (edge, not level)
+    touched: bool = False  # an antenna ("ear") was pushed this tick (edge, not level)
+    touched_side: int = 0  # 0 right, 1 left
+    petted: bool = False  # hand rubbing the head this tick (edge)
+    petting: bool = False  # rub still going on (level)
     loud_yaw_deg: float | None = None  # direction of a sudden loud sound, if any
     scratched: bool = False  # fingernails on the shell this tick (edge)
     name_heard: bool = False  # someone said "Reachy" (edge)
@@ -140,6 +147,9 @@ class Behavior:
     _music_since: float = 0.0
     _music_greeted: bool = False
     _little_dance_until: float = -1e9
+    _ear_tickles: int = 0
+    _last_ear_tickle: float = -1e9
+    _last_pet_purr: float = -1e9
 
     # gaze the motion layer should aim for (None = free to idle-drift)
     gaze: tuple[float, float] | None = None
@@ -201,11 +211,37 @@ class Behavior:
                 actions.append(Action("wake", "touch", 5))
                 self._enter("WAKING", now)
             else:
-                actions.append(Action("sound", self.rng.choice(["giggle", "happy", "purr"]), 2))
-                actions.append(Action("gesture", "wiggle", 2))
-                self.mood.social += 0.05
+                # Ears are ticklish: pull the touched antenna away like a dog flicking its ear, and giggle.
+                self._ear_tickles = self._ear_tickles + 1 if now - self._last_ear_tickle < 6.0 else 1
+                self._last_ear_tickle = now
+                side = "left" if obs.touched_side == 1 else "right"
+                if self._ear_tickles >= 4:
+                    self._think(now, f"my {side} ear again?! okay that's enough")
+                    actions.append(Action("sound", "annoyed", 3))
+                    actions.append(Action("gesture", "shake_off", 3))
+                    self._ear_tickles = 0
+                else:
+                    self._think(now, f"eek, my {side} ear! ticklish")
+                    actions.append(Action("sound", self.rng.choice(["giggle", "ticklish"]), 2))
+                    actions.append(Action("gesture", f"flinch:{'+' if obs.touched_side == 1 else '-'}", 3))
+                self.mood.social += 0.03
+
+        if obs.petted:
+            self._last_interaction = now
+            if self.state == "SLEEPING":
+                actions.append(Action("wake", "pet", 5))
+                self._enter("WAKING", now)
+            else:
+                self._think(now, "ahh, head pets... leaning in")
+                actions.append(Action("sound", self.rng.choice(["purr", "content"]), 3))
+                actions.append(Action("gesture", "lean", 3))
+                self.mood.social += 0.08
                 if self._engaged_person is not None:
                     self.memory.add_pet(self._engaged_person)
+        elif obs.petting and awake_now(self.state) and now - self._last_pet_purr > 3.0:
+            self._last_pet_purr = now
+            actions.append(Action("sound", "purr", 1))
+            actions.append(Action("gesture", "lean", 1))
 
         awake = self.state not in ("SLEEPING", "WAKING")
 

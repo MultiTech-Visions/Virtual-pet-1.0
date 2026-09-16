@@ -75,8 +75,10 @@ class TouchDetector:
     def __post_init__(self) -> None:
         self._pressed = [False, False]
         self._over = [0, 0]
+        self.last_side = 0
 
     def update(self, commanded: list[float], present: list[float], busy: bool = False) -> bool:
+        """Edge: True on the tick a press begins. ``last_side`` then says which antenna (0 right, 1 left)."""
         edge = False
         press = self.press_rad * (self.busy_scale if busy else 1.0)
         for i in range(2):
@@ -87,6 +89,7 @@ class TouchDetector:
                 self._over[i] = 0
             if not self._pressed[i] and self._over[i] >= self.persist_ticks:
                 self._pressed[i] = True
+                self.last_side = i
                 edge = True
             elif self._pressed[i] and dev < self.release_rad:
                 self._pressed[i] = False

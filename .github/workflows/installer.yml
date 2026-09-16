@@ -1,0 +1,30 @@
+name: Build installer
+
+on:
+  push:
+    branches: ["**"]
+    paths: ["installer/**", "festival_pet/**", "scripts/**", "pyproject.toml", ".github/workflows/installer.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: FestivalPetInstaller-windows
+          - os: macos-latest
+            artifact: FestivalPetInstaller-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        shell: bash
+        run: bash installer/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/FestivalPetInstaller*

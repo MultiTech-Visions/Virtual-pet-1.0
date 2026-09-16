@@ -78,6 +78,12 @@
   <div class="card"><h2>Eyes</h2><div class="kv" id="eyes"></div></div>
   <div class="card"><h2>Ears</h2><div class="kv" id="ears"></div></div>
   <div class="card"><h2>Body</h2><div class="kv" id="body"></div></div>
+  <div class="card"><h2>Head-pet tuning</h2>
+    <div class="sub">Rub the top of the head (the mics are in there). Rub energy should jump far above the baseline with flatness > 0.35 while you rub. Lower the ratio if petting is not noticed, raise it if loud music triggers it.</div>
+    <div class="kv" id="rub"></div>
+    <label>Level ratio: <span id="rub-v"></span></label>
+    <input type="range" min="3" max="40" step="1" id="rubr" oninput="setVal('rub_level_ratio', this.value, 'rub-v')">
+  </div>
   <div class="card"><h2>Belly scratch tuning</h2>
     <div class="sub">Scratch the shell and watch band energy jump well above the median. Lower the ratio if it never fires, raise it if music sets it off.</div>
     <div class="kv" id="scratch"></div>
@@ -190,10 +196,12 @@ async function refresh() {
     $('actions').innerHTML = d.recent_actions.map(a => `<li><small>${a.t}s ago</small>${a.a}</li>`).join('');
     kv('eyes', s.face ? s.face : {face: 'none'});
     kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '°'});
-    kv('body', {held: s.held, shaken: s.shaken});
+    kv('body', {held: s.held, shaken: s.shaken, 'head being petted': s.head_pet.rubbing});
     kv('scratch', s.scratch);
+    kv('rub', s.head_pet);
     if (!slidersInit) { slidersInit = true;
       $('ratio').value = d.controls.scratch_onset_ratio; $('ratio-v').textContent = d.controls.scratch_onset_ratio;
+      $('rubr').value = d.controls.rub_level_ratio; $('rub-v').textContent = d.controls.rub_level_ratio;
       $('groove').value = d.controls.groove_scale; $('groove-v').textContent = d.controls.groove_scale;
       $('match').value = d.controls.match_threshold; $('match-v').textContent = d.controls.match_threshold;
       muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute'; }

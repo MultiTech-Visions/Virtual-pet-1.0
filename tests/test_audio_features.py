@@ -100,3 +100,32 @@ def test_scratch_ignores_speech_fixtures():
                 now += 320 / sr
             now += 2.0
         assert not fired, name
+
+
+def _feed_rub(det, x, chunk=320):
+    events, now = [], 0.0
+    for i in range(0, len(x), chunk):
+        if det.push(x[i : i + chunk], now):
+            events.append(round(now, 2))
+        now += chunk / SAMPLE_RATE
+    return events
+
+
+def test_rub_detected_only_for_sustained_handling_noise():
+    from festival_pet.audio_features import RubDetector
+
+    sr = SAMPLE_RATE
+    rng = np.random.default_rng(2)
+    quiet = rng.standard_normal(sr * 4).astype(np.float32) * 0.003
+    rub = rng.standard_normal(int(sr * 1.5)).astype(np.float32) * 0.5  # loud broadband handling noise
+    x = np.concatenate([quiet, rub, quiet])
+    events = _feed_rub(RubDetector(), x)
+    assert len(events) == 1 and 4.4 < events[0] < 4.9, events
+
+    # music alone (harmonic, not flat) never counts as a pet, even when loud
+    music = _click_track(120.0, 8.0, noise=0.01) * 2.0
+    assert _feed_rub(RubDetector(), music) == []
+
+    # a scratch burst is too short to be a rub
+    y = _add_scratch(np.concatenate([quiet, quiet]), 4.0)
+    assert _feed_rub(RubDetector(), y) == []

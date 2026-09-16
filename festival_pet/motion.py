@@ -158,6 +158,29 @@ def g_tada(u: float) -> Offsets:
     return Offsets(pitch=-10.0 * e, z=0.012 * e, ant_r=-1.2 * e, ant_l=1.2 * e, yaw=6.0 * math.sin(2 * math.pi * 1.5 * u) * e)
 
 
+def g_flinch(u: float, side: float) -> Offsets:
+    """Ear tickled: yank that antenna away and duck the head to the other side, then settle with a shiver.
+
+    side = +1 -> left antenna (index 1) was touched, -1 -> right antenna (index 0).
+    """
+    snap = math.exp(-5 * u)
+    shiver = math.sin(2 * math.pi * 9 * u) * max(0.0, 1 - u * 1.5) * 0.15
+    off = Offsets(yaw=-side * 12.0 * snap, roll=-side * 10.0 * snap, z=-0.006 * snap)
+    if side > 0:
+        off.ant_l = -1.3 * snap + shiver  # fold the left antenna forward/away
+        off.ant_r = 0.2 * snap
+    else:
+        off.ant_r = 1.3 * snap - shiver
+        off.ant_l = -0.2 * snap
+    return off
+
+
+def g_lean(u: float) -> Offsets:
+    """Head being petted: lean into the hand, eyes-closed feel, antennas relax slowly."""
+    e = _ease(min(1.0, u * 2)) * (1 - max(0.0, u - 0.7) / 0.3)
+    return Offsets(pitch=8.0 * e, roll=6.0 * e, z=-0.004 * e, ant_r=0.6 * e, ant_l=-0.6 * e)
+
+
 def g_glance(u: float, side: float) -> Offsets:
     e = _pulse(u) ** 0.6
     return Offsets(yaw=side * 22.0 * e, pitch=-3.0 * e + 5.0 * math.sin(math.pi * u * 2) * e, roll=side * 4.0 * e)
@@ -182,6 +205,8 @@ GESTURES: dict[str, tuple[float, str]] = {
     "sneeze": (1.4, "plain"),
     "hiccup": (0.5, "plain"),
     "tada": (1.6, "plain"),
+    "flinch": (1.2, "sided"),
+    "lean": (2.4, "plain"),
 }
 
 _FUNCS = {
@@ -189,6 +214,7 @@ _FUNCS = {
     "droop": g_droop, "startle": g_startle, "snuggle": g_snuggle, "dizzy": g_dizzy,
     "shake_off": g_shake_off, "search": g_search, "glance": g_glance,
     "shy": g_shy, "nod_off": g_nod_off, "sneeze": g_sneeze, "hiccup": g_hiccup, "tada": g_tada,
+    "flinch": g_flinch, "lean": g_lean,
 }
 
 
@@ -254,15 +280,15 @@ class MotionComposer:
     def set_gaze(self, target: tuple[float, float] | None) -> None:
         self._gaze_target = target
 
-    def request_gesture(self, name: str, now: float, priority: int) -> bool:
-        """Start a gesture unless a higher-priority one is still running."""
+    def request_gesture(self, name: str, now: float, priority: int, side: float | None = None) -> bool:
+        """Start a gesture unless a higher-priority one is still running. ``side`` forces ±1 for sided gestures."""
         if name not in GESTURES:
             raise KeyError(f"Unknown gesture '{name}'")
         active = self._gesture
         if active is not None and now - active.start < active.duration and active.priority > priority:
             return False
         duration, kind = GESTURES[name]
-        side = self.rng.choice((-1.0, 1.0)) if kind == "sided" else 1.0
+        side = (side if side is not None else self.rng.choice((-1.0, 1.0))) if kind == "sided" else 1.0
         self._gesture = _ActiveGesture(name, now, duration, priority, side)
         return True
 

@@ -32,7 +32,7 @@ from pydantic import BaseModel
 from scipy.spatial.transform import Rotation as R
 
 from festival_pet import sounds
-from festival_pet.audio_features import BeatTracker, ScratchDetector
+from festival_pet.audio_features import BeatTracker, RubDetector, ScratchDetector
 from festival_pet.behavior import Action, Behavior, FaceObs, Observation
 from festival_pet.memory import FaceMemory
 from festival_pet.motion import MotionComposer
@@ -148,6 +148,7 @@ class AudioSense:
         self._io = io
         self.beat = BeatTracker()
         self.scratch = ScratchDetector()
+        self.rub = RubDetector()
         self.spotter = spotter  # NameSpotter or None
         self._events: queue.Queue[tuple[str, str, float | None]] = queue.Queue()
         self._stop = threading.Event()
@@ -185,6 +186,8 @@ class AudioSense:
             self.beat.push(chunk, now)
             if self.scratch.push(chunk, now):
                 self._events.put(("scratch", "", None))
+            if self.rub.push(chunk, now):
+                self._events.put(("pet", "", None))
             if self.spotter is None:
                 continue
             if now >= next_doa:
@@ -281,6 +284,8 @@ class Pet:
         # Antennas lag their command while animated; the detector raises its threshold then.
         busy = self.move is not None or comp.gesture_active(now)
         obs.touched = self.touch.update(self.last_ants, io.present_antennas(), busy)
+        obs.touched_side = self.touch.last_side
+        obs.petting = self.audio.rub.rubbing
         if now >= self._next_doa:
             self._next_doa = now + 0.2
             obs.loud_yaw_deg = self.loud.update(io.doa(), now)
@@ -290,6 +295,8 @@ class Pet:
         for kind, value, yaw in self.audio.poll():
             if kind == "scratch":
                 obs.scratched = True
+            elif kind == "pet":
+                obs.petted = True
             elif value == "reachy":
                 obs.name_heard = True
                 obs.voice_yaw_deg = yaw
@@ -355,7 +362,8 @@ class Pet:
                 self.sound.request(act.name, act.priority, now)
         elif act.kind == "gesture":
             if self.move is None:
-                comp.request_gesture(act.name, now, act.priority)
+                name, _, side = act.name.partition(":")  # "flinch:+" forces the side of a sided gesture
+                comp.request_gesture(name, now, act.priority, {"+": 1.0, "-": -1.0, "": None}[side])
         elif act.kind == "move":
             if self.move is None:
                 move = self.p.library(act.name)
@@ -386,7 +394,7 @@ class Pet:
         return {
             "behavior": self.p.behavior.status(),
             "memory": self.p.memory.summary(),
-            "audio": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "music": self.audio.beat.music, **self.audio.scratch.stats, **self.audio.stats},
+            "audio": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "music": self.audio.beat.music, **self.audio.scratch.stats, **self.audio.rub.stats, **self.audio.stats},
             "recent_sounds": self.sound.played[-10:],
             "recent_actions": [f"{k}:{n}" for _, k, n in self.actions_log[-15:]],
         }
@@ -404,8 +412,9 @@ class Pet:
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
                 "listening": self.audio.stats["listening"], "voice_yaw": self.audio.last_voice_yaw,
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
+                "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch._onset_ratio, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch._onset_ratio, "rub_level_ratio": self.audio.rub._level_ratio, "match_threshold": self.p.memory.match_threshold},
             "recent_actions": [{"t": round(now - t, 1), "a": f"{k}:{n}"} for t, k, n in reversed(self.actions_log[-20:])],
             "memory": self.p.memory.summary(),
         }
@@ -435,6 +444,8 @@ class Pet:
             self.groove_scale = float(value)
         elif cmd == "scratch_onset_ratio":
             self.audio.scratch._onset_ratio = float(value)
+        elif cmd == "rub_level_ratio":
+            self.audio.rub._level_ratio = float(value)
         elif cmd == "match_threshold":
             self.p.memory.match_threshold = float(value)
         elif cmd == "forget":
