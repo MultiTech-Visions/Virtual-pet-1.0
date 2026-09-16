@@ -17,7 +17,7 @@ def test_gestures_stay_in_envelope_and_finish():
     for name, (dur, _) in GESTURES.items():
         assert m.request_gesture(name, 0.0, 5)
         for t in np.linspace(0.0, dur + 0.2, 60):
-            head, ants = m.sample(float(t), 0.02)
+            head, ants, _ = m.sample(float(t), 0.02)
             roll, pitch, yaw = _euler(head)
             assert abs(yaw) <= YAW_LIMIT + 1e-6 and abs(pitch) <= PITCH_LIMIT + 1e-6
             assert all(math.isfinite(a) for a in ants)
@@ -35,7 +35,7 @@ def test_gaze_converges():
     m = MotionComposer()
     m.set_gaze((30.0, -10.0))
     for i in range(200):
-        head, _ = m.sample(i * 0.02, 0.02)
+        head, _, _ = m.sample(i * 0.02, 0.02)
     _, pitch, yaw = _euler(head)
     assert abs(yaw - 30.0) < 3.0 and abs(pitch + 10.0) < 3.0
 
@@ -44,7 +44,7 @@ def test_sleep_blend_lowers_head():
     m = MotionComposer()
     m.mode = "sleeping"
     for i in range(300):
-        head, ants = m.sample(i * 0.02, 0.02)
+        head, ants, _ = m.sample(i * 0.02, 0.02)
     _, pitch, _ = _euler(head)
     assert pitch > 15.0 and ants[0] < -2.0 and ants[1] > 2.0
 
@@ -153,3 +153,23 @@ def test_touch_ignores_motor_lag_and_learns_droop():
     # Now a finger pushes it a further 0.5 rad.
     hits = [d.update([-0.17, 0.17], [-0.17, -0.53], busy=False) for _ in range(6)]
     assert any(hits) and d.last_side == 1
+
+
+
+def test_body_follows_far_gaze_and_head_stays_within_reach():
+    from festival_pet.motion import BODY_DEADBAND, HEAD_YAW_LIMIT
+
+    m = MotionComposer()
+    m.set_gaze((90.0, 0.0))  # someone well off to the left
+    body = 0.0
+    for i in range(400):
+        head, _, body = m.sample(i * 0.02, 0.02)
+        _, _, yaw = _euler(head)
+        assert abs(yaw - body) <= HEAD_YAW_LIMIT + 1e-6
+    assert body > 90.0 - BODY_DEADBAND - 1.0  # body turned toward them
+    assert abs(yaw - 90.0) < 3.0  # and the head is on target in world frame
+    m.set_gaze((body - 5.0, 0.0))  # small correction: inside the deadband, body stays put
+    b0 = body
+    for i in range(400, 500):
+        _, _, body = m.sample(i * 0.02, 0.02)
+    assert abs(body - b0) < 1e-6

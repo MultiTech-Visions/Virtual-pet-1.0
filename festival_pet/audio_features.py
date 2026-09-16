@@ -329,6 +329,7 @@ class LevelMeter:
         self.rms = 0.0
         self.peak = 0.0
         self.max_rms_3s = 0.0
+        self.noise_floor = 1e-3  # slow tracker of the quiet level (falls fast, rises slowly)
         self._recent_rms: deque[tuple[float, float]] = deque()
 
     def push(self, mono: np.ndarray, now: float, extra: dict) -> None:
@@ -336,13 +337,17 @@ class LevelMeter:
             return
         self.rms = float(np.sqrt(np.mean(mono.astype(np.float32) ** 2)))
         self.peak = float(np.max(np.abs(mono)))
+        if self.rms < self.noise_floor:
+            self.noise_floor += (self.rms - self.noise_floor) * 0.2
+        else:
+            self.noise_floor += (self.rms - self.noise_floor) * 0.002
         self._recent_rms.append((now, self.rms))
         while self._recent_rms and now - self._recent_rms[0][0] > 3.0:
             self._recent_rms.popleft()
         self.max_rms_3s = max(r for _, r in self._recent_rms)
         if now >= self._next_sample:
             self._next_sample = now + self._period
-            self._hist.append({"t": round(now, 2), "rms": round(self.rms, 5), "peak": round(self.peak, 4), **extra})
+            self._hist.append({"t": round(now, 2), "rms": round(self.rms, 5), "peak": round(self.peak, 4), "floor": round(self.noise_floor, 5), **extra})
 
     def history(self) -> list[dict]:
         return list(self._hist)

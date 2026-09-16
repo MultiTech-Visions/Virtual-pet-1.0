@@ -49,7 +49,7 @@ class Timeline:
     """Scripted world: what is true at time t (seconds since start)."""
 
     def __init__(self) -> None:
-        self.face: list[tuple[float, float, float, float, float]] = []  # (t0, t1, yaw, pitch, area)
+        self.face: list[tuple] = []  # (t0, t1, yaw, pitch, area[, yaw_end]) — yaw_end makes the person walk sideways
         self.held: list[tuple[float, float]] = []
         self.shake: list[tuple[float, float]] = []
         self.touch: list[tuple[float, float]] = []
@@ -92,8 +92,11 @@ class Timeline:
         return any(a <= t < b for a, b, *_ in spans)
 
     def face_at(self, t):
-        for t0, t1, yaw, pitch, area in self.face:
+        for entry in self.face:
+            t0, t1, yaw, pitch, area = entry[:5]
             if t0 <= t < t1:
+                if len(entry) == 6:
+                    yaw = yaw + (entry[5] - yaw) * (t - t0) / (t1 - t0)
                 return yaw, pitch, area
         return None
 
@@ -165,10 +168,20 @@ class FakeIO:
     def play_file(self, path):
         pass
 
-    def set_target(self, head, antennas):
+    def set_target(self, head, antennas, body_yaw):
         self.set_target_calls += 1
         self._commanded = list(antennas)
-        self._r.set_target(head=head, antennas=antennas)
+        self._r.set_target(head=head, antennas=antennas, body_yaw=body_yaw)
+
+    def sleep_body(self):
+        self._r.goto_sleep()
+        self._r.disable_motors()
+
+    def wake_body(self):
+        from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
+
+        self._r.enable_motors()
+        self._r.goto_target(head=INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=1.0)
 
     def goto(self, head, antennas, duration):
         self._r.goto_target(head=head, antennas=antennas, duration=duration)
@@ -207,8 +220,9 @@ class FakeVision:
 # ----------------------------------------------------------------------------- scenario
 def build_timeline() -> Timeline:
     tl = Timeline()
-    tl.face += [(3.0, 10.0, 25.0, -5.0, 0.05)]  # stranger appears off to the left
-    tl.face += [(10.0, 12.5, -10.0, 0.0, 0.05)]  # moves right
+    tl.face += [(3.0, 5.0, 25.0, -5.0, 0.05)]  # stranger appears to the left
+    tl.face += [(5.0, 9.0, 25.0, -5.0, 0.05, 60.0)]  # ...and walks further left: the body must follow to keep them
+    tl.face += [(9.0, 12.5, 60.0, 0.0, 0.05, -10.0)]  # ...then walks back across to the right
     tl.face += [(13.7, 20.0, -10.0, 0.0, 0.05)]  # peekaboo: hidden 12.5-13.7
     tl.add_speech(21.0, "m3_reachy")
     tl.add_speech(23.5, "m3_reachy_dance")
@@ -220,8 +234,13 @@ def build_timeline() -> Timeline:
     tl.held += [(56.0, 66.0)]
     tl.shake += [(60.0, 60.5)]
     tl.face += [(68.0, 72.0, 5.0, 0.0, 0.05)]
+    tl.add_speech(74.0, "m3_reachy")  # "Reachy ... sleep" -> motors off
+    tl.add_speech(76.0, "hello_there")  # (only 'hello' is in the fixtures; the sleep command is injected below)
+    tl.add_speech(84.0, "m3_reachy")  # its name wakes it back up
     return tl
 
+
+SLEEP_CMD_AT = 77.5  # the fixtures have no spoken "sleep"; the harness injects the command word here
 
 EXPECTED = [  # (window t0, t1, kind, name)
     (0.0, 2.0, "wake", "start"),
@@ -237,13 +256,15 @@ EXPECTED = [  # (window t0, t1, kind, name)
     (58.0, 66.0, "sound", "purr|content"),
     (60.0, 63.0, "sound", "dizzy"),
     (66.0, 69.0, "gesture", "shake_off"),  # set down
+    (77.0, 80.0, "sleep", "asked"),  # told to sleep: motors off
+    (83.0, 88.0, "wake", "name|sound"),  # its voice/name wakes it (the loud-voice startle may win the race)
 ]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--vosk", default=os.environ.get("VOSK_MODEL", ""))
-    ap.add_argument("--duration", type=float, default=74.0)
+    ap.add_argument("--duration", type=float, default=90.0)
     args = ap.parse_args()
 
     reachy = ReachyMini(media_backend="no_media", connection_mode="localhost_only")
@@ -269,11 +290,19 @@ def main() -> int:
     groove_seen = False
     gaze_err: list[tuple[float, float]] = []
     music_groove = False
+    asleep_seen = False
     pet.start(time.time())
     try:
+        sleep_injected = False
         while io.t() < args.duration:
             now = time.time()
+            if not sleep_injected and io.t() >= SLEEP_CMD_AT:
+                sleep_injected = True
+                pet.audio._events.put(("word", "sleep", None))
             pet.step(now)
+            if pet.asleep and not asleep_seen:
+                asleep_seen = True
+                print(f"[{io.t():6.2f}] asleep: motors off, vision paused")
             st = pet.p.behavior.state
             if st != last_state:
                 print(f"[{io.t():6.2f}] state -> {st}")
@@ -312,6 +341,8 @@ def main() -> int:
         print(f"  {'OK ' if hit else 'MISS'} {t0:5.1f}-{t1:5.1f} {kind}:{name}")
         ok &= hit
     ok &= music_groove
+    ok &= asleep_seen and not pet.asleep  # slept and woke back up
+    print(f"slept: {asleep_seen}, awake at end: {not pet.asleep}")
     settled = [e for e in gaze_err[2:]]  # skip the first samples while the head is still turning
     if settled:
         yaw_err = float(np.median([e[0] for e in settled]))

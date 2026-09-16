@@ -25,8 +25,10 @@ class NullIO:
     def audio_chunk(self): return None
     def play(self, buf): pass
     def play_file(self, path): pass
-    def set_target(self, head, antennas): pass
+    def set_target(self, head, antennas, body_yaw): pass
     def goto(self, head, antennas, duration): pass
+    def sleep_body(self): self.slept = True
+    def wake_body(self): self.woke = True
 
 
 class FakeMove:
@@ -126,4 +128,24 @@ def test_calibration_refuses_when_touch_is_not_louder():
     a._calibration_step(16.3)
     r = a.calibration_result
     assert r["phase"] == "done" and 5 < a.rub.level_ratio < 20 and abs(a.rub.flatness_min - 0.42) < 1e-6
+    pet.stop()
+
+
+def test_sleep_does_not_wake_itself_from_antenna_droop():
+    from festival_pet.behavior import Action
+
+    pet = _pet()
+    io = pet.p.io
+    io.present = [-0.17, 0.17]
+    io.present_antennas = lambda: io.present  # type: ignore[assignment]
+    pet.step(1000.2)
+    pet._dispatch(Action("sleep", "asked", 5), 1000.2)
+    assert pet.asleep and getattr(io, "slept", False)
+    io.present = [-3.05, 3.05]  # torque off: antennas fall into the sleep position
+    for k in range(40):
+        pet.step(1000.3 + k * 0.1)  # 4 s
+    assert pet._touch_resync_at < 0 and pet.p.behavior.state == "SLEEPING"
+    pet.p.behavior.state = "SLEEPING"
+    pet._dispatch(Action("wake", "name", 5), 1005.0)
+    assert not pet.asleep and getattr(io, "woke", False)
     pet.stop()

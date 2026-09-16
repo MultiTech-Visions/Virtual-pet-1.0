@@ -19,6 +19,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
+from festival_pet.hearing import intents_in
 from festival_pet.memory import FaceMemory, Person
 
 State = Literal["SLEEPING", "WAKING", "IDLE", "ENGAGED", "SEARCHING", "HELD"]
@@ -46,6 +47,8 @@ class Observation:
     """Everything the senses report for one tick."""
 
     face: FaceObs | None = None
+    body: FaceObs | None = None  # a torso with no face: where the head should be
+    heard_text: str | None = None  # a finished sentence from the free-vocabulary recogniser
     held: bool = False
     shaken: bool = False
     touched: bool = False  # an antenna ("ear") was pushed this tick (edge, not level)
@@ -66,7 +69,7 @@ class Observation:
 class Action:
     """A request for the robot layer."""
 
-    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror"]
+    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror", "heard"]
     name: str
     priority: int = 1  # higher preempts lower for gestures/moves
 
@@ -154,6 +157,8 @@ class Behavior:
     _last_pet_purr: float = -1e9
     _last_voice_glance: float = -1e9
     _voice_lock_until: float = -1e9
+    _last_heard_react: float = -1e9
+    _body_since: float = 0.0
 
     # gaze the motion layer should aim for (None = free to idle-drift)
     gaze: tuple[float, float] | None = None
@@ -291,6 +296,11 @@ class Behavior:
             if self.rng.random() < 0.4:
                 actions.append(Action("sound", "curious", 1))
 
+        if obs.heard_text is not None and awake:
+            found = intents_in(obs.heard_text)
+            actions.append(Action("heard", "|".join([obs.heard_text, *found]), 0))
+            actions += self._on_heard(obs.heard_text, found, now)
+
         if obs.command is not None and awake and (now <= self._attentive_until or obs.face is not None):
             self._last_interaction = now
             self._think(now, f"heard '{obs.command}' and I was paying attention")
@@ -337,17 +347,11 @@ class Behavior:
 
         # -- per-state ------------------------------------------------------------------
         if self.state == "SLEEPING":
+            # Camera is off while asleep: only the ears (name, a loud voice, head pets, ear tickles) wake it.
             self.gaze = None
-            face_persistent = obs.face is not None and obs.face.area_frac > 0.01
-            if face_persistent:
-                if self._face_first_seen == 0.0:
-                    self._face_first_seen = now
-                elif now - self._face_first_seen > t.wake_face_hold:
-                    actions.append(Action("wake", "face", 5))
-                    self._enter("WAKING", now)
-            else:
-                self._face_first_seen = 0.0
             if obs.loud_yaw_deg is not None and self.mood.energy > 0.3:
+                self._think(now, "huh?! what was that noise")
+                actions.append(Action("sound", "surprised", 5))
                 actions.append(Action("wake", "sound", 5))
                 self._enter("WAKING", now)
 
@@ -455,8 +459,23 @@ class Behavior:
                     actions.append(Action("sound", choice, 1))
                     actions.append(Action("gesture", gesture, 1))
 
+            elif obs.body is not None and (self.state != "ENGAGED" or now - self._last_face_time > 0.8):
+                # Someone's torso is in view but not their face: look up to where the head should be.
+                self._close_since = 0.0
+                if self._body_since == 0.0:
+                    self._body_since = now
+                    self._think(now, "a body! looking up for the face")
+                self.gaze = (obs.body.yaw_deg, obs.body.pitch_deg)
+                self._last_seen_yaw, self._last_seen_pitch = obs.body.yaw_deg, obs.body.pitch_deg
+                self._last_interaction = now
+                if self.state == "IDLE":
+                    self._enter("SEARCHING", now)
+                    actions.append(Action("gesture", "perk", 1))
+                elif self.state == "SEARCHING":
+                    self._state_since = now  # keep searching while there is a body to look at
             else:  # no face this tick
                 self._close_since = 0.0
+                self._body_since = 0.0
                 if self.state == "ENGAGED":
                     if now - self._last_face_time > t.face_lost_grace:
                         engaged_for = now - self._engaged_since
@@ -518,6 +537,43 @@ class Behavior:
             self._nodding_off = False
 
         return actions
+
+    def _on_heard(self, text: str, found: list[str], now: float) -> list[Action]:
+        """React to the gist of what someone said. Rough transcripts, so small reactions only."""
+        if not found:
+            self._think(now, f"heard: \"{text}\"")
+            return []
+        self._think(now, f"heard: \"{text}\" ... sounds like {', '.join(found)}")
+        if now - self._last_heard_react < 3.0:
+            return []
+        self._last_heard_react = now
+        self._last_interaction = now
+        intent = found[0]
+        if intent == "praise":
+            self.mood.social += 0.08
+            if self._engaged_person is not None:
+                self.memory.add_pet(self._engaged_person)
+            return [Action("sound", "happy", 2), Action("gesture", "bounce", 2)]
+        if intent == "cute":
+            return [Action("sound", "shy", 2), Action("gesture", "shy", 2)]
+        if intent == "greeting":
+            return [Action("sound", "hello_friend", 2), Action("gesture", "nod", 2)]
+        if intent == "farewell":
+            return [Action("sound", "sad", 2), Action("gesture", "droop", 2)]
+        if intent == "question":
+            return [Action("sound", "curious", 1), Action("gesture", "tilt", 1)]
+        if intent == "laugh":
+            return [Action("sound", "giggle", 2), Action("gesture", "wiggle", 2)]
+        if intent == "scold":
+            self.mood.social -= 0.05
+            return [Action("sound", "sad", 2), Action("gesture", "droop", 2)]
+        if intent == "sad":
+            return [Action("sound", "content", 1), Action("gesture", "lean", 1)]
+        if intent == "photo":
+            return [Action("sound", "tada", 2), Action("gesture", "tada", 2)]
+        if intent == "come":
+            return [Action("sound", "curious", 1), Action("gesture", "perk", 1)]
+        raise KeyError(intent)
 
     def _on_command(self, command: str, now: float) -> list[Action]:
         t = self.timers

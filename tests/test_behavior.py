@@ -77,15 +77,6 @@ def test_lonely_then_falls_asleep_then_touch_wakes():
     assert b.state == "IDLE"
 
 
-def test_sleeping_wakes_on_persistent_face_only():
-    b, _ = _brain(awake=False)
-    near = FaceObs(1, 0.0, 0.0, 0.05, None, 0.0)
-    _run(b, lambda t: Observation(face=near), 0.0, 1.0)
-    assert b.state == "SLEEPING"
-    _run(b, lambda t: Observation(face=near), 1.0, 2.0)
-    assert b.state == "WAKING"
-
-
 def test_ear_touch_while_engaged_is_a_tickle_not_a_pet():
     b, mem = _brain()
     p = mem.enroll(np.ones(4), now=0.0)
@@ -185,3 +176,33 @@ def test_new_voice_makes_it_look_and_name_overrides_a_face():
     assert b.state == "ENGAGED"
     _run(b, lambda t: Observation(face=face, name_heard=(t < 3.05), voice_yaw_deg=45.0), 3.0, 3.2)
     assert b.gaze == (45.0, 0.0)
+
+
+
+def test_heard_speech_reacts_to_intent_and_logs_it():
+    b, _ = _brain()
+    acts = _run(b, lambda t: Observation(heard_text=("what a cute little robot" if t < 0.05 else None)), 0.0, 0.5)
+    heard = [a for a in acts if a.kind == "heard"]
+    assert heard and heard[0].name.startswith("what a cute little robot|")
+    assert any(a.name == "shy" for a in acts)
+    acts = _run(b, lambda t: Observation(heard_text=("the load air" if t < 0.55 else None)), 0.5, 1.0)
+    assert not any(a.kind in ("sound", "gesture") for a in acts)
+
+
+def test_body_makes_it_look_up_and_search():
+    b, _ = _brain()
+    body = FaceObs(-1, 15.0, -20.0, 0.2, None, 0.0)
+    acts = _run(b, lambda t: Observation(body=body), 0.0, 1.0)
+    assert b.state == "SEARCHING" and b.gaze == (15.0, -20.0)
+    assert any(a.name == "perk" for a in acts)
+    _run(b, lambda t: Observation(body=body), 1.0, 12.0)
+    assert b.state == "SEARCHING"  # keeps looking as long as the body is there
+
+
+def test_sleeping_ignores_faces_but_wakes_on_loud_or_name():
+    b, _ = _brain(awake=False)
+    face = FaceObs(1, 0.0, 0.0, 0.1, None, 0.0)
+    _run(b, lambda t: Observation(face=face), 0.0, 5.0)
+    assert b.state == "SLEEPING"
+    acts = _run(b, lambda t: Observation(loud_yaw_deg=(20.0 if t < 5.05 else None)), 5.0, 5.5)
+    assert any(a.kind == "wake" for a in acts) and b.state == "WAKING"

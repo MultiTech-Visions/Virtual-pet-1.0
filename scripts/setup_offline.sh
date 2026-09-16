@@ -23,6 +23,8 @@ curl -fsSL -o "$MODELS/face_detection_yunet_2023mar.onnx" \
   https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
 curl -fsSL -o "$MODELS/face_recognition_sface_2021dec.onnx" \
   https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+curl -fsSL -o "$MODELS/person_detection_mediapipe_2023mar.onnx" \
+  https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/person_detection_mediapipe/person_detection_mediapipe_2023mar.onnx
 ls -la "$MODELS"
 
 echo "== downloading the Vosk keyword-spotting model (~40 MB zip)"

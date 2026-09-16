@@ -69,6 +69,10 @@
     <ul class="thoughts" id="thoughts"></ul>
   </div>
   <div class="card">
+    <h2>What it heard</h2>
+    <ul class="thoughts" id="transcript"></ul>
+  </div>
+  <div class="card">
     <h2>Last actions</h2>
     <ul class="thoughts" id="actions"></ul>
   </div>
@@ -127,6 +131,7 @@
       <button class="act" onclick="ctl('sleep')">Sleep</button>
       <button class="act" id="mute" onclick="toggleMute()">Mute</button>
       <button class="act" id="pickup" onclick="togglePickup()">Pickup: off</button>
+      <button class="act" id="bodyf" onclick="toggleBody()">Body finder: on</button>
     </div>
     <div class="sub">Pickup uses the IMU, which sits in the head. It is ignored while the pet moves itself, but leave it off unless the Senses tab shows it staying quiet on the desk.</div>
     <label>Groove intensity ×<span id="groove-v"></span></label>
@@ -181,7 +186,8 @@ function drawChart(hist, c) {
   g.fillStyle = '#5aa0ff'; hist.forEach((h, i) => { g.fillRect(x(i) - 1, H - 4 - h.flat * (H - 14), 2, 2); });
 }
 function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
-let pickup = false;
+let pickup = false, bodyf = true;
+function toggleBody() { bodyf = !bodyf; ctl('body_finder', bodyf); $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
 function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off'); }
 async function loadCatalog() {
   const c = await (await fetch('/api/catalog')).json();
@@ -226,7 +232,9 @@ async function refresh() {
       'listening for trick': m.listening_for_trick_s > 0 ? m.listening_for_trick_s + ' s' : 'no', 'little dance': m.little_dance_s > 0 ? m.little_dance_s + ' s' : '—', 'next sneeze': m.next_sneeze_in_s + ' s', 'gaze': m.gaze ? m.gaze.map(x => x.toFixed(0)).join('°, ') + '°' : 'free'});
     $('thoughts').innerHTML = m.thoughts.map(t => `<li><small>${t.t}s ago</small>${t.text}</li>`).join('') || '<li class="sub">…</li>';
     $('actions').innerHTML = d.recent_actions.map(a => `<li><small>${a.t}s ago</small>${a.a}</li>`).join('');
-    kv('eyes', s.face ? s.face : {face: 'none'});
+    $('transcript').innerHTML = d.transcript.map(x => `<li><small>${x.t}s ago</small>“${x.text}”${x.intents.length ? ' <span class="tier">→ ' + x.intents.join(', ') + '</span>' : ''}</li>`).join('') || '<li class="sub">nothing yet</li>';
+    $('state-sub').textContent += d.asleep ? ' · motors off, camera off' : '';
+    kv('eyes', Object.assign(s.face ? s.face : {face: 'none'}, {body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none'}));
     kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '° (+ = left)', 'mic array DoA': s.doa ? `${s.doa.angle_deg}° (0 = left, 90 = front), speech: ${s.doa.speech}` : '—', 'last speech': s.speech_s_ago === null ? 'never' : s.speech_s_ago + ' s ago'});
     kv('body', {held: s.held, shaken: s.shaken, 'head being petted': s.head_pet.rubbing, 'imu accel dev / gyro': s.imu.accel_dev + ' / ' + s.imu.gyro, 'imu gated (self-moving)': s.imu.gated, 'head rate rad/s': s.head_rate, 'ear deviation': s.ears.dev.join(' / '), 'ear droop baseline': s.ears.baseline.join(' / ')});
     kv('scratch', s.scratch);
@@ -245,7 +253,8 @@ async function refresh() {
       $('groove').value = d.controls.groove_scale; $('groove-v').textContent = d.controls.groove_scale;
       $('match').value = d.controls.match_threshold; $('match-v').textContent = d.controls.match_threshold;
       muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute';
-      pickup = d.controls.pickup; $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off'); }
+      pickup = d.controls.pickup; $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off');
+      if (d.controls.body_finder !== null) { bodyf = d.controls.body_finder; $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); } }
     const t = d.memory.tiers;
     $('people-sum').textContent = `${d.memory.people} people · ${t.bestie} besties · ${t.friend} friends`;
     const key = JSON.stringify(d.memory.top.map(p => [p.id, p.encounters, p.pets, p.holds, p.affection, p.has_face]));

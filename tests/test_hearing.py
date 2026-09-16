@@ -9,7 +9,7 @@ import pytest
 FIX = Path(__file__).parent / "fixtures"
 MODEL = os.environ.get("VOSK_MODEL", "")
 
-pytestmark = pytest.mark.skipif(not MODEL or not Path(MODEL).is_dir(), reason="VOSK_MODEL not set")
+needs_model = pytest.mark.skipif(not MODEL or not Path(MODEL).is_dir(), reason="VOSK_MODEL not set")
 
 
 def _say(spotter, name):
@@ -27,6 +27,16 @@ def _say(spotter, name):
     return words
 
 
+def test_intents_pure():
+    from festival_pet.hearing import intents_in
+
+    assert intents_in("What a cute little robot") == ["cute", "question"]
+    assert intents_in("good boy reachy") == ["praise"]
+    assert intents_in("ok bye now") == ["farewell"]
+    assert intents_in("the load air") == []
+
+
+@needs_model
 def test_name_and_commands():
     from festival_pet.hearing import NameSpotter
 
@@ -37,3 +47,4 @@ def test_name_and_commands():
     assert _say(sp, "hello_there") == ["hello"]
     assert "reachy" not in _say(sp, "peachy")
     assert _say(sp, "m3_what_a_nice_day") == []
+    assert sp.poll_transcript()[-1] == "what a nice day"

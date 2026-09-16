@@ -12,7 +12,9 @@ is the one-time setup below.
 
 | Sense | Source | Behaviour |
 |---|---|---|
-| Faces | camera, YuNet at 320 px (~8 Hz) | locks onto the closest face, looks at it, micro-reacts every few seconds |
+| Faces | camera, YuNet at 320 px (~8 Hz) | locks onto the closest face, looks at it, micro-reacts every few seconds. The **body turns** to follow when the head is more than 12° off-centre, so the whole robot ends up facing you and the head keeps room to move. Lost faces get a real search: a widening sweep that dips down (kids, squatters) and up |
+| Bodies | MediaPipe person detector (OpenCV Zoo), only when no face is visible, ~2.5 Hz | a torso in view makes it look up to where the head should be, then the face detector takes over. Toggle on the Controls tab |
+| Speech | second, free-vocabulary Vosk pass on the same audio | reacts to the gist of what people say: praise → happy bounce, "cute" → shy, greetings, goodbyes → sad droop, questions → curious tilt, laughter → giggle, scolding → droop, "photo/selfie" → ta-da pose. Every sentence and what it made of it shows on the Mind tab |
 | Who is it | SFace embeddings, only on new tracks / every 4 s | stranger → curious "oh? hi!", friend → happy trill + wiggle, bestie → fanfare + a library move |
 | Picked up (off by default) | IMU accel/gyro, which sits in the **head** | startle, then purrs and snuggles; shaking → dizzy wobble. The IMU is ignored while the pet moves itself; enable on the Controls tab once the Senses tab shows it quiet on a desk |
 | Head pets | hand rubbing the head, heard by the mics inside it | purrs and leans into the hand; keeps purring while it lasts; counts as affection for the person in front |
@@ -26,6 +28,7 @@ is the one-time setup below.
 | Being stared at | same face very close for 14 s | goes shy: looks away, antennas fold, peeks back |
 | Empathy | the person's head tilt (eye line) | slowly mirrors the tilt |
 | Time | – | energy drains while awake, refills asleep; lonely after 90 s alone, nods off, sleeps after 7 min; rare sneezes and hiccups |
+| Sleep | – | nests its head using the SDK's sleep pose, then **motors off** and **camera paused**. The ears stay on: its name, a loud voice after quiet, a head pet or an ear tickle wake it (motors on, head lifts) |
 
 Relationship memory is a JSON file of anonymous face embeddings plus stats (visits,
 attention seconds, pets, holds, affection). Two visits apart by 2 minutes makes a
@@ -38,6 +41,8 @@ full-body moves from Pollen's emotions library for big moments.
 
 ### Notes on the harder senses
 
+- **Listening** runs whenever the mic array flags speech *or* the level is clearly above the
+  tracked noise floor, so a stale speech flag can never leave it deaf.
 - **Name**: "reachy" is not in Vosk's English lexicon, so the grammar spots in-vocabulary
   sound-alikes ("ricci", "richie", "reach it"…) that fire on the spoken name, with decoys
   ("peachy", "reach", "beach") to absorb near-misses. Verified on synthesized speech in

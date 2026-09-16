@@ -61,6 +61,7 @@ DATA_DIR = Path(platformdirs.user_data_dir("festival_pet"))
 YUNET_MODEL = DATA_DIR / "models" / "face_detection_yunet_2023mar.onnx"
 SFACE_MODEL = DATA_DIR / "models" / "face_recognition_sface_2021dec.onnx"
 VOSK_MODEL = DATA_DIR / "models" / "vosk-model-small-en-us-0.15"
+PERSON_MODEL = DATA_DIR / "models" / "person_detection_mediapipe_2023mar.onnx"
 MEMORY_FILE = DATA_DIR / "memory.json"
 
 CONTROL_HZ = 50.0
@@ -84,8 +85,10 @@ class RobotIO(Protocol):
     def audio_chunk(self) -> np.ndarray | None: ...  # mono float32 @ 16 kHz, or None when nothing new
     def play(self, buf: np.ndarray) -> None: ...
     def play_file(self, path: str) -> None: ...
-    def set_target(self, head: np.ndarray, antennas: list[float]) -> None: ...
+    def set_target(self, head: np.ndarray, antennas: list[float], body_yaw: float) -> None: ...
     def goto(self, head: np.ndarray, antennas: list[float], duration: float) -> None: ...
+    def sleep_body(self) -> None: ...  # nest the head, then torque off
+    def wake_body(self) -> None: ...  # torque on, lift to neutral
 
 
 class MoveLike(Protocol):
@@ -256,6 +259,11 @@ class AudioSense:
                     self.last_voice_yaw = LoudSoundDetector.doa_to_yaw(self.doa[0])
             if self.spotter is None:
                 continue
+            # Listen when the mic array flags speech OR the level is clearly above the recent noise floor,
+            # so a stale/absent DoA flag can never leave it deaf.
+            floor = self.meter.noise_floor
+            if self.meter.rms > 3.0 * floor and self.meter.rms > 0.004:
+                speech_until = max(speech_until, now + self.SPEECH_HANGOVER)
             if now < speech_until:
                 listening = True
                 self.spotter.push(chunk)
@@ -266,6 +274,8 @@ class AudioSense:
                 self.spotter.flush()
                 for w in self.spotter.poll():
                     self._events.put(("word", w, self.last_voice_yaw))
+            for sentence in self.spotter.poll_transcript():
+                self._events.put(("heard", sentence, self.last_voice_yaw))
             self.stats["listening"] = listening
 
 
@@ -304,6 +314,10 @@ class Pet:
         self.muted = False
         self.groove_scale = 1.0  # user knob on top of the brain's intensity
         self.pickup_enabled = False  # IMU is in the head; off by default until tuned on the real robot
+        self.asleep = False  # motors off, camera paused; ears stay on
+        self._touch_resync_at = -1.0  # after sleep/wake the antennas settle somewhere new: re-zero the ear detector then
+        self.set_vision_active: Callable[[bool], None] = lambda active: None
+        self.transcript: deque[tuple[float, str, list[str]]] = deque(maxlen=30)
         self._last_obs = Observation()
 
     # ------------------------------------------------------------------ lifecycle
@@ -349,7 +363,15 @@ class Pet:
                 obs.held, obs.shaken = held, shaken
         # Antennas lag their command while animated; the detector raises its threshold then.
         busy = self.move is not None or comp.gesture_active(now)
-        obs.touched = self.touch.update(self.last_ants, io.present_antennas(), busy, dt)
+        present_ants = io.present_antennas()
+        if self._touch_resync_at >= 0:
+            if now >= self._touch_resync_at:  # motors settled after sleep/wake: wherever the ears rest now is "untouched"
+                self.last_ants = list(present_ants)
+                self.touch = TouchDetector()
+                self._touch_resync_at = -1.0
+            obs.touched = False
+        else:
+            obs.touched = self.touch.update(self.last_ants, present_ants, busy, dt)
         obs.touched_side = self.touch.last_side
         obs.petting = self.audio.rub.rubbing
         if now >= self._next_doa:
@@ -357,12 +379,18 @@ class Pet:
             obs.loud_yaw_deg = self.loud.update(self.audio.doa, now)
         sighting = self.p.latest_sighting()
         if sighting is not None and now - sighting.ts < 1.0:
-            obs.face = self._to_face_obs(sighting)
+            if sighting.kind == "face":
+                obs.face = self._to_face_obs(sighting)
+            else:
+                obs.body = self._to_face_obs(sighting)
         for kind, value, yaw in self.audio.poll():
             if kind == "scratch":
                 obs.scratched = True
             elif kind == "pet":
                 obs.petted = True
+            elif kind == "heard":
+                obs.heard_text = value
+                obs.voice_yaw_deg = yaw
             elif value == "reachy":
                 obs.name_heard = True
                 obs.voice_yaw_deg = yaw
@@ -397,9 +425,9 @@ class Pet:
             else:
                 head, ants, _ = self.move.evaluate(t)
                 self.last_pose, self.last_ants = head, [float(ants[0]), float(ants[1])]
-                io.set_target(head, self.last_ants)
+                io.set_target(head, self.last_ants, math.radians(comp.body_yaw))
         if self.move is None:
-            head, ants = comp.sample(now, dt)
+            head, ants, body_yaw = comp.sample(now, dt)
             if self.blend_from is not None:
                 a = (now - self.blend_from[2]) / MOVE_BLEND_S
                 if a >= 1.0:
@@ -410,7 +438,8 @@ class Pet:
                     head = linear_pose_interpolation(self.blend_from[0], head, a)
                     ants = [self.blend_from[1][i] * (1 - a) + ants[i] * a for i in range(2)]
             self.last_pose, self.last_ants = head, ants
-            io.set_target(head, ants)
+            if not self.asleep:
+                io.set_target(head, ants, math.radians(body_yaw))
         self.p.memory.save()
 
     # ------------------------------------------------------------------ helpers
@@ -443,10 +472,21 @@ class Pet:
                 if PLAY_LIBRARY_SOUNDS and move.sound_path is not None:
                     self.p.io.play_file(str(move.sound_path))
         elif act.kind == "wake":
+            if self.asleep:
+                self.p.io.wake_body()  # torque on, lift the head; blocks ~2 s
+                self.asleep = False
+                self.set_vision_active(True)
+                self.move, self.blend_from = None, None
+                self._touch_resync_at = now + 1.0
             self.sound.request("wake", 5, now)
             comp.request_gesture("perk", now, 5)
         elif act.kind == "sleep":
-            pass  # composer.mode handles the pose; the yawn sound was queued by the brain
+            if not self.asleep:
+                self.set_vision_active(False)  # camera off while asleep; ears stay on for name / noise / pets
+                self.p.io.sleep_body()  # nest the head, then torque off; blocks ~4 s
+                self.asleep = True
+                self.move = None
+                self._touch_resync_at = now + 2.5
         elif act.kind == "groove":
             beat = self.audio.beat
             if beat.music:
@@ -458,6 +498,8 @@ class Pet:
             comp.groove = (phase, bar, float(act.name) * self.groove_scale)
         elif act.kind == "mirror":
             comp.mirror_roll = float(act.name)
+        elif act.kind == "heard":
+            self.transcript.append((now, act.name, act.name.split("|")[1:]))
 
     def status(self) -> dict:
         b = self.audio.beat.state
@@ -476,7 +518,10 @@ class Pet:
         comp = self.p.composer
         return {
             "mind": self.p.behavior.mind(now),
+            "asleep": self.asleep,
+            "transcript": [{"t": round(now - t, 1), "text": txt.split("|")[0], "intents": ints} for t, txt, ints in reversed(self.transcript)],
             "senses": {
+                "body": None if o.body is None else {"yaw": round(o.body.yaw_deg, 1), "pitch": round(o.body.pitch_deg, 1), "size": round(o.body.area_frac, 3)},
                 "face": None if o.face is None else {"track": o.face.track_id, "yaw": round(o.face.yaw_deg, 1), "pitch": round(o.face.pitch_deg, 1), "size": round(o.face.area_frac, 3), "person": None if o.face.person is None else o.face.person.person_id, "similarity": round(o.face.similarity, 2), "tilt": round(o.face.roll_deg, 1)},
                 "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
@@ -487,7 +532,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "audio_history": self.audio.meter.history(),
             "recent_actions": [{"t": round(now - t, 1), "a": f"{k}:{n}"} for t, k, n in reversed(self.actions_log[-20:])],
@@ -531,6 +576,11 @@ class Pet:
             self.audio.rub.floor = float(value)
         elif cmd == "calibrate":
             self.audio.start_calibration(str(value), now)
+        elif cmd == "body_finder":
+            vision = getattr(self, "vision", None)
+            if vision is None:
+                raise KeyError("no vision on this pet")
+            vision.body_enabled = bool(value)
         elif cmd == "match_threshold":
             self.p.memory.match_threshold = float(value)
         elif cmd == "forget":
@@ -589,11 +639,21 @@ class ReachyIO:
     def play_file(self, path):
         self._r.media.play_sound(path)
 
-    def set_target(self, head, antennas):
-        self._r.set_target(head=head, antennas=antennas)
+    def set_target(self, head, antennas, body_yaw):
+        self._r.set_target(head=head, antennas=antennas, body_yaw=body_yaw)
 
     def goto(self, head, antennas, duration):
         self._r.goto_target(head=head, antennas=antennas, duration=duration)
+
+    def sleep_body(self):
+        self._r.goto_sleep()  # SDK: lift if needed, "pfiou" sound, nest the head over 2 s
+        self._r.disable_motors()  # torque off: the head rests in its cradle, no motor hum
+
+    def wake_body(self):
+        from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
+
+        self._r.enable_motors()
+        self._r.goto_target(head=INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=1.5)
 
 
 def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool = True) -> tuple[Pet, object, ReachyIO]:
@@ -608,14 +668,20 @@ def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool 
     io = ReachyIO(reachy)
     memory = FaceMemory(memory_file)
     library = RecordedMoves(DEFAULT_EMOTIONS_DATASET)
-    vision = Vision(YUNET_MODEL, SFACE_MODEL, memory, reachy.media.get_frame, reachy.get_current_head_pose)
+    vision = Vision(YUNET_MODEL, SFACE_MODEL, memory, reachy.media.get_frame, reachy.get_current_head_pose,
+                    person_model=PERSON_MODEL if PERSON_MODEL.exists() else None)
+    if not PERSON_MODEL.exists():
+        logger.warning("person model missing (%s): body-finding disabled; rerun the installer", PERSON_MODEL)
     spotter = None
     if name_spotting:
         from festival_pet.hearing import NameSpotter
 
         spotter = NameSpotter(VOSK_MODEL)
     parts = PetParts(io, memory, library.get, vision.latest, spotter, Behavior(memory), MotionComposer())
-    return Pet(parts), vision, io
+    pet = Pet(parts)
+    pet.set_vision_active = vision.set_active
+    pet.vision = vision
+    return pet, vision, io
 
 
 class Control(BaseModel):

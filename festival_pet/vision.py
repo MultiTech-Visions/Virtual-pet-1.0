@@ -34,6 +34,7 @@ LOST_AFTER = 0.7  # seconds without a detection before we stop reporting the tra
 FORGET_AFTER = 4.0  # seconds before a returning face nearby counts as a new track (peekaboo keeps identity)
 ASSOC_MAX_NORM = 0.35  # max normalised centre jump to keep associating a track
 UNKNOWN_VOTES_TO_ENROLL = 3  # consecutive "no match" embeddings before we create a new person
+BODY_INTERVAL = 0.4  # person detection only when no face is visible, ~2.5x per second
 
 
 @dataclass
@@ -51,6 +52,58 @@ class Track:
     pending_crops: list[np.ndarray] = field(default_factory=list)
 
 
+def _blazepose_anchors() -> np.ndarray:
+    """Anchor centres (normalised x, y) for the MediaPipe person detector at 224x224.
+
+    Two anchors per cell on the 28x28 and 14x14 grids, six per cell on the 7x7
+    grid: 1568 + 392 + 294 = 2254 rows, in model output order (verified against
+    the OpenCV Zoo reference list).
+    """
+    rows = []
+    for cells, per in ((28, 2), (14, 2), (7, 6)):
+        for y in range(cells):
+            for x in range(cells):
+                rows += [((x + 0.5) / cells, (y + 0.5) / cells)] * per
+    return np.array(rows, dtype=np.float32)
+
+
+class BodyFinder:
+    """MediaPipe person detector (OpenCV Zoo, Apache-2): finds a torso so the head can look up for the face."""
+
+    INPUT = 224
+
+    def __init__(self, model_path: Path, score_threshold: float = 0.35) -> None:  # this model's scores peak ~0.5
+        self._net = cv2.dnn.readNet(str(model_path))
+        self._anchors = _blazepose_anchors()
+        self._score = score_threshold
+
+    def detect(self, frame_bgr: np.ndarray) -> list[tuple[float, float, float, float, float]]:
+        """Return person boxes (x1, y1, x2, y2, score) in the frame's pixel coordinates."""
+        h, w = frame_bgr.shape[:2]
+        scale = max(h, w)
+        ratio = self.INPUT / scale
+        rw, rh = max(1, int(w * ratio)), max(1, int(h * ratio))
+        img = cv2.cvtColor(cv2.resize(frame_bgr, (rw, rh)), cv2.COLOR_BGR2RGB).astype(np.float32) / 127.5 - 1.0
+        pad_l, pad_t = (self.INPUT - rw) // 2, (self.INPUT - rh) // 2
+        canvas = np.zeros((self.INPUT, self.INPUT, 3), dtype=np.float32)
+        canvas[pad_t : pad_t + rh, pad_l : pad_l + rw] = img
+        self._net.setInput(canvas.transpose(2, 0, 1)[np.newaxis])
+        out = self._net.forward(self._net.getUnconnectedOutLayersNames())
+        regs, logits = (out[0], out[1]) if out[0].shape[-1] > out[1].shape[-1] else (out[1], out[0])
+        score = 1.0 / (1.0 + np.exp(-np.clip(logits[0, :, 0].astype(np.float64), -100, 100)))
+        keep = np.nonzero(score >= self._score)[0]
+        if keep.size == 0:
+            return []
+        box = regs[0, keep, :4] / self.INPUT
+        cxy = box[:, :2] + self._anchors[keep]
+        wh = box[:, 2:]
+        xy1 = (cxy - wh / 2) * scale - [pad_l / ratio, pad_t / ratio]
+        xy2 = (cxy + wh / 2) * scale - [pad_l / ratio, pad_t / ratio]
+        boxes = np.concatenate([xy1, xy2], axis=1)
+        idx = cv2.dnn.NMSBoxes([(float(b[0]), float(b[1]), float(b[2] - b[0]), float(b[3] - b[1])) for b in boxes], score[keep].astype(np.float32), self._score, 0.3)
+        return [(*map(float, boxes[i]), float(score[keep][i])) for i in np.asarray(idx).ravel()]
+
+
 @dataclass
 class Sighting:
     """What the behavior layer consumes each tick."""
@@ -64,6 +117,7 @@ class Sighting:
     head_pose_at_capture: np.ndarray  # 4x4, so gaze math is not skewed by stale poses
     ts: float  # wall-clock time of the frame
     roll_deg: float  # head tilt of the person (from the eye line), + = their head tilts to their left
+    kind: str = "face"  # "face", or "body" when only a torso was found and (u, v) is where the head should be
 
 
 def _jpeg(crop_bgr: np.ndarray) -> bytes:
@@ -119,9 +173,15 @@ class Vision:
         get_frame: Callable[[], np.ndarray | None],
         get_head_pose: Callable[[], np.ndarray],
         recognise: bool = True,
+        person_model: Path | None = None,
     ) -> None:
         self.detector = FaceDetector(yunet_model)
         self.recognizer = FaceRecognizer(sface_model, memory) if recognise else None
+        self.body = BodyFinder(person_model) if person_model is not None else None
+        self.body_enabled = True
+        self._active = threading.Event()
+        self._active.set()
+        self._last_body_check = 0.0
         self.memory = memory
         self._get_frame = get_frame
         self._get_head_pose = get_head_pose
@@ -131,7 +191,7 @@ class Vision:
         self._next_track_id = 1
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self.stats = {"detect_ms": 0.0, "embed_ms": 0.0, "frames": 0, "faces": 0}
+        self.stats = {"detect_ms": 0.0, "embed_ms": 0.0, "body_ms": 0.0, "frames": 0, "faces": 0, "bodies": 0}
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -146,6 +206,15 @@ class Vision:
     def latest(self) -> Sighting | None:
         with self._lock:
             return self._sighting
+
+    def set_active(self, active: bool) -> None:
+        """Pause (camera idle, no CPU) or resume detection."""
+        if active:
+            self._active.set()
+        else:
+            self._active.clear()
+            with self._lock:
+                self._sighting = None
 
     # ------------------------------------------------------------------ core
     def process_frame(self, frame_bgr: np.ndarray, head_pose: np.ndarray, now: float) -> Sighting | None:
@@ -165,7 +234,7 @@ class Vision:
         if chosen is None:
             if self._track is not None and now - self._track.last_seen > FORGET_AFTER:
                 self._track = None
-            return None
+            return self._body_fallback(small, scale, head_pose, now)
 
         row, track = chosen
         if self.recognizer is not None and self._embedding_due(track, row, now):
@@ -180,6 +249,25 @@ class Vision:
         rex, rey, lex, ley = row[4], row[5], row[6], row[7]
         roll = float(np.degrees(np.arctan2(ley - rey, lex - rex)))
         return Sighting(track.track_id, float(u), float(v), track.area_frac, track.person, track.similarity, head_pose, now, roll)
+
+    def _body_fallback(self, small: np.ndarray, scale: float, head_pose: np.ndarray, now: float) -> Sighting | None:
+        """No face: look for a torso (cheaper rate) and report where the head should be, above it."""
+        if self.body is None or not self.body_enabled or now - self._last_body_check < BODY_INTERVAL:
+            return None
+        self._last_body_check = now
+        t0 = time.perf_counter()
+        boxes = self.body.detect(small)
+        self.stats["body_ms"] = (time.perf_counter() - t0) * 1000.0
+        self.stats["bodies"] = len(boxes)
+        if not boxes:
+            return None
+        sh, sw = small.shape[:2]
+        x1, y1, x2, y2, score = max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+        # The head sits above the torso box: aim a bit above its top edge, clamped to the frame.
+        u = (x1 + x2) / 2 / scale
+        v = max(1.0, (y1 - 0.15 * (y2 - y1))) / scale
+        area = (x2 - x1) * (y2 - y1) / float(sw * sh)
+        return Sighting(-1, float(u), float(v), float(area), None, 0.0, head_pose, now, 0.0, "body")
 
     def _select(self, faces: np.ndarray, sw: int, sh: int, now: float) -> tuple[np.ndarray, Track] | None:
         if len(faces) == 0:
@@ -247,6 +335,9 @@ class Vision:
     def _run(self) -> None:
         next_at = 0.0
         while not self._stop.is_set():
+            if not self._active.is_set():
+                self._active.wait(0.2)
+                continue
             now = time.monotonic()
             if now < next_at:
                 time.sleep(min(0.02, next_at - now))

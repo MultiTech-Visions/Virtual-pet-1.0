@@ -19,8 +19,12 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 # Safe operating envelope (SDK clamps ±40° pitch/roll; we stay well inside for cuteness).
-YAW_LIMIT = 55.0
-PITCH_LIMIT = 28.0
+YAW_LIMIT = 150.0  # world yaw; the body follows so the head never needs more than HEAD_YAW_LIMIT from it
+HEAD_YAW_LIMIT = 45.0  # head relative to body (SDK allows 65)
+PITCH_LIMIT = 36.0  # SDK clamps at 40; squatting people are low
+BODY_YAW_LIMIT = 150.0
+BODY_DEADBAND = 12.0  # head can point this far off-body before the body starts turning
+BODY_RATE = 45.0  # deg/s
 ROLL_LIMIT = 25.0
 Z_LIMIT_M = 0.02
 
@@ -119,7 +123,10 @@ def g_shake_off(u: float) -> Offsets:
 
 
 def g_search(u: float) -> Offsets:
-    return Offsets(yaw=22.0 * math.sin(2 * math.pi * 0.7 * u), pitch=-4.0 * _pulse(u), ant_r=-0.3 * _pulse(u), ant_l=0.3 * _pulse(u))
+    # Widening sweep left/right, dipping down (kids, squatters) then up (tall people).
+    sweep = 28.0 * math.sin(2 * math.pi * 0.55 * u) * min(1.0, 0.4 + u)
+    dip = 18.0 * math.sin(2 * math.pi * 0.3 * u)  # + = down first
+    return Offsets(yaw=sweep, pitch=dip, ant_r=-0.3 * _pulse(u), ant_l=0.3 * _pulse(u))
 
 
 def g_shy(u: float, side: float) -> Offsets:
@@ -198,7 +205,7 @@ GESTURES: dict[str, tuple[float, str]] = {
     "snuggle": (2.6, "plain"),
     "dizzy": (2.8, "plain"),
     "shake_off": (0.8, "plain"),
-    "search": (2.4, "plain"),
+    "search": (4.5, "plain"),
     "glance": (2.0, "sided"),
     "shy": (3.0, "sided"),
     "nod_off": (4.0, "plain"),
@@ -275,6 +282,8 @@ class MotionComposer:
         self._next_style_change = 0.0
         self.mirror_roll = 0.0  # degrees, follows the person's head tilt
         self._mirror = 0.0
+        self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
+        self.body_follow = True
 
     # ------------------------------------------------------------------ intent
     def set_gaze(self, target: tuple[float, float] | None) -> None:
@@ -310,8 +319,8 @@ class MotionComposer:
             return fn(u, g.side)  # type: ignore[call-arg]
         return fn(u)  # type: ignore[call-arg]
 
-    def sample(self, now: float, dt: float) -> tuple[np.ndarray, list[float]]:
-        """Return (head 4x4, [right, left] antenna radians) for this instant."""
+    def sample(self, now: float, dt: float) -> tuple[np.ndarray, list[float], float]:
+        """Return (head 4x4 in world frame, [right, left] antenna radians, body yaw degrees) for this instant."""
         # sleep blend eases the body down instead of snapping
         target_sleep = 1.0 if self.mode == "sleeping" else 0.0
         self._sleep_blend += (target_sleep - self._sleep_blend) * min(1.0, dt * 1.2)
@@ -382,4 +391,15 @@ class MotionComposer:
         pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, pitch))
         roll = max(-ROLL_LIMIT, min(ROLL_LIMIT, roll))
         z = max(-Z_LIMIT_M, min(Z_LIMIT_M, z))
-        return head_pose(yaw, pitch, roll, z), [ant_r, ant_l]
+
+        # Body follows the gaze (not the gesture wobble) when the head is far off-centre, slowly and with a deadband,
+        # so the whole robot ends up facing the person and the head has room to move both ways.
+        if self.body_follow and s < 0.5:
+            off_body = self._gaze[0] - self.body_yaw
+            if abs(off_body) > BODY_DEADBAND:
+                step = min(abs(off_body) - BODY_DEADBAND * 0.5, BODY_RATE * dt)
+                self.body_yaw += math.copysign(step, off_body)
+        self.body_yaw = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw))
+        # Never ask the head for more than it can do relative to the body.
+        yaw = max(self.body_yaw - HEAD_YAW_LIMIT, min(self.body_yaw + HEAD_YAW_LIMIT, yaw))
+        return head_pose(yaw, pitch, roll, z), [ant_r, ant_l], self.body_yaw
