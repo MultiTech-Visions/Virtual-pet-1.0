@@ -227,7 +227,7 @@ EXPECTED = [  # (window t0, t1, kind, name)
     (27.0, 30.0, "move", "dance"),  # lively dance
     (36.0, 50.0, "sound", "happy"),  # noticed the music
     (50.0, 53.0, "sound", "ticklish"),
-    (54.0, 56.0, "sound", "giggle|happy|purr"),  # antenna touch
+    (54.0, 56.0, "sound", "giggle|ticklish"),  # ear tickle
     (56.0, 58.0, "sound", "surprised"),  # picked up
     (58.0, 66.0, "sound", "purr|content"),
     (60.0, 63.0, "sound", "dizzy"),
@@ -257,6 +257,7 @@ def main() -> int:
     else:
         print("!! no --vosk model: name/command events will be missing")
     pet = Pet(PetParts(io, memory, library.get, vision.latest, spotter, Behavior(memory), MotionComposer()))
+    pet.pickup_enabled = True  # off by default on the robot (IMU is in the head); the scenario scripts a pickup
 
     stop = threading.Event()
     last_state = None
