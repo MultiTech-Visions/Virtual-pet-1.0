@@ -173,3 +173,17 @@ def test_body_follows_far_gaze_and_head_stays_within_reach():
     for i in range(400, 500):
         _, _, body = m.sample(i * 0.02, 0.02)
     assert abs(body - b0) < 1e-6
+
+
+def test_beep_sway_only_while_talking():
+    m = MotionComposer()
+    quiet, _, _ = m.sample(0.0, 0.02)
+    for i in range(1, 30):
+        m.voice_level = 1.0
+        head, _, _ = m.sample(i * 0.02, 0.02)
+    moved = max(abs(a - b) for a, b in zip(_euler(head), _euler(quiet)))
+    assert moved > 0.5
+    for i in range(30, 200):
+        m.voice_level = 0.0
+        head, _, _ = m.sample(i * 0.02, 0.02)
+    assert m._voice < 0.01

@@ -291,6 +291,9 @@ class MotionComposer:
         self._mirror = 0.0
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
+        self.voice_level = 0.0  # 0..1 loudness of the pet's own beeps; drives a little "talking" sway
+        self._voice = 0.0
+        self._voice_phases = [self.rng.uniform(0, 2 * math.pi) for _ in range(4)]
 
     # ------------------------------------------------------------------ intent
     def set_gaze(self, target: tuple[float, float] | None) -> None:
@@ -364,6 +367,18 @@ class MotionComposer:
                 self._groove_style = self.rng.randrange(3)
                 self._next_style_change = now + self.rng.uniform(12.0, 30.0)
             off += groove_offsets(self.groove[0], self._groove_level, self.groove[1], self._groove_style)
+
+        # beep sway: several slow sines gated by the loudness envelope, so the head "talks" with the sound
+        self._voice += (self.voice_level - self._voice) * min(1.0, dt * 25.0)
+        if self._voice > 0.01:
+            v = self._voice
+            ph = self._voice_phases
+            off.pitch += 3.0 * v * math.sin(2 * math.pi * 2.2 * now + ph[0])
+            off.yaw += 2.5 * v * math.sin(2 * math.pi * 0.9 * now + ph[1])
+            off.roll += 2.0 * v * math.sin(2 * math.pi * 1.4 * now + ph[2])
+            off.z += 0.003 * v * math.sin(2 * math.pi * 0.5 * now + ph[3])
+            off.ant_r += -0.15 * v
+            off.ant_l += 0.15 * v
 
         # mirror the person's head tilt a little (slow, so it reads as empathy not tracking)
         self._mirror += (max(-20.0, min(20.0, self.mirror_roll * 0.8)) - self._mirror) * min(1.0, dt * 1.5)

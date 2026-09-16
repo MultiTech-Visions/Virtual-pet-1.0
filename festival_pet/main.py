@@ -110,6 +110,8 @@ class SoundPlayer:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="festival-pet-sound", daemon=True)
         self.played: list[str] = []  # recent history, handy for the status page and tests
+        self._env: np.ndarray = np.zeros(0, dtype=np.float32)  # loudness envelope of the phrase being played, 50 Hz
+        self._env_t0 = 0.0
 
     def start(self) -> None:
         self._thread.start()
@@ -121,6 +123,13 @@ class SoundPlayer:
     @property
     def busy_until(self) -> float:
         return self._busy_until
+
+    def level(self, now: float) -> float:
+        """Normalised loudness (0..1) of what the speaker is saying right now; 0 when silent."""
+        i = int((now - self._env_t0) * 50)
+        if i < 0 or i >= len(self._env):
+            return 0.0
+        return float(self._env[i])
 
     def request(self, emotion: str, priority: int, now: float) -> None:
         """Drop the request if something at least as important is still sounding."""
@@ -136,6 +145,11 @@ class SoundPlayer:
                 continue
             buf = sounds.render_phrase(emotion, sample_rate=self._sample_rate)
             dur = sounds.phrase_duration(buf, self._sample_rate)
+            hop = self._sample_rate // 50
+            n = len(buf) // hop
+            env = np.sqrt(np.mean(buf[: n * hop].reshape(n, hop) ** 2, axis=1)) if n else np.zeros(0, np.float32)
+            self._env = (env / max(1e-6, float(env.max()))).astype(np.float32) if n else env
+            self._env_t0 = time.time() + 0.08  # roughly the output latency, so the sway lands with the sound
             self._busy_until = time.time() + dur
             self._busy_priority = priority
             self.played.append(emotion)
@@ -426,6 +440,7 @@ class Pet:
         comp.set_gaze(beh.gaze)
         comp.groove = None
         comp.mirror_roll = 0.0
+        comp.voice_level = self.sound.level(now)  # the body moves with every beep it makes
         for act in actions:
             self._dispatch(act, now)
 
