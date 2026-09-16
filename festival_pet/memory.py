@@ -118,6 +118,44 @@ class FaceMemory:
             return None, best_sim
         return best, best_sim
 
+    # ------------------------------------------------------------------ thumbnails
+    def faces_dir(self) -> Path:
+        return self.path.parent / "faces"
+
+    def thumbnail_path(self, person_id: int) -> Path:
+        return self.faces_dir() / f"{person_id}.jpg"
+
+    def set_thumbnail(self, person: Person, jpeg: bytes) -> None:
+        """Store a small face crop for the People page (kept only on the robot)."""
+        self.faces_dir().mkdir(parents=True, exist_ok=True)
+        self.thumbnail_path(person.person_id).write_bytes(jpeg)
+
+    def delete(self, person_id: int) -> None:
+        """Forget one person. Raises KeyError if unknown."""
+        del self.people[person_id]
+        self._dirty = True
+        thumb = self.thumbnail_path(person_id)
+        if thumb.exists():
+            thumb.unlink()
+
+    def merge(self, keep_id: int, other_id: int) -> Person:
+        """Fold ``other`` into ``keep``: embeddings and stats combine, ``other`` is deleted."""
+        if keep_id == other_id:
+            raise ValueError("cannot merge a person into themselves")
+        keep, other = self.people[keep_id], self.people[other_id]
+        # Keep the enrolment view of each, then the freshest of the rest, within the cap.
+        merged = [keep.embeddings[0], other.embeddings[0]] + keep.embeddings[1:] + other.embeddings[1:]
+        keep.embeddings = merged[:MAX_EMBEDDINGS]
+        keep.first_seen = min(keep.first_seen, other.first_seen)
+        keep.last_seen = max(keep.last_seen, other.last_seen)
+        keep.encounters += other.encounters
+        keep.attention_seconds += other.attention_seconds
+        keep.pets += other.pets
+        keep.holds += other.holds
+        keep.affection = min(1.0, max(keep.affection, other.affection) + 0.5 * min(keep.affection, other.affection))
+        self.delete(other_id)
+        return keep
+
     def enroll(self, embedding: np.ndarray, now: float) -> Person:
         """Create a new person from one embedding."""
         q = self._normalize(embedding)
@@ -186,11 +224,13 @@ class FaceMemory:
                         "pets": p.pets,
                         "holds": p.holds,
                         "affection": round(p.affection, 2),
+                        "first_seen": p.first_seen,
                         "last_seen": p.last_seen,
+                        "has_face": self.thumbnail_path(p.person_id).exists(),
                     }
                     for p in self.people.values()
                 ),
                 key=lambda d: d["affection"],
                 reverse=True,
-            )[:20],
+            ),
         }

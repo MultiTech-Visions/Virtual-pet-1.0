@@ -31,7 +31,17 @@
   button.danger { background:#3a2030; color:#ffb3b3; }
   label { display:block; margin:8px 0 2px; color:var(--dim); font-size:13px; }
   .hidden { display:none; }
-  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#444; margin-right:6px; } .dot.on { background:var(--acc); }
+  .people { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+  .person { background:#0b0e1a; border:2px solid var(--line); border-radius:12px; padding:8px; text-align:center; cursor:pointer; }
+  .person.sel { border-color:var(--warm); }
+  .person img, .person .noface { width:96px; height:96px; border-radius:10px; object-fit:cover; background:#222842; display:inline-flex; align-items:center; justify-content:center; color:var(--dim); font-size:30px; }
+  .person .id { font-weight:700; margin-top:4px; } .person .meta { font-size:12px; color:var(--dim); }
+  .person .tier { font-size:12px; color:var(--acc); }
+  .person button { margin-top:6px; font-size:12px; padding:4px 8px; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0 12px; }
+  .grid-btns { display:flex; flex-wrap:wrap; gap:6px; }
+  .grid-btns button { background:#243055; color:var(--fg); border:0; border-radius:8px; padding:9px 12px; font-size:14px; }
+  .grid-btns button:active { background:var(--acc); color:#08130f; }
 </style>
 </head>
 <body>
@@ -78,10 +88,14 @@
 
 <section id="tab-people" class="grid hidden">
   <div class="card" style="grid-column:1/-1">
-    <h2>Friends, by affection</h2>
-    <div class="sub" id="people-sum"></div>
-    <table id="top"><thead><tr><th>#</th><th>tier</th><th>visits</th><th>attention s</th><th>pets</th><th>holds</th><th>affection</th><th>last seen</th></tr></thead><tbody></tbody></table>
-    <p><button class="act danger" onclick="if(confirm('Forget everyone?')) ctl('forget')">Forget everyone</button></p>
+    <h2>People, by affection</h2>
+    <div class="sub">Tap a card to select it. Select two and merge when it made two entries for one person (the first one you tap is kept). Faces are the 112 px crops it enrolled from and never leave the robot.</div>
+    <div class="toolbar">
+      <span class="sub" id="people-sum"></span>
+      <button class="act" id="merge-btn" disabled onclick="mergeSel()">Merge selected</button>
+      <button class="act danger" onclick="if(confirm('Forget everyone?')) ctl('forget')">Forget everyone</button>
+    </div>
+    <div class="people" id="people"></div>
   </div>
 </section>
 
@@ -99,11 +113,12 @@
     <input type="range" min="0.3" max="0.6" step="0.01" id="match" oninput="setVal('match_threshold', this.value, 'match-v')">
     <p class="sub">Speaker volume lives on the daemon dashboard (port 8000 → settings).</p>
   </div>
-  <div class="card">
-    <h2>Make it do things</h2>
-    <label>Sound</label><select id="sel-sound"></select> <button class="act" onclick="ctl('sound', v('sel-sound'))">Play</button>
-    <label>Gesture</label><select id="sel-gesture"></select> <button class="act" onclick="ctl('gesture', v('sel-gesture'))">Do</button>
-    <label>Library move</label><select id="sel-move"></select> <button class="act" onclick="ctl('move', v('sel-move'))">Play</button>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Puppet it</h2>
+    <div class="sub">Tap to fire immediately. Sounds queue behind whatever is playing; gestures and moves preempt.</div>
+    <label>Sounds</label><div class="grid-btns" id="btn-sound"></div>
+    <label>Gestures</label><div class="grid-btns" id="btn-gesture"></div>
+    <label>Library moves</label><div class="grid-btns" id="btn-move"></div>
   </div>
 </section>
 
@@ -132,9 +147,29 @@ function setVal(cmd, value, label) { $(label).textContent = value; ctl(cmd, pars
 function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
 async function loadCatalog() {
   const c = await (await fetch('/api/catalog')).json();
-  for (const [id, list] of [['sel-sound', c.sounds], ['sel-gesture', c.gestures], ['sel-move', c.moves]])
-    $(id).innerHTML = list.map(x => `<option>${x}</option>`).join('');
+  for (const [id, kind, list] of [['btn-sound', 'sound', c.sounds], ['btn-gesture', 'gesture', c.gestures], ['btn-move', 'move', c.moves]])
+    $(id).innerHTML = list.map(x => `<button onclick="ctl('${kind}', '${x}')">${x.replace(/_/g, ' ')}</button>`).join('');
 }
+let selected = [];
+function toggleSel(id) {
+  selected = selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id].slice(-2);
+  document.querySelectorAll('.person').forEach(el => el.classList.toggle('sel', selected.includes(+el.dataset.id)));
+  $('merge-btn').disabled = selected.length !== 2;
+  $('merge-btn').textContent = selected.length === 2 ? `Merge #${selected[1]} into #${selected[0]}` : 'Merge selected';
+}
+async function mergeSel() {
+  const r = await fetch('/api/people/merge', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({keep: selected[0], other: selected[1]})});
+  if (!r.ok) alert((await r.json()).detail);
+  selected = []; $('merge-btn').disabled = true; $('merge-btn').textContent = 'Merge selected'; refresh();
+}
+async function delPerson(id, ev) {
+  ev.stopPropagation();
+  if (!confirm(`Forget person #${id}?`)) return;
+  const r = await fetch('/api/people/' + id, {method:'DELETE'});
+  if (!r.ok) alert((await r.json()).detail);
+  selected = selected.filter(x => x !== id); refresh();
+}
+let lastPeopleKey = '';
 async function refresh() {
   try {
     if (tab === 'log') {
@@ -164,11 +199,17 @@ async function refresh() {
       muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
     const t = d.memory.tiers;
     $('people-sum').textContent = `${d.memory.people} people · ${t.bestie} besties · ${t.friend} friends`;
-    const tb = document.querySelector('#top tbody'); tb.innerHTML = '';
-    for (const p of d.memory.top) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${p.id}</td><td>${p.tier}</td><td>${p.encounters}</td><td>${p.attention_s}</td><td>${p.pets}</td><td>${p.holds}</td><td>${p.affection}</td><td>${new Date(p.last_seen*1000).toLocaleTimeString()}</td>`;
-      tb.appendChild(tr);
+    const key = JSON.stringify(d.memory.top.map(p => [p.id, p.encounters, p.pets, p.holds, p.affection, p.has_face]));
+    if (key !== lastPeopleKey) {  // only re-render when something changed, so taps are not lost
+      lastPeopleKey = key;
+      $('people').innerHTML = d.memory.top.map(p => `
+        <div class="person ${selected.includes(p.id) ? 'sel' : ''}" data-id="${p.id}" onclick="toggleSel(${p.id})">
+          ${p.has_face ? `<img src="/api/people/${p.id}/face.jpg?v=${p.encounters}" alt="">` : '<div class="noface">?</div>'}
+          <div class="id">#${p.id} <span class="tier">${p.tier}</span></div>
+          <div class="meta">${p.encounters} visits · ${Math.round(p.attention_s)} s · ${p.pets} pets · ${p.holds} holds</div>
+          <div class="meta">♥ ${p.affection} · seen ${new Date(p.last_seen*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+          <button class="act danger" onclick="delPerson(${p.id}, event)">forget</button>
+        </div>`).join('') || '<div class="sub">nobody yet</div>';
     }
   } catch (e) { $('conn').textContent = 'offline: ' + e; }
 }

@@ -111,13 +111,18 @@ Polls the app twice a second. Tabs:
   greeting them"), and the last actions.
 - **Senses** – what the eyes, ears and body report right now, plus the belly-scratch
   tuning readout with a live onset-ratio slider.
-- **People** – the memory table, forget-everyone.
-- **Controls** – wake/sleep, mute, groove intensity, face-match strictness, and "make it do
-  things": play any sound, gesture or library move by name.
+- **People** – one card per person with the 112 px face crop it enrolled from (stored only on
+  the robot, under `~/.local/share/festival_pet/faces/`), visits, attention, pets, holds,
+  affection. Tap two cards and **merge** them when it split one person into two entries
+  (the first tapped is kept; embeddings and stats combine). **Forget** a single person, or
+  everyone.
+- **Controls** – wake/sleep, mute, groove intensity, face-match strictness, and a puppet
+  panel: every sound, gesture and library move as a tap-to-fire button.
 - **Log** – the app's own log ring (last 400 lines). The daemon's per-app log is on the
   dashboard too.
 
-API: `GET /api/mind`, `GET /api/log?n=`, `GET /api/catalog`, `POST /api/control {cmd, value}`.
+API: `GET /api/mind`, `GET /api/log?n=`, `GET /api/catalog`, `POST /api/control {cmd, value}`,
+`GET /api/people/{id}/face.jpg`, `DELETE /api/people/{id}`, `POST /api/people/merge {keep, other}`.
 
 ## Auto-start at the festival
 

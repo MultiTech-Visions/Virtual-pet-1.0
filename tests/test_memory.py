@@ -50,3 +50,29 @@ def test_relationship_tiers_progress():
     assert 0.0 < p.affection <= 1.0
     s = mem.summary()
     assert s["people"] == 1 and s["top"][0]["tier"] == "bestie"
+
+
+def test_delete_and_merge(tmp_path):
+    mem = FaceMemory(tmp_path / "mem.json", save_interval=0.0)
+    a = mem.enroll(_vec(1), now=0.0)
+    b = mem.enroll(_vec(2), now=10.0)
+    mem.set_thumbnail(b, b"\xff\xd8fake")
+    assert mem.thumbnail_path(b.person_id).exists()
+    for _ in range(3):
+        mem.reinforce(b, _vec(50), 0.5)
+    mem.add_pet(b)
+    mem.sighted(b, now=10.0 + ENCOUNTER_GAP + 1)
+    kept = mem.merge(a.person_id, b.person_id)
+    assert kept is a and b.person_id not in mem.people
+    assert not mem.thumbnail_path(b.person_id).exists()
+    assert a.encounters == 3 and a.pets == 1 and len(a.embeddings) == 5
+    hit, _ = mem.match(_vec(2))  # b's enrolment view now matches a
+    assert hit is a
+    mem.delete(a.person_id)
+    assert mem.people == {}
+    try:
+        mem.delete(99)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("expected KeyError")

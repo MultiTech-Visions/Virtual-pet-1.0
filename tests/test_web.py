@@ -75,3 +75,25 @@ def test_mind_log_catalog_and_controls():
     assert c.post("/api/control", json={"cmd": "nonsense"}).status_code == 400
     assert c.post("/api/control", json={"cmd": "gesture", "value": "moonwalk"}).status_code == 400
     pet.stop()
+
+
+def test_people_routes(tmp_path):
+    from festival_pet.memory import FaceMemory as FM
+
+    mem = FM(tmp_path / "mem.json", save_interval=0.0)
+    a = mem.enroll(np.ones(4), 0.0)
+    b = mem.enroll(np.array([1.0, 0, 0, 0]), 1.0)
+    mem.set_thumbnail(a, b"\xff\xd8\xff")
+    pet = Pet(PetParts(NullIO(), mem, lambda n: FakeMove(), lambda: None, None, Behavior(mem), MotionComposer()))
+    pet.start(0.0)
+    app = FastAPI()
+    install_routes(app, pet)
+    c = TestClient(app)
+    assert c.get(f"/api/people/{a.person_id}/face.jpg").status_code == 200
+    assert c.get(f"/api/people/{b.person_id}/face.jpg").status_code == 404
+    assert c.post("/api/people/merge", json={"keep": a.person_id, "other": b.person_id}).json()["kept"] == a.person_id
+    assert c.post("/api/people/merge", json={"keep": a.person_id, "other": a.person_id}).status_code == 400
+    assert c.delete(f"/api/people/{a.person_id}").status_code == 200
+    assert c.delete(f"/api/people/{a.person_id}").status_code == 404
+    assert c.get("/api/mind").json()["memory"]["people"] == 0
+    pet.stop()

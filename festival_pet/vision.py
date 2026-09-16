@@ -48,6 +48,7 @@ class Track:
     last_embed: float = 0.0
     unknown_votes: int = 0
     pending_embeddings: list[np.ndarray] = field(default_factory=list)
+    pending_crops: list[np.ndarray] = field(default_factory=list)
 
 
 @dataclass
@@ -65,6 +66,13 @@ class Sighting:
     roll_deg: float  # head tilt of the person (from the eye line), + = their head tilts to their left
 
 
+def _jpeg(crop_bgr: np.ndarray) -> bytes:
+    ok, buf = cv2.imencode(".jpg", crop_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    if not ok:
+        raise RuntimeError("JPEG encoding failed")
+    return bytes(buf)
+
+
 class FaceRecognizer:
     """Thin wrapper around cv2.FaceRecognizerSF + FaceMemory."""
 
@@ -72,10 +80,11 @@ class FaceRecognizer:
         self.memory = memory
         self._sf = cv2.FaceRecognizerSF.create(str(sface_model), "")
 
-    def embed(self, frame_bgr: np.ndarray, face_row: np.ndarray) -> np.ndarray:
+    def embed(self, frame_bgr: np.ndarray, face_row: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return (128-d embedding, the 112x112 aligned BGR crop it came from)."""
         aligned = self._sf.alignCrop(frame_bgr, face_row)
         feat = self._sf.feature(aligned)
-        return np.asarray(feat, dtype=np.float32).ravel()
+        return np.asarray(feat, dtype=np.float32).ravel(), aligned
 
 
 class FaceDetector:
@@ -207,13 +216,16 @@ class Vision:
     def _identify(self, small: np.ndarray, row: np.ndarray, track: Track, now: float) -> None:
         assert self.recognizer is not None
         track.last_embed = now
-        emb = self.recognizer.embed(small, row)
+        emb, crop = self.recognizer.embed(small, row)
         person, sim = self.memory.match(emb)
         if person is not None:
             track.person, track.similarity = person, sim
             track.unknown_votes = 0
             track.pending_embeddings.clear()
+            track.pending_crops.clear()
             self.memory.reinforce(person, emb, sim)
+            if not self.memory.thumbnail_path(person.person_id).exists():
+                self.memory.set_thumbnail(person, _jpeg(crop))
             return
         track.similarity = sim
         if track.person is not None:
@@ -221,12 +233,15 @@ class Vision:
             return
         track.unknown_votes += 1
         track.pending_embeddings.append(emb)
+        track.pending_crops.append(crop)
         if track.unknown_votes >= UNKNOWN_VOTES_TO_ENROLL:
             person = self.memory.enroll(track.pending_embeddings[0], now)
             for extra in track.pending_embeddings[1:]:
                 self.memory.reinforce(person, extra, 0.0)
+            self.memory.set_thumbnail(person, _jpeg(track.pending_crops[-1]))
             track.person = person
             track.pending_embeddings.clear()
+            track.pending_crops.clear()
             logger.info("Enrolled new person #%d", person.person_id)
 
     def _run(self) -> None:

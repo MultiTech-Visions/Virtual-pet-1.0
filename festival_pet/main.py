@@ -415,9 +415,12 @@ class Pet:
         now = time.time()
         beh = self.p.behavior
         if cmd == "sound":
-            self.sound.request(str(value), 5, now)
+            if str(value) not in sounds.EMOTIONS:
+                raise KeyError(f"unknown sound '{value}'")
+            self._dispatch(Action("sound", str(value), 5), now)
         elif cmd == "gesture":
-            self.p.composer.request_gesture(str(value), now, 5)
+            self.p.composer.request_gesture(str(value), now, 5)  # raises KeyError on unknown names
+            self.actions_log.append((now, "gesture", f"{value} (manual)"))
         elif cmd == "move":
             self._dispatch(Action("move", str(value), 5), now)
         elif cmd == "sleep":
@@ -526,6 +529,11 @@ class Control(BaseModel):
     value: str | float | bool | None = None
 
 
+class Merge(BaseModel):
+    keep: int
+    other: int
+
+
 def install_routes(app, pet: Pet) -> None:
     """Web API behind the pet's page (port 8042). Shared by the app and the tests."""
     from fastapi import HTTPException
@@ -559,6 +567,35 @@ def install_routes(app, pet: Pet) -> None:
     @app.post("/api/forget")
     def forget() -> dict:
         return pet.control("forget", None)
+
+    @app.get("/api/people/{person_id}/face.jpg")
+    def face(person_id: int):
+        from fastapi.responses import FileResponse
+
+        path = pet.p.memory.thumbnail_path(person_id)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="no face stored")
+        return FileResponse(path, media_type="image/jpeg")
+
+    @app.delete("/api/people/{person_id}")
+    def delete_person(person_id: int) -> dict:
+        try:
+            pet.p.memory.delete(person_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"no person #{person_id}")
+        pet.p.memory.save(force=True)
+        return {"ok": True}
+
+    @app.post("/api/people/merge")
+    def merge_people(m: Merge) -> dict:
+        try:
+            kept = pet.p.memory.merge(m.keep, m.other)
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=f"no person {e}")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        pet.p.memory.save(force=True)
+        return {"ok": True, "kept": kept.person_id, "embeddings": len(kept.embeddings)}
 
 
 try:
