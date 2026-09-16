@@ -182,6 +182,12 @@ def g_flinch(u: float, side: float) -> Offsets:
     return off
 
 
+def g_shake(u: float) -> Offsets:
+    """A clear 'no'/shake-back: two yaw swings, antennas along for the ride."""
+    sw = math.sin(2 * math.pi * 2 * u) * (1 - 0.3 * u)
+    return Offsets(yaw=14.0 * sw, ant_r=0.25 * sw, ant_l=0.25 * sw)
+
+
 def g_lean(u: float) -> Offsets:
     """Head being petted: lean into the hand, eyes-closed feel, antennas relax slowly."""
     e = _ease(min(1.0, u * 2)) * (1 - max(0.0, u - 0.7) / 0.3)
@@ -214,6 +220,7 @@ GESTURES: dict[str, tuple[float, str]] = {
     "tada": (1.6, "plain"),
     "flinch": (1.2, "sided"),
     "lean": (2.4, "plain"),
+    "shake": (1.1, "plain"),
 }
 
 _FUNCS = {
@@ -221,7 +228,7 @@ _FUNCS = {
     "droop": g_droop, "startle": g_startle, "snuggle": g_snuggle, "dizzy": g_dizzy,
     "shake_off": g_shake_off, "search": g_search, "glance": g_glance,
     "shy": g_shy, "nod_off": g_nod_off, "sneeze": g_sneeze, "hiccup": g_hiccup, "tada": g_tada,
-    "flinch": g_flinch, "lean": g_lean,
+    "flinch": g_flinch, "lean": g_lean, "shake": g_shake,
 }
 
 
@@ -359,7 +366,7 @@ class MotionComposer:
             off += groove_offsets(self.groove[0], self._groove_level, self.groove[1], self._groove_style)
 
         # mirror the person's head tilt a little (slow, so it reads as empathy not tracking)
-        self._mirror += (self.mirror_roll * 0.5 - self._mirror) * min(1.0, dt * 0.8)
+        self._mirror += (max(-20.0, min(20.0, self.mirror_roll * 0.8)) - self._mirror) * min(1.0, dt * 1.5)
         off.roll += self._mirror
 
         # gesture overlay

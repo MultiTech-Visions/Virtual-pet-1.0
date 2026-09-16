@@ -223,7 +223,7 @@ def build_timeline() -> Timeline:
     tl.face += [(3.0, 5.0, 25.0, -5.0, 0.05)]  # stranger appears to the left
     tl.face += [(5.0, 9.0, 25.0, -5.0, 0.05, 60.0)]  # ...and walks further left: the body must follow to keep them
     tl.face += [(9.0, 12.5, 60.0, 0.0, 0.05, -10.0)]  # ...then walks back across to the right
-    tl.face += [(13.7, 20.0, -10.0, 0.0, 0.05)]  # peekaboo: hidden 12.5-13.7
+    tl.face += [(14.5, 20.0, -10.0, 0.0, 0.05)]  # peekaboo: hidden 12.5-14.5 (2 s, longer than a detector dropout)
     tl.add_speech(21.0, "m3_reachy")
     tl.add_speech(23.5, "m3_reachy_dance")
     tl.add_speech(27.0, "m3_reachy_dance")
@@ -245,7 +245,7 @@ SLEEP_CMD_AT = 77.5  # the fixtures have no spoken "sleep"; the harness injects 
 EXPECTED = [  # (window t0, t1, kind, name)
     (0.0, 2.0, "wake", "start"),
     (3.0, 6.0, "sound", "hello_new"),
-    (13.5, 15.0, "sound", "giggle"),  # peekaboo
+    (14.4, 16.0, "sound", "giggle"),  # peekaboo
     (21.0, 23.5, "sound", "name"),
     (23.5, 27.0, "gesture", "bounce"),  # little dance
     (27.0, 30.0, "move", "dance"),  # lively dance

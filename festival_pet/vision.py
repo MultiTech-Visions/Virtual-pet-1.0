@@ -144,7 +144,7 @@ class FaceRecognizer:
 class FaceDetector:
     """cv2.FaceDetectorYN with a fixed input size."""
 
-    def __init__(self, yunet_model: Path, score_threshold: float = 0.7) -> None:
+    def __init__(self, yunet_model: Path, score_threshold: float = 0.6) -> None:  # SDK uses 0.6; 0.7 dropped out too often
         self._det = cv2.FaceDetectorYN.create(
             str(yunet_model), "", (DETECT_WIDTH, DETECT_WIDTH), score_threshold=score_threshold, nms_threshold=0.3, top_k=50
         )

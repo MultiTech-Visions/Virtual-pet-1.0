@@ -315,7 +315,7 @@ class Pet:
         self.groove_scale = 1.0  # user knob on top of the brain's intensity
         self.pickup_enabled = False  # IMU is in the head; off by default until tuned on the real robot
         self.asleep = False  # motors off, camera paused; ears stay on
-        self._touch_resync_at = -1.0  # after sleep/wake the antennas settle somewhere new: re-zero the ear detector then
+        self._touch_settle_left = -1.0  # seconds of ticks to wait after sleep/wake before re-zeroing the ear detector
         self.set_vision_active: Callable[[bool], None] = lambda active: None
         self.transcript: deque[tuple[float, str, list[str]]] = deque(maxlen=30)
         self._last_obs = Observation()
@@ -364,11 +364,12 @@ class Pet:
         # Antennas lag their command while animated; the detector raises its threshold then.
         busy = self.move is not None or comp.gesture_active(now)
         present_ants = io.present_antennas()
-        if self._touch_resync_at >= 0:
-            if now >= self._touch_resync_at:  # motors settled after sleep/wake: wherever the ears rest now is "untouched"
+        if self._touch_settle_left >= 0:
+            # Count ticks, not wall time: the blocking sleep/wake move already ate seconds before this tick ran.
+            self._touch_settle_left -= min(dt, 0.05)
+            if self._touch_settle_left < 0:  # motors settled: wherever the ears rest now is "untouched"
                 self.last_ants = list(present_ants)
                 self.touch = TouchDetector()
-                self._touch_resync_at = -1.0
             obs.touched = False
         else:
             obs.touched = self.touch.update(self.last_ants, present_ants, busy, dt)
@@ -477,7 +478,7 @@ class Pet:
                 self.asleep = False
                 self.set_vision_active(True)
                 self.move, self.blend_from = None, None
-                self._touch_resync_at = now + 1.0
+                self._touch_settle_left = 1.5
             self.sound.request("wake", 5, now)
             comp.request_gesture("perk", now, 5)
         elif act.kind == "sleep":
@@ -486,7 +487,7 @@ class Pet:
                 self.p.io.sleep_body()  # nest the head, then torque off; blocks ~4 s
                 self.asleep = True
                 self.move = None
-                self._touch_resync_at = now + 2.5
+                self._touch_settle_left = 3.0
         elif act.kind == "groove":
             beat = self.audio.beat
             if beat.music:

@@ -136,12 +136,12 @@ def test_peekaboo_and_shy():
     b, _ = _brain()
     face = FaceObs(1, 0.0, 0.0, 0.05, None, 0.0)
     _run(b, lambda t: Observation(face=face), 0.0, 3.0)
-    _run(b, lambda t: Observation(), 3.0, 4.2)  # hides behind hands for 1.2 s
+    _run(b, lambda t: Observation(), 3.0, 5.0)  # hides behind hands for 2 s (longer than a detector dropout)
     assert b.state == "ENGAGED"
-    acts = _run(b, lambda t: Observation(face=face), 4.2, 4.5)
+    acts = _run(b, lambda t: Observation(face=face), 5.0, 5.3)
     assert any(a.name == "giggle" for a in acts)  # came right back
     close = FaceObs(1, 0.0, 0.0, 0.2, None, 0.0)
-    acts = _run(b, lambda t: Observation(face=close), 4.5, 22.0)
+    acts = _run(b, lambda t: Observation(face=close), 5.3, 22.0)
     assert any(a.name == "shy" for a in acts)
 
 
@@ -192,10 +192,11 @@ def test_heard_speech_reacts_to_intent_and_logs_it():
 def test_body_makes_it_look_up_and_search():
     b, _ = _brain()
     body = FaceObs(-1, 15.0, -20.0, 0.2, None, 0.0)
-    acts = _run(b, lambda t: Observation(body=body), 0.0, 1.0)
+    _run(b, lambda t: Observation(), 0.0, 3.0)  # no face for a while first (bodies never override a recent face)
+    acts = _run(b, lambda t: Observation(body=body), 3.0, 4.0)
     assert b.state == "SEARCHING" and b.gaze == (15.0, -20.0)
     assert any(a.name == "perk" for a in acts)
-    _run(b, lambda t: Observation(body=body), 1.0, 12.0)
+    _run(b, lambda t: Observation(body=body), 4.0, 15.0)
     assert b.state == "SEARCHING"  # keeps looking as long as the body is there
 
 
@@ -206,3 +207,35 @@ def test_sleeping_ignores_faces_but_wakes_on_loud_or_name():
     assert b.state == "SLEEPING"
     acts = _run(b, lambda t: Observation(loud_yaw_deg=(20.0 if t < 5.05 else None)), 5.0, 5.5)
     assert any(a.kind == "wake" for a in acts) and b.state == "WAKING"
+
+
+def test_no_flip_flop_between_face_and_body_and_no_regreet():
+    b, _ = _brain()
+    face = FaceObs(1, 10.0, 0.0, 0.05, None, 0.0)
+    body = FaceObs(-1, 10.0, -25.0, 0.2, None, 0.0)
+    acts = _run(b, lambda t: Observation(face=face), 0.0, 3.0)
+    assert sum(1 for a in acts if a.name == "hello_new") == 1
+    # detector dropout: only the body for 1 s, then the face again -> gaze must not jump to the body estimate
+    _run(b, lambda t: Observation(body=body), 3.0, 4.0)
+    assert b.state == "ENGAGED" and b.gaze == (10.0, 0.0)
+    acts = _run(b, lambda t: Observation(face=face), 4.0, 5.0)
+    assert not any(a.name in ("giggle", "hello_new") for a in acts)  # no peekaboo, no re-greeting
+    # a new track id for the same stranger within 30 s: small acknowledgement, not the full hello
+    face2 = FaceObs(2, 10.0, 0.0, 0.05, None, 0.0)
+    _run(b, lambda t: Observation(), 5.0, 10.0)
+    acts = _run(b, lambda t: Observation(face=face2), 10.0, 13.0)
+    assert not any(a.name == "hello_new" for a in acts) and any(a.name == "curious" for a in acts)
+
+
+def test_nods_back_when_the_person_nods():
+    import math
+
+    b, _ = _brain()
+    still = FaceObs(1, 0.0, 0.0, 0.08, None, 0.0)
+    _run(b, lambda t: Observation(face=still), 0.0, 3.0)
+    nodding = lambda t: Observation(face=FaceObs(1, 0.0, 6.0 * math.sin(2 * math.pi * 1.5 * t), 0.08, None, 0.0))
+    acts = _run(b, nodding, 3.0, 5.5)
+    assert any(a.kind == "gesture" and a.name == "nod" for a in acts)
+    shaking = lambda t: Observation(face=FaceObs(1, 8.0 * math.sin(2 * math.pi * 1.5 * t), 0.0, 0.08, None, 0.0))
+    acts = _run(b, shaking, 12.0, 14.5)
+    assert any(a.kind == "gesture" and a.name == "shake" for a in acts)

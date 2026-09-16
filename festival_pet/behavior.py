@@ -105,8 +105,12 @@ class Timers:
     engaged_sad_if_over: float = 20.0
     name_attentive: float = 8.0  # how long a name call keeps it attentive / listening for a trick
     trick_window: float = 15.0  # a second "dance" within this window upgrades to the lively dance
-    peekaboo_min_gap: float = 0.6  # face hidden at least this long...
-    peekaboo_max_gap: float = 3.5  # ...and back within this = peekaboo
+    peekaboo_min_gap: float = 1.5  # face hidden at least this long (detector dropouts are shorter)...
+    peekaboo_max_gap: float = 4.0  # ...and back within this = peekaboo
+    peekaboo_cooldown: float = 20.0
+    regreet_person_after: float = 120.0  # a known person is not greeted again within this
+    regreet_stranger_after: float = 30.0  # an unknown track that re-locks quickly gets a small "oh, hi again"
+    mimic_cooldown: float = 6.0
     shy_stare: float = 14.0  # someone very close for this long -> shy
     sneeze_min: float = 240.0
     sneeze_max: float = 900.0
@@ -159,6 +163,11 @@ class Behavior:
     _voice_lock_until: float = -1e9
     _last_heard_react: float = -1e9
     _body_since: float = 0.0
+    _last_peekaboo: float = -1e9
+    _last_greet_time: float = -1e9
+    _last_greet_person: int | None = None
+    _face_hist: deque = field(default_factory=lambda: deque(maxlen=40))  # (t, yaw, pitch) for nod/shake mimicry
+    _last_mimic: float = -1e9
 
     # gaze the motion layer should aim for (None = free to idle-drift)
     gaze: tuple[float, float] | None = None
@@ -390,8 +399,9 @@ class Behavior:
                     self.gaze = (face.yaw_deg, face.pitch_deg)
 
                 gap = now - self._last_face_time
-                if face.track_id == self._engaged_track and t.peekaboo_min_gap < gap < t.peekaboo_max_gap:
+                if face.track_id == self._engaged_track and t.peekaboo_min_gap < gap < t.peekaboo_max_gap and now - self._last_peekaboo > t.peekaboo_cooldown:
                     # Peekaboo! They hid and came right back.
+                    self._last_peekaboo = now
                     actions.append(Action("sound", "giggle", 3))
                     actions.append(Action("gesture", "bounce", 3))
                     self._think(now, "peekaboo! they came back")
@@ -424,13 +434,23 @@ class Behavior:
                     self._engaged_person = face.person
                     if face.person is not None:
                         self.memory.sighted(face.person, now)
-                    sound, gesture, move = self._person_greeting(face.person)
-                    self._think(now, "a new face, saying hi" if face.person is None else f"it's person #{face.person.person_id} ({face.person.tier()}, visit {face.person.encounters}), greeting them")
-                    actions.append(Action("sound", sound, 3))
-                    if face.person is not None and face.person.tier() != "acquaintance" and self.mood.energy > 0.35:
-                        actions.append(Action("move", move, 3))
+                    same_person_recently = face.person is not None and self._last_greet_person == face.person.person_id and now - self._last_greet_time < t.regreet_person_after
+                    stranger_recently = face.person is None and now - self._last_greet_time < t.regreet_stranger_after
+                    if same_person_recently or stranger_recently:
+                        # We just said hello; a full greeting again would look like a broken record.
+                        self._think(now, "oh, you again! (no big hello twice)")
+                        actions.append(Action("sound", "curious", 1))
+                        actions.append(Action("gesture", "tilt", 1))
                     else:
-                        actions.append(Action("gesture", gesture, 3))
+                        self._last_greet_time = now
+                        self._last_greet_person = None if face.person is None else face.person.person_id
+                        sound, gesture, move = self._person_greeting(face.person)
+                        self._think(now, "a new face, saying hi" if face.person is None else f"it's person #{face.person.person_id} ({face.person.tier()}, visit {face.person.encounters}), greeting them")
+                        actions.append(Action("sound", sound, 3))
+                        if face.person is not None and face.person.tier() != "acquaintance" and self.mood.energy > 0.35:
+                            actions.append(Action("move", move, 3))
+                        else:
+                            actions.append(Action("gesture", gesture, 3))
                     self.mood.social += 0.1
                 elif face.person is not None and self._engaged_person is None:
                     # Identified mid-engagement after a generic greeting: a small "oh it's you" for friends.
@@ -443,6 +463,17 @@ class Behavior:
                 if self._engaged_person is not None:
                     self.memory.add_attention(self._engaged_person, dt)
                 self._last_interaction = now
+
+                # Mirror them: nod back at a nod, shake back at a shake (tilt is mirrored continuously by the body).
+                self._face_hist.append((now, face.yaw_deg, face.pitch_deg))
+                if now - self._last_mimic > t.mimic_cooldown:
+                    mimic = self._detect_nod_or_shake(now)
+                    if mimic is not None:
+                        self._last_mimic = now
+                        self._face_hist.clear()
+                        self._think(now, f"they {'nodded' if mimic == 'nod' else 'shook their head'}... me too!")
+                        actions.append(Action("sound", "happy" if mimic == "nod" else "curious", 2))
+                        actions.append(Action("gesture", mimic, 2))
 
                 # Periodic micro-reactions while someone is around.
                 if now >= self._next_react:
@@ -459,7 +490,7 @@ class Behavior:
                     actions.append(Action("sound", choice, 1))
                     actions.append(Action("gesture", gesture, 1))
 
-            elif obs.body is not None and (self.state != "ENGAGED" or now - self._last_face_time > 0.8):
+            elif obs.body is not None and self.state != "ENGAGED" and now - self._last_face_time > 2.5:
                 # Someone's torso is in view but not their face: look up to where the head should be.
                 self._close_since = 0.0
                 if self._body_since == 0.0:
@@ -537,6 +568,25 @@ class Behavior:
             self._nodding_off = False
 
         return actions
+
+    def _detect_nod_or_shake(self, now: float) -> str | None:
+        """Two or more up/down (nod) or left/right (shake) reversals of 3+ degrees within the last 2 s."""
+        pts = [(t, y, p) for t, y, p in self._face_hist if now - t <= 2.0]
+        if len(pts) < 8:
+            return None
+        for axis, name in ((2, "nod"), (1, "shake")):
+            vals = [p[axis] for p in pts]
+            base = sum(vals) / len(vals)
+            dev = [v - base for v in vals]
+            if max(dev) - min(dev) < 3.0:
+                continue
+            # count sign reversals of the deviation, ignoring the small stuff
+            signs = [1 if d > 1.0 else -1 if d < -1.0 else 0 for d in dev]
+            signs = [x for x in signs if x != 0]
+            reversals = sum(1 for a, b in zip(signs, signs[1:]) if a != b)
+            if reversals >= 3:
+                return name
+        return None
 
     def _on_heard(self, text: str, found: list[str], now: float) -> list[Action]:
         """React to the gist of what someone said. Rough transcripts, so small reactions only."""
