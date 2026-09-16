@@ -64,6 +64,21 @@ def source_version(root: Path) -> str:
     raise ValueError("no version in pyproject.toml")
 
 
+TEXT_SUFFIXES = (".sh", ".py", ".toml", ".md", ".html", ".txt", ".js", ".css")
+
+
+def _add_file(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
+    """Add one file, converting CRLF to LF for text files (a Windows checkout would otherwise break bash on the robot)."""
+    data = path.read_bytes()
+    if path.suffix in TEXT_SUFFIXES:
+        data = data.replace(b"\r\n", b"\n")
+    info = tarfile.TarInfo(arcname)
+    info.size = len(data)
+    info.mtime = int(path.stat().st_mtime)
+    info.mode = 0o755 if path.suffix == ".sh" else 0o644
+    tar.addfile(info, io.BytesIO(data))
+
+
 def make_tarball(root: Path) -> bytes:
     """Tar the shippable parts of the app into memory."""
     buf = io.BytesIO()
@@ -72,7 +87,12 @@ def make_tarball(root: Path) -> bytes:
             path = root / name
             if not path.exists():
                 raise FileNotFoundError(path)
-            tar.add(path, arcname=name, filter=lambda ti: None if "__pycache__" in ti.name or ti.name.endswith(".pyc") else ti)
+            files = [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file())
+            for f in files:
+                rel = f.relative_to(root).as_posix()
+                if "__pycache__" in rel or rel.endswith(".pyc"):
+                    continue
+                _add_file(tar, f, rel)
     return buf.getvalue()
 
 
