@@ -77,18 +77,32 @@
 <section id="tab-senses" class="grid hidden">
   <div class="card"><h2>Eyes</h2><div class="kv" id="eyes"></div></div>
   <div class="card"><h2>Ears</h2><div class="kv" id="ears"></div></div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Microphone levels (last 20 s)</h2>
+    <div class="sub">If <b>chunks</b> is not climbing, no audio is arriving at all. Green = loudness (RMS). Orange = head-rub energy with its floor as the dashed line. Pink = belly-scratch band energy with its floor. Blue dots = flatness (0–1). Rub the head or scratch the belly and watch which trace jumps.</div>
+    <canvas id="chart" height="160" style="width:100%; background:#0b0e1a; border-radius:10px; margin-top:8px"></canvas>
+    <div class="kv" id="levels" style="margin-top:8px"></div>
+  </div>
   <div class="card"><h2>Body</h2><div class="kv" id="body"></div></div>
   <div class="card"><h2>Head-pet tuning</h2>
-    <div class="sub">Rub the top of the head (the mics are in there). Rub energy should jump far above the baseline with flatness > 0.35 while you rub. Lower the ratio if petting is not noticed, raise it if loud music triggers it.</div>
+    <div class="sub">Easiest: tap <b>Calibrate</b>, stay quiet 3 s, then rub the head for 3 s. Manual: rub energy must exceed the floor, exceed ratio × baseline, and flatness must exceed its minimum.</div>
+    <p><button class="act" onclick="ctl('calibrate','rub')">Calibrate head pets</button> <span class="sub" id="calib-rub"></span></p>
     <div class="kv" id="rub"></div>
-    <label>Level ratio: <span id="rub-v"></span></label>
-    <input type="range" min="3" max="40" step="1" id="rubr" oninput="setVal('rub_level_ratio', this.value, 'rub-v')">
+    <label>Level ratio (× baseline): <span id="rub-v"></span></label>
+    <input type="range" min="1.5" max="40" step="0.5" id="rubr" oninput="setVal('rub_level_ratio', this.value, 'rub-v')">
+    <label>Flatness minimum: <span id="rubf-v"></span></label>
+    <input type="range" min="0.02" max="0.9" step="0.01" id="rubf" oninput="setVal('rub_flatness_min', this.value, 'rubf-v')">
+    <label>Floor (log10): <span id="rfloor-v"></span></label>
+    <input type="range" min="-9" max="1" step="0.1" id="rfloor" oninput="setLog('rub_floor', this.value, 'rfloor-v')">
   </div>
   <div class="card"><h2>Belly scratch tuning</h2>
-    <div class="sub">Scratch the shell and watch band energy jump well above the median. Lower the ratio if it never fires, raise it if music sets it off.</div>
+    <div class="sub">Easiest: tap <b>Calibrate</b>, stay quiet 3 s, then scratch for 3 s. It sets the floor and ratio from what it heard.</div>
+    <p><button class="act" onclick="ctl('calibrate','scratch')">Calibrate belly scratch</button> <span class="sub" id="calib-scratch"></span></p>
     <div class="kv" id="scratch"></div>
-    <label>Onset ratio: <span id="ratio-v"></span></label>
-    <input type="range" min="2" max="15" step="0.5" id="ratio" oninput="setVal('scratch_onset_ratio', this.value, 'ratio-v')">
+    <label>Onset ratio (× median): <span id="ratio-v"></span></label>
+    <input type="range" min="1.5" max="15" step="0.5" id="ratio" oninput="setVal('scratch_onset_ratio', this.value, 'ratio-v')">
+    <label>Floor (log10): <span id="sfloor-v"></span></label>
+    <input type="range" min="-9" max="1" step="0.1" id="sfloor" oninput="setLog('scratch_floor', this.value, 'sfloor-v')">
   </div>
 </section>
 
@@ -152,6 +166,20 @@ async function ctl(cmd, value) {
   if (!r.ok) alert((await r.json()).detail);
 }
 function setVal(cmd, value, label) { $(label).textContent = value; ctl(cmd, parseFloat(value)); }
+function setLog(cmd, value, label) { const v = Math.pow(10, parseFloat(value)); $(label).textContent = value + ' (' + v.toExponential(1) + ')'; ctl(cmd, v); }
+function drawChart(hist, c) {
+  const cv = $('chart'); const W = cv.width = cv.clientWidth, H = cv.height; const g = cv.getContext('2d');
+  g.clearRect(0, 0, W, H); if (!hist.length) return;
+  const lg = v => Math.log10(Math.max(v, 1e-9));
+  const series = [['rms', '#7cf5c9', hist.map(h => h.rms)], ['rub', '#ffb86b', hist.map(h => h.rub)], ['band', '#ff8ac9', hist.map(h => h.band)]];
+  const all = series.flatMap(s => s[2]).concat([c.rub_floor, c.scratch_floor]).map(lg);
+  const lo = Math.min(...all) - 0.3, hi = Math.max(...all) + 0.3;
+  const y = v => H - (lg(v) - lo) / (hi - lo) * (H - 14) - 4, x = i => i / Math.max(1, hist.length - 1) * W;
+  for (let d = Math.ceil(lo); d <= hi; d++) { g.strokeStyle = '#1e2340'; g.beginPath(); g.moveTo(0, y(Math.pow(10, d))); g.lineTo(W, y(Math.pow(10, d))); g.stroke(); g.fillStyle = '#556'; g.font = '10px sans-serif'; g.fillText('1e' + d, 2, y(Math.pow(10, d)) - 2); }
+  for (const [name, col, vals] of series) { g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath(); vals.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v))); g.stroke(); }
+  for (const [col, v] of [['#ffb86b', c.rub_floor], ['#ff8ac9', c.scratch_floor]]) { g.setLineDash([4, 4]); g.strokeStyle = col; g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke(); g.setLineDash([]); }
+  g.fillStyle = '#5aa0ff'; hist.forEach((h, i) => { g.fillRect(x(i) - 1, H - 4 - h.flat * (H - 14), 2, 2); });
+}
 function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
 let pickup = false;
 function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off'); }
@@ -179,7 +207,7 @@ async function delPerson(id, ev) {
   if (!r.ok) alert((await r.json()).detail);
   selected = selected.filter(x => x !== id); refresh();
 }
-let lastPeopleKey = '';
+let lastPeopleKey = '', lastCal = null;
 async function refresh() {
   try {
     if (tab === 'log') {
@@ -199,13 +227,21 @@ async function refresh() {
     $('thoughts').innerHTML = m.thoughts.map(t => `<li><small>${t.t}s ago</small>${t.text}</li>`).join('') || '<li class="sub">…</li>';
     $('actions').innerHTML = d.recent_actions.map(a => `<li><small>${a.t}s ago</small>${a.a}</li>`).join('');
     kv('eyes', s.face ? s.face : {face: 'none'});
-    kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '°'});
+    kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '° (+ = left)', 'mic array DoA': s.doa ? `${s.doa.angle_deg}° (0 = left, 90 = front), speech: ${s.doa.speech}` : '—', 'last speech': s.speech_s_ago === null ? 'never' : s.speech_s_ago + ' s ago'});
     kv('body', {held: s.held, shaken: s.shaken, 'head being petted': s.head_pet.rubbing, 'imu accel dev / gyro': s.imu.accel_dev + ' / ' + s.imu.gyro, 'imu gated (self-moving)': s.imu.gated, 'head rate rad/s': s.head_rate, 'ear deviation': s.ears.dev.join(' / '), 'ear droop baseline': s.ears.baseline.join(' / ')});
     kv('scratch', s.scratch);
     kv('rub', s.head_pet);
+    kv('levels', s.levels);
+    drawChart(d.audio_history, d.controls);
+    const cal = d.calibration;
+    for (const k of ['rub', 'scratch']) $('calib-' + k).textContent = cal && cal.kind === k ? (cal.phase === 'done' ? `done: ratio ×${cal.set.observed_ratio.toFixed(1)} observed → thresholds set` : cal.phase === 'failed' ? 'failed: ' + cal.reason : cal.phase) : '';
+    if (cal && cal.phase === 'done' && cal.kind !== lastCal) { lastCal = cal.kind; slidersInit = false; }
     if (!slidersInit) { slidersInit = true;
       $('ratio').value = d.controls.scratch_onset_ratio; $('ratio-v').textContent = d.controls.scratch_onset_ratio;
       $('rubr').value = d.controls.rub_level_ratio; $('rub-v').textContent = d.controls.rub_level_ratio;
+      $('rubf').value = d.controls.rub_flatness_min; $('rubf-v').textContent = d.controls.rub_flatness_min;
+      $('rfloor').value = Math.log10(d.controls.rub_floor).toFixed(1); $('rfloor-v').textContent = $('rfloor').value + ' (' + d.controls.rub_floor.toExponential(1) + ')';
+      $('sfloor').value = Math.log10(d.controls.scratch_floor).toFixed(1); $('sfloor-v').textContent = $('sfloor').value + ' (' + d.controls.scratch_floor.toExponential(1) + ')';
       $('groove').value = d.controls.groove_scale; $('groove-v').textContent = d.controls.groove_scale;
       $('match').value = d.controls.match_threshold; $('match-v').textContent = d.controls.match_threshold;
       muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute';

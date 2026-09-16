@@ -17,7 +17,7 @@ is the one-time setup below.
 | Picked up (off by default) | IMU accel/gyro, which sits in the **head** | startle, then purrs and snuggles; shaking → dizzy wobble. The IMU is ignored while the pet moves itself; enable on the Controls tab once the Senses tab shows it quiet on a desk |
 | Head pets | hand rubbing the head, heard by the mics inside it | purrs and leans into the hand; keeps purring while it lasts; counts as affection for the person in front |
 | Ear tickles | an antenna pushed off its commanded angle | flicks that antenna away and ducks, like a dog with its ear touched; giggles; the fourth tickle in a row gets an annoyed huff |
-| Loud voice after quiet | mic array direction-of-arrival | perks up and looks toward it (heavily rate-limited: festivals are loud) |
+| A voice | mic array direction-of-arrival (4 mics in the head) | when not busy with a face, perks up and turns toward whoever started talking (at most every 4 s); its name always turns it, even mid-conversation with someone else |
 | Its name | Vosk keyword spotting, only while the mic array flags speech | "Reachy!" → "huh? me?" chirp, perks up, turns toward the voice, listens for a trick for 8 s |
 | Tricks | same grammar: `dance`, `hello`/`hi`, `good`, `sleep` | "Reachy, dance" → 6 s little groove; a second "dance" within 15 s → a lively library dance |
 | Belly scratch | fingernail clicks on the shell, heard by the mics | ticklish giggle + wiggle, counts as a pet |
@@ -133,8 +133,11 @@ Polls the app twice a second. Tabs:
   listening-for-trick window), a running **thought stream** in plain language ("someone said
   my name from the left! listening for a trick for 8 s", "it's person #4 (friend, visit 3),
   greeting them"), and the last actions.
-- **Senses** – what the eyes, ears and body report right now, plus the belly-scratch
-  tuning readout with a live onset-ratio slider.
+- **Senses** – what the eyes, ears and body report right now, a live 20 s microphone chart
+  (loudness, head-rub energy, belly-scratch band energy, flatness, with the current floors
+  drawn as dashed lines) and one-tap **Calibrate** buttons for head pets and belly scratches:
+  stay quiet 3 s, touch for 3 s, and the thresholds are set from what it heard (it refuses
+  if the touch was not clearly louder). Manual sliders for ratio, floor and flatness too.
 - **People** – one card per person with the 112 px face crop it enrolled from (stored only on
   the robot, under `~/.local/share/festival_pet/faces/`), visits, attention, pets, holds,
   affection. Tap two cards and **merge** them when it split one person into two entries

@@ -129,3 +129,12 @@ def test_rub_detected_only_for_sustained_handling_noise():
     # a scratch burst is too short to be a rub
     y = _add_scratch(np.concatenate([quiet, quiet]), 4.0)
     assert _feed_rub(RubDetector(), y) == []
+
+
+def test_tune_sets_thresholds_between_quiet_and_active():
+    from festival_pet.audio_features import _tune
+
+    t = _tune("rub", {"rub_energy": 1e-4, "flatness": 0.1}, {"rub_energy": 1e-2, "flatness": 0.5})
+    assert 5 < t["level_ratio"] < 20 and abs(t["floor"] - 1e-3) < 1e-9 and abs(t["flatness_min"] - 0.35) < 1e-9
+    t = _tune("scratch", {"band_energy": 1e-5, "flatness": 0}, {"band_energy": 1e-3, "flatness": 0})
+    assert abs(t["onset_ratio"] - 10.0) < 1e-6

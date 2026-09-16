@@ -173,3 +173,15 @@ def test_head_pet_leans_in_and_purrs_while_it_lasts():
     acts = _run(b, lambda t: Observation(face=face, petted=(t < 1.05), petting=True), 1.0, 8.0)
     assert any(a.name == "lean" for a in acts) and p.pets == 1
     assert sum(1 for a in acts if a.name == "purr") >= 2
+
+
+def test_new_voice_makes_it_look_and_name_overrides_a_face():
+    b, _ = _brain()
+    acts = _run(b, lambda t: Observation(voice_started=(t < 0.05), voice_yaw_deg=-40.0), 0.0, 0.5)
+    assert b.state == "SEARCHING" and b.gaze == (-40.0, 0.0)
+    assert any(a.name == "perk" for a in acts)
+    face = FaceObs(1, 10.0, 0.0, 0.05, None, 0.0)
+    _run(b, lambda t: Observation(face=face), 0.5, 3.0)
+    assert b.state == "ENGAGED"
+    _run(b, lambda t: Observation(face=face, name_heard=(t < 3.05), voice_yaw_deg=45.0), 3.0, 3.2)
+    assert b.gaze == (45.0, 0.0)

@@ -187,8 +187,8 @@ class ScratchDetector:
         freqs = np.fft.rfftfreq(hop, 1.0 / sample_rate)
         self._band = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
         self._low = freqs < 1500.0
-        self._onset_ratio = onset_ratio
-        self._floor = floor
+        self.onset_ratio = onset_ratio
+        self.floor = floor
         self._min_clicks = min_clicks
         self._burst_window = burst_window_s
         self._gap = gap_range_s
@@ -214,8 +214,8 @@ class ScratchDetector:
             self._frame_index += 1
             self.stats["band_energy"], self.stats["median"] = hb, med
             is_click = (
-                hb > self._floor
-                and hb > self._onset_ratio * (med + 1e-12)
+                hb > self.floor
+                and hb > self.onset_ratio * (med + 1e-12)
                 and hb > 0.5 * lb  # broadband/bright, not a bass thump
                 and self._frame_index - self._last_click_frame >= 2  # one click = one event
             )
@@ -270,9 +270,9 @@ class RubDetector:
         self._win = np.hanning(hop).astype(np.float32)
         freqs = np.fft.rfftfreq(hop, 1.0 / sample_rate)
         self._band = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
-        self._level_ratio = level_ratio
-        self._flatness_min = flatness_min
-        self._floor = floor
+        self.level_ratio = level_ratio
+        self.flatness_min = flatness_min
+        self.floor = floor
         self._min_duration = min_duration_s
         self._release = release_s
         self._cooldown = cooldown_s
@@ -297,7 +297,7 @@ class RubDetector:
             base = float(np.median(self._history)) if len(self._history) >= 10 else energy
             self._history.append(energy)
             self.stats["rub_energy"], self.stats["rub_baseline"], self.stats["flatness"] = energy, base, flat
-            loud_flat = energy > self._floor and energy > self._level_ratio * base and flat > self._flatness_min
+            loud_flat = energy > self.floor and energy > self.level_ratio * base and flat > self.flatness_min
             if loud_flat:
                 self._last_rub_frame_t = now
                 if self._rub_since is None:
@@ -317,3 +317,50 @@ class RubDetector:
                     self._last_event = now
                     event = True
         return event
+
+
+class LevelMeter:
+    """Cheap per-chunk levels for the tuning page: RMS, peak, and short history."""
+
+    def __init__(self, history_s: float = 20.0, rate_hz: float = 10.0) -> None:
+        self._hist: deque[dict] = deque(maxlen=int(history_s * rate_hz))
+        self._next_sample = 0.0
+        self._period = 1.0 / rate_hz
+        self.rms = 0.0
+        self.peak = 0.0
+        self.max_rms_3s = 0.0
+        self._recent_rms: deque[tuple[float, float]] = deque()
+
+    def push(self, mono: np.ndarray, now: float, extra: dict) -> None:
+        if len(mono) == 0:
+            return
+        self.rms = float(np.sqrt(np.mean(mono.astype(np.float32) ** 2)))
+        self.peak = float(np.max(np.abs(mono)))
+        self._recent_rms.append((now, self.rms))
+        while self._recent_rms and now - self._recent_rms[0][0] > 3.0:
+            self._recent_rms.popleft()
+        self.max_rms_3s = max(r for _, r in self._recent_rms)
+        if now >= self._next_sample:
+            self._next_sample = now + self._period
+            self._hist.append({"t": round(now, 2), "rms": round(self.rms, 5), "peak": round(self.peak, 4), **extra})
+
+    def history(self) -> list[dict]:
+        return list(self._hist)
+
+
+def _tune(cls_name: str, baseline: dict, active: dict) -> dict:
+    """Pick thresholds halfway (geometrically) between what quiet and the touch looked like."""
+    if cls_name == "rub":
+        e_q, e_a = max(baseline["rub_energy"], 1e-9), max(active["rub_energy"], 1e-9)
+        ratio = e_a / e_q
+        return {
+            "level_ratio": max(2.0, ratio ** 0.5),
+            "flatness_min": max(0.1, 0.7 * active["flatness"]),
+            "floor": (e_q * e_a) ** 0.5,
+            "observed_ratio": ratio,
+        }
+    if cls_name == "scratch":
+        e_q, e_a = max(baseline["band_energy"], 1e-9), max(active["band_energy"], 1e-9)
+        ratio = e_a / e_q
+        return {"onset_ratio": max(2.0, ratio ** 0.5), "floor": (e_q * e_a) ** 0.5, "observed_ratio": ratio}
+    raise KeyError(cls_name)

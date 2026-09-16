@@ -57,6 +57,7 @@ class Observation:
     name_heard: bool = False  # someone said "Reachy" (edge)
     command: str | None = None  # "dance", "hello", "hi", "good", "sleep" (edge)
     voice_yaw_deg: float | None = None  # where the latest speech came from
+    voice_started: bool = False  # someone began talking after a pause (edge)
     music_bpm: float = 0.0  # 0 when no confident beat
     music_confidence: float = 0.0
 
@@ -107,6 +108,7 @@ class Timers:
     sneeze_min: float = 240.0
     sneeze_max: float = 900.0
     hiccup_chance_per_s: float = 0.002
+    voice_glance_cooldown: float = 4.0
 
 
 @dataclass
@@ -150,6 +152,8 @@ class Behavior:
     _ear_tickles: int = 0
     _last_ear_tickle: float = -1e9
     _last_pet_purr: float = -1e9
+    _last_voice_glance: float = -1e9
+    _voice_lock_until: float = -1e9
 
     # gaze the motion layer should aim for (None = free to idle-drift)
     gaze: tuple[float, float] | None = None
@@ -269,10 +273,23 @@ class Behavior:
             else:
                 actions.append(Action("sound", "name", 3))
                 actions.append(Action("gesture", "perk", 3))
-                if obs.face is None and obs.voice_yaw_deg is not None and self.state in ("IDLE", "SEARCHING"):
+                if obs.voice_yaw_deg is not None and self.state != "HELD":
+                    # They called me: turn to the voice even if I was watching someone else.
                     self.gaze = (obs.voice_yaw_deg, 0.0)
                     self._last_seen_yaw, self._last_seen_pitch = obs.voice_yaw_deg, 0.0
+                    self._engaged_track = None
+                    self._voice_lock_until = now + 1.5  # hold the turn even if a face is still in view
                     self._enter("SEARCHING", now)
+
+        if obs.voice_started and obs.voice_yaw_deg is not None and awake and self.state in ("IDLE", "SEARCHING") and now - self._last_voice_glance > t.voice_glance_cooldown:
+            self._last_voice_glance = now
+            self._think(now, f"a voice from the {'left' if obs.voice_yaw_deg > 0 else 'right'}... who's that?")
+            self.gaze = (obs.voice_yaw_deg, 0.0)
+            self._last_seen_yaw, self._last_seen_pitch = obs.voice_yaw_deg, 0.0
+            self._enter("SEARCHING", now)
+            actions.append(Action("gesture", "perk", 1))
+            if self.rng.random() < 0.4:
+                actions.append(Action("sound", "curious", 1))
 
         if obs.command is not None and awake and (now <= self._attentive_until or obs.face is not None):
             self._last_interaction = now
@@ -365,7 +382,8 @@ class Behavior:
             face = obs.face
             if face is not None:
                 self._last_seen_yaw, self._last_seen_pitch = face.yaw_deg, face.pitch_deg
-                self.gaze = (face.yaw_deg, face.pitch_deg)
+                if now >= self._voice_lock_until:
+                    self.gaze = (face.yaw_deg, face.pitch_deg)
 
                 gap = now - self._last_face_time
                 if face.track_id == self._engaged_track and t.peekaboo_min_gap < gap < t.peekaboo_max_gap:

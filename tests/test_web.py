@@ -97,3 +97,33 @@ def test_people_routes(tmp_path):
     assert c.delete(f"/api/people/{a.person_id}").status_code == 404
     assert c.get("/api/mind").json()["memory"]["people"] == 0
     pet.stop()
+
+
+def test_calibration_refuses_when_touch_is_not_louder():
+    import time as _t
+
+    pet = _pet()
+    a = pet.audio
+    a.start_calibration("rub", 0.0)
+    a.rub.stats.update({"rub_energy": 1e-3, "flatness": 0.5})
+    for k in range(5):
+        a._calibration_step(0.5 * k)  # baseline phase
+    a._calibration_step(3.1)  # -> active phase
+    a.rub.stats.update({"rub_energy": 1.2e-3, "flatness": 0.5})
+    for k in range(5):
+        a._calibration_step(3.2 + 0.5 * k)
+    a._calibration_step(6.3)
+    assert a.calibration_result["phase"] == "failed" and a.rub.level_ratio == 12.0
+
+    a.start_calibration("rub", 10.0)
+    a.rub.stats.update({"rub_energy": 1e-4, "flatness": 0.2})
+    for k in range(5):
+        a._calibration_step(10.0 + 0.5 * k)
+    a._calibration_step(13.1)
+    a.rub.stats.update({"rub_energy": 1e-2, "flatness": 0.6})
+    for k in range(5):
+        a._calibration_step(13.2 + 0.5 * k)
+    a._calibration_step(16.3)
+    r = a.calibration_result
+    assert r["phase"] == "done" and 5 < a.rub.level_ratio < 20 and abs(a.rub.flatness_min - 0.42) < 1e-6
+    pet.stop()

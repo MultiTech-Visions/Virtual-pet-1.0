@@ -17,6 +17,7 @@ MuJoCo simulator with fake senses (see scripts/sim_harness.py).
 from __future__ import annotations
 
 import logging
+import math
 import os
 import queue
 import threading
@@ -32,7 +33,7 @@ from pydantic import BaseModel
 from scipy.spatial.transform import Rotation as R
 
 from festival_pet import sounds
-from festival_pet.audio_features import BeatTracker, RubDetector, ScratchDetector
+from festival_pet.audio_features import BeatTracker, LevelMeter, RubDetector, ScratchDetector, _tune
 from festival_pet.behavior import Action, Behavior, FaceObs, Observation
 from festival_pet.memory import FaceMemory
 from festival_pet.motion import MotionComposer
@@ -149,6 +150,11 @@ class AudioSense:
         self.beat = BeatTracker()
         self.scratch = ScratchDetector()
         self.rub = RubDetector()
+        self.meter = LevelMeter()
+        self._calib: dict | None = None  # {"kind", "phase", "until", "baseline": [..], "active": [..]}
+        self.calibration_result: dict | None = None
+        self.last_speech_time = -1e9
+        self.speech_edge = False  # set when speech starts after a pause; consumed by the main loop
         self.spotter = spotter  # NameSpotter or None
         self._events: queue.Queue[tuple[str, str, float | None]] = queue.Queue()
         self._stop = threading.Event()
@@ -166,6 +172,43 @@ class AudioSense:
     def stop(self) -> None:
         self._stop.set()
         self._thread.join(timeout=2.0)
+
+    # ------------------------------------------------------------ calibration
+    def start_calibration(self, kind: str, now: float) -> None:
+        """3 s of quiet baseline, then 3 s during which the user rubs/scratches; thresholds set from the two."""
+        if kind not in ("rub", "scratch"):
+            raise KeyError(kind)
+        self._calib = {"kind": kind, "phase": "baseline", "until": now + 3.0, "baseline": [], "active": []}
+        self.calibration_result = {"kind": kind, "phase": "baseline: keep quiet for 3 s"}
+
+    def _calibration_step(self, now: float) -> None:
+        c = self._calib
+        if c is None:
+            return
+        snap = {**self.rub.stats, **self.scratch.stats}
+        c[c["phase"]].append(snap)
+        if now < c["until"]:
+            return
+        if c["phase"] == "baseline":
+            c["phase"], c["until"] = "active", now + 3.0
+            self.calibration_result = {"kind": c["kind"], "phase": f"NOW {'rub the head' if c['kind'] == 'rub' else 'scratch the belly'} for 3 s"}
+            return
+        keyE = "rub_energy" if c["kind"] == "rub" else "band_energy"
+        base = {keyE: float(np.median([x[keyE] for x in c["baseline"]])), "flatness": float(np.median([x["flatness"] for x in c["baseline"]]))}
+        act = {keyE: float(np.percentile([x[keyE] for x in c["active"]], 80)), "flatness": float(np.median([x["flatness"] for x in c["active"]]))}
+        self._calib = None
+        if act[keyE] < 3.0 * base[keyE]:
+            self.calibration_result = {"kind": c["kind"], "phase": "failed", "baseline": base, "active": act,
+                                       "reason": "the touch was not clearly louder than the quiet phase (need 3x); thresholds unchanged"}
+            logger.warning("calibration of %s failed: baseline=%s active=%s", c["kind"], base, act)
+            return
+        tuned = _tune(c["kind"], base, act)
+        det = self.rub if c["kind"] == "rub" else self.scratch
+        for k, v in tuned.items():
+            if k != "observed_ratio":
+                setattr(det, k, float(v))
+        self.calibration_result = {"kind": c["kind"], "phase": "done", "baseline": base, "active": act, "set": tuned}
+        logger.info("calibrated %s: baseline=%s active=%s -> %s", c["kind"], base, act, tuned)
 
     def poll(self) -> list[tuple[str, str, float | None]]:
         out = []
@@ -187,9 +230,13 @@ class AudioSense:
                 continue
             self.stats["chunks"] += 1
             self.beat.push(chunk, now)
-            if self.scratch.push(chunk, now):
+            scratched = self.scratch.push(chunk, now)
+            rubbed = self.rub.push(chunk, now)
+            self.meter.push(chunk, now, {"rub": self.rub.stats["rub_energy"], "flat": self.rub.stats["flatness"], "band": self.scratch.stats["band_energy"], "clicks": self.scratch.stats["clicks_in_window"]})
+            self._calibration_step(now)
+            if scratched:
                 self._events.put(("scratch", "", None))
-            if self.rub.push(chunk, now):
+            if rubbed:
                 self._events.put(("pet", "", None))
             if now >= next_doa and now >= self._doa_backoff_until:
                 next_doa = now + self._doa_period
@@ -202,6 +249,9 @@ class AudioSense:
                     self._doa_backoff_until = now + min(30.0, 2.0 * self._doa_errors)
                     logger.warning("DoA read failed (%d so far, backing off %.0fs): %r", self._doa_errors, self._doa_backoff_until - now, e)
                 if self.doa is not None and self.doa[1]:
+                    if now - self.last_speech_time > 1.5:
+                        self.speech_edge = True  # someone started talking after a pause
+                    self.last_speech_time = now
                     speech_until = now + self.SPEECH_HANGOVER
                     self.last_voice_yaw = LoudSoundDetector.doa_to_yaw(self.doa[0])
             if self.spotter is None:
@@ -319,6 +369,10 @@ class Pet:
             else:
                 obs.command = value
                 obs.voice_yaw_deg = yaw
+        if self.audio.speech_edge:
+            self.audio.speech_edge = False
+            obs.voice_started = True
+            obs.voice_yaw_deg = self.audio.last_voice_yaw
         if self.audio.beat.music:
             obs.music_bpm = self.audio.beat.state.bpm
             obs.music_confidence = self.audio.beat.state.confidence
@@ -427,10 +481,15 @@ class Pet:
                 "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
                 "listening": self.audio.stats["listening"], "voice_yaw": self.audio.last_voice_yaw,
+                "doa": None if self.audio.doa is None else {"angle_deg": round(math.degrees(self.audio.doa[0]), 0), "speech": self.audio.doa[1]},
+                "speech_s_ago": round(now - self.audio.last_speech_time, 1) if self.audio.last_speech_time > 0 else None,
+                "levels": {"rms": round(self.audio.meter.rms, 5), "peak": round(self.audio.meter.peak, 4), "max_rms_3s": round(self.audio.meter.max_rms_3s, 5), "chunks": self.audio.stats["chunks"]},
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch._onset_ratio, "rub_level_ratio": self.audio.rub._level_ratio, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "calibration": self.audio.calibration_result,
+            "audio_history": self.audio.meter.history(),
             "recent_actions": [{"t": round(now - t, 1), "a": f"{k}:{n}"} for t, k, n in reversed(self.actions_log[-20:])],
             "memory": self.p.memory.summary(),
         }
@@ -461,9 +520,17 @@ class Pet:
         elif cmd == "groove_scale":
             self.groove_scale = float(value)
         elif cmd == "scratch_onset_ratio":
-            self.audio.scratch._onset_ratio = float(value)
+            self.audio.scratch.onset_ratio = float(value)
+        elif cmd == "scratch_floor":
+            self.audio.scratch.floor = float(value)
         elif cmd == "rub_level_ratio":
-            self.audio.rub._level_ratio = float(value)
+            self.audio.rub.level_ratio = float(value)
+        elif cmd == "rub_flatness_min":
+            self.audio.rub.flatness_min = float(value)
+        elif cmd == "rub_floor":
+            self.audio.rub.floor = float(value)
+        elif cmd == "calibrate":
+            self.audio.start_calibration(str(value), now)
         elif cmd == "match_threshold":
             self.p.memory.match_threshold = float(value)
         elif cmd == "forget":
