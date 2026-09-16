@@ -25,9 +25,11 @@ class PickupDetector:
     """
 
     window_s: float = 0.8
-    lift_accel_dev: float = 2.2  # m/s^2 away from g counts as "moving" (own slow motion stays well under this)
+    lift_accel_dev: float = 2.2  # m/s^2 away from g: strong enough to be a lift, not breathing
     lift_gyro: float = 1.2  # rad/s (own slow motion ~0.3)
-    motion_fraction_to_hold: float = 0.5
+    hold_accel_dev: float = 0.7  # once held, mild hand jitter keeps the state alive
+    hold_gyro: float = 0.35
+    motion_fraction_to_hold: float = 0.4
     min_samples: int = 10  # need this many un-gated samples in the window before deciding
     settle_s: float = 2.0  # quiet this long -> set down
     shake_gyro: float = 5.0  # rad/s
@@ -51,10 +53,11 @@ class PickupDetector:
                 self._samples.popleft()
             return self.held, False
         moving = a_dev > self.lift_accel_dev or g_mag > self.lift_gyro
+        jitter = a_dev > self.hold_accel_dev or g_mag > self.hold_gyro
         shaken = (g_mag > self.shake_gyro or a_dev > self.shake_accel_dev) and now - self._last_shake > 1.0
         if shaken:
             self._last_shake = now
-        if moving:
+        if moving or (self.held and jitter):
             self._last_motion = now
 
         self._samples.append((now, moving))

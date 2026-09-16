@@ -128,9 +128,14 @@ class FakeIO:
     def imu(self):
         t = self.t()
         accel, gyro = [0.0, 0.0, 9.81], [0.0, 0.0, 0.0]
-        if Timeline._active(self._tl.held, t):
-            accel = [0.4 * math.sin(9 * t), 0.3 * math.cos(7 * t), 9.81 + 2.2 * math.sin(11 * t)]
-            gyro = [0.9 * math.sin(5 * t), 0.2, 0.0]
+        for t0, t1 in self._tl.held:
+            if t0 <= t < t1:
+                if t - t0 < 1.0:  # the lift itself: a strong transient
+                    accel = [1.0 * math.sin(9 * t), 0.5 * math.cos(7 * t), 9.81 + 3.5 * math.sin(11 * t)]
+                    gyro = [1.6 * math.sin(5 * t), 0.3, 0.0]
+                else:  # held in hands: mild jitter
+                    accel = [0.3 * math.sin(9 * t), 0.2 * math.cos(7 * t), 9.81 + 1.0 * math.sin(11 * t)]
+                    gyro = [0.5 * math.sin(5 * t), 0.1, 0.0]
         if Timeline._active(self._tl.shake, t):
             gyro = [6.0 * math.sin(30 * t), 0.0, 0.0]
         return {"accelerometer": accel, "gyroscope": gyro, "quaternion": [1, 0, 0, 0], "temperature": 30.0}

@@ -57,10 +57,14 @@ def test_pickup_detector_lifecycle():
         held, shaken = d.update(*rest, t)
         t += 0.02
     assert not held and not shaken
-    for i in range(50):  # lift: wobbly accel + some gyro
+    for i in range(50):  # lift: strong transient
         held, shaken = d.update([0.5, 0.3, 9.81 + 3.0 * math.sin(i)], [1.5, 0.0, 0.0], t)
         t += 0.02
     assert held and not shaken
+    for i in range(200):  # now just held in hands: mild jitter keeps it "held" well past settle_s
+        held, _ = d.update([0.3, 0.2, 9.81 + 0.9 * math.sin(3 * i)], [0.4 * math.sin(i), 0.0, 0.0], t)
+        t += 0.02
+    assert held
     _, shaken = d.update([0.0, 0.0, 9.81], [6.0, 0.0, 0.0], t)
     assert shaken
     for _ in range(150):
