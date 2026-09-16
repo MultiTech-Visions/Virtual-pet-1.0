@@ -15,6 +15,7 @@ States
 from __future__ import annotations
 
 import random
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -142,6 +143,10 @@ class Behavior:
 
     # gaze the motion layer should aim for (None = free to idle-drift)
     gaze: tuple[float, float] | None = None
+    thoughts: deque = field(default_factory=lambda: deque(maxlen=60))  # (time, text) inner monologue
+
+    def _think(self, now: float, text: str) -> None:
+        self.thoughts.append((now, text))
 
     def start(self, now: float, awake: bool) -> None:
         """Call once before ticking. ``awake`` reflects whether the daemon already woke the robot."""
@@ -211,6 +216,7 @@ class Behavior:
                 self._enter("WAKING", now)
             else:
                 actions.append(Action("sound", "ticklish", 3))
+                self._think(now, "hehe that tickles! (shell scratched)")
                 actions.append(Action("gesture", self.rng.choice(["wiggle", "bounce"]), 3))
                 self.mood.social += 0.08
                 self.mood.energy += 0.03
@@ -220,6 +226,7 @@ class Behavior:
         if obs.name_heard:
             self._last_interaction = now
             self._attentive_until = now + t.name_attentive
+            self._think(now, f"someone said my name{' from the ' + ('left' if (obs.voice_yaw_deg or 0) > 0 else 'right') if obs.voice_yaw_deg is not None else ''}! listening for a trick for {t.name_attentive:.0f} s")
             if self.state == "SLEEPING":
                 actions.append(Action("wake", "name", 5))
                 self._enter("WAKING", now)
@@ -233,6 +240,7 @@ class Behavior:
 
         if obs.command is not None and awake and (now <= self._attentive_until or obs.face is not None):
             self._last_interaction = now
+            self._think(now, f"heard '{obs.command}' and I was paying attention")
             actions += self._on_command(obs.command, now)
 
         # Music: groove when there is a confident beat and nothing bigger is happening.
@@ -247,6 +255,7 @@ class Behavior:
                 actions.append(Action("groove", f"{intensity:.2f}", 0))
                 if not self._music_greeted:
                     self._music_greeted = True
+                    self._think(now, f"ooh, music! {obs.music_bpm:.0f} bpm, I'll bob along")
                     actions.append(Action("sound", "happy", 1))
                     actions.append(Action("gesture", "bounce", 1))
                 if now >= self._next_sing and self.state in ("IDLE", "ENGAGED") and self.mood.energy > 0.3:
@@ -267,6 +276,7 @@ class Behavior:
                 actions.append(Action("wake", "pickup", 5))
             actions.append(Action("sound", "surprised", 4))
             actions.append(Action("gesture", "startle", 4))
+            self._think(now, "whoa, I'm being picked up!")
             self._next_purr = now + t.held_settle + self.rng.uniform(1.0, 2.5)
             if self._engaged_person is not None:
                 self.memory.add_hold(self._engaged_person)
@@ -292,6 +302,7 @@ class Behavior:
             # The robot layer runs the wake move; we just wait it out.
             if now - self._state_since > 2.5:
                 self._last_interaction = now
+                self._think(now, "awake and ready")
                 self._enter("IDLE", now)
                 self._next_glance = now + self.rng.uniform(1.0, 3.0)
 
@@ -300,6 +311,7 @@ class Behavior:
             if obs.shaken and now > self._dizzy_until:
                 self._dizzy_until = now + 3.0
                 actions.append(Action("sound", "dizzy", 4))
+                self._think(now, "too much shaking... dizzy")
                 actions.append(Action("gesture", "dizzy", 4))
                 self._next_purr = now + 4.0
             elif now > self._dizzy_until and now >= self._next_purr:
@@ -309,6 +321,7 @@ class Behavior:
             if setdown_edge:
                 actions.append(Action("sound", "happy", 3))
                 actions.append(Action("gesture", "shake_off", 3))
+                self._think(now, "back on the ground, shaking it off")
                 self._last_interaction = now
                 self._enter("IDLE", now)
 
@@ -323,6 +336,7 @@ class Behavior:
                     # Peekaboo! They hid and came right back.
                     actions.append(Action("sound", "giggle", 3))
                     actions.append(Action("gesture", "bounce", 3))
+                    self._think(now, "peekaboo! they came back")
                     self.mood.social += 0.05
                 if face.area_frac > 0.12:
                     if self._close_since == 0.0:
@@ -330,6 +344,7 @@ class Behavior:
                     elif now - self._close_since > t.shy_stare and self._shy_done_track != face.track_id:
                         self._shy_done_track = face.track_id
                         actions.append(Action("sound", "shy", 2))
+                        self._think(now, "they've been staring so close for so long... getting shy")
                         actions.append(Action("gesture", "shy", 2))
                 else:
                     self._close_since = 0.0
@@ -343,6 +358,7 @@ class Behavior:
                     self._greeted_track = None
                     self._enter("ENGAGED", now)
                     self._next_react = now + self.rng.uniform(t.react_min, t.react_max)
+                    self._think(now, f"a face! track #{face.track_id}, {'close' if face.area_frac > 0.06 else 'a bit away'}, figuring out who")
 
                 # Greet once we know who it is (or have given up identifying them).
                 if self._greeted_track != face.track_id and (face.person is not None or now - self._engaged_since > 1.5):
@@ -351,6 +367,7 @@ class Behavior:
                     if face.person is not None:
                         self.memory.sighted(face.person, now)
                     sound, gesture, move = self._person_greeting(face.person)
+                    self._think(now, "a new face, saying hi" if face.person is None else f"it's person #{face.person.person_id} ({face.person.tier()}, visit {face.person.encounters}), greeting them")
                     actions.append(Action("sound", sound, 3))
                     if face.person is not None and face.person.tier() != "acquaintance" and self.mood.energy > 0.35:
                         actions.append(Action("move", move, 3))
@@ -392,6 +409,7 @@ class Behavior:
                         self._face_lost_at = self._last_face_time
                         self._enter("SEARCHING", now)
                         self.gaze = (self._last_seen_yaw, self._last_seen_pitch)
+                        self._think(now, f"where did they go? looking where I last saw them ({'miss them' if engaged_for > t.engaged_sad_if_over else 'hm?'})")
                         actions.append(Action("gesture", "search", 2))
                         if engaged_for > t.engaged_sad_if_over:
                             actions.append(Action("sound", "sad", 2))
@@ -403,6 +421,7 @@ class Behavior:
                         self._engaged_track = None
                         self._engaged_person = None
                         self._enter("IDLE", now)
+                        self._think(now, "gave up looking, back to idling")
                         self.gaze = None
                         self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
                 else:  # IDLE
@@ -423,17 +442,20 @@ class Behavior:
                     if alone_for > t.sleep_after or self.mood.energy < 0.08:
                         actions.append(Action("sound", "yawn", 3))
                         actions.append(Action("sleep", "tired", 5))
+                        self._think(now, "so tired... going to sleep" if self.mood.energy < 0.08 else f"nobody around for {alone_for / 60:.0f} min, dozing off")
                         self._enter("SLEEPING", now)
                         self._face_first_seen = 0.0
                     elif alone_for > t.lonely_after and now - self._last_lonely > t.lonely_repeat:
                         self._last_lonely = now
                         actions.append(Action("sound", "lonely", 1))
+                        self._think(now, f"alone for {alone_for:.0f} s... lonely")
                         actions.append(Action("gesture", "droop", 1))
 
         if awake and self.state in ("IDLE", "ENGAGED"):
             if now >= self._next_sneeze:
                 self._next_sneeze = now + self.rng.uniform(t.sneeze_min, t.sneeze_max)
                 actions.append(Action("sound", "sneeze", 2))
+                self._think(now, "ah... ah... choo!")
                 actions.append(Action("gesture", "sneeze", 2))
             elif self.rng.random() < dt * t.hiccup_chance_per_s:
                 actions.append(Action("sound", "hiccup", 1))
@@ -476,5 +498,25 @@ class Behavior:
             "energy": round(self.mood.energy, 2),
             "social": round(self.mood.social, 2),
             "engaged_person": None if self._engaged_person is None else self._engaged_person.person_id,
+            "engaged_tier": None if self._engaged_person is None else self._engaged_person.tier(),
             "gaze": self.gaze,
+        }
+
+    def mind(self, now: float) -> dict:
+        """Everything driving the next decision, for the 'inside the mind' page."""
+        t = self.timers
+        alone = now - self._last_interaction
+        return {
+            **self.status(),
+            "state_for_s": round(now - self._state_since, 1),
+            "alone_for_s": round(alone, 1),
+            "lonely_in_s": round(max(0.0, t.lonely_after - alone), 1),
+            "sleep_in_s": round(max(0.0, t.sleep_after - alone), 1),
+            "next_reaction_in_s": round(max(0.0, self._next_react - now), 1) if self.state == "ENGAGED" else None,
+            "next_glance_in_s": round(max(0.0, self._next_glance - now), 1) if self.state == "IDLE" else None,
+            "listening_for_trick_s": round(max(0.0, self._attentive_until - now), 1),
+            "little_dance_s": round(max(0.0, self._little_dance_until - now), 1),
+            "next_sneeze_in_s": round(max(0.0, self._next_sneeze - now)),
+            "dizzy": now < self._dizzy_until,
+            "thoughts": [{"t": round(now - ts, 1), "text": txt} for ts, txt in reversed(self.thoughts)],
         }

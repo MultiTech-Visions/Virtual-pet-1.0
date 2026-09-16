@@ -86,7 +86,38 @@ the two OpenCV Zoo ONNX models (~39 MB) and the Vosk small English model (~40 MB
 `pollen-robotics/reachy-mini-emotions-library` dataset, and runs a load check.
 
 Then open the dashboard at `http://reachy-mini.local:8000`, find **festival_pet** in the
-installed apps and start it. The status page is at `http://reachy-mini.local:8042`.
+installed apps and start it. The pet's own page ("Reachy's Mind") is at
+`http://reachy-mini.local:8042`.
+
+## Wi‑Fi at the festival: let the robot be the hotspot
+
+The wireless daemon manages Wi‑Fi with NetworkManager and falls back to its **own access
+point** when it cannot join a known network (IP `10.42.0.1`). So with no internet around:
+
+1. Do not add your phone's hotspot to the robot. On boot it finds nothing and raises its AP
+   (SSID/password are the ones you set during onboarding; you can also force it with
+   `POST http://reachy-mini.local:8000/api/wifi/setup_hotspot` while still on a shared network).
+2. Join that network from your phone.
+3. Open `http://10.42.0.1:8042` for the pet's page and `http://10.42.0.1:8000` for the
+   daemon dashboard (speaker volume, app logs, restart).
+
+## Reachy's Mind (the page on port 8042)
+
+Polls the app twice a second. Tabs:
+
+- **Mind** – state, energy/social bars, countdowns (lonely in…, sleep in…, next reaction,
+  listening-for-trick window), a running **thought stream** in plain language ("someone said
+  my name from the left! listening for a trick for 8 s", "it's person #4 (friend, visit 3),
+  greeting them"), and the last actions.
+- **Senses** – what the eyes, ears and body report right now, plus the belly-scratch
+  tuning readout with a live onset-ratio slider.
+- **People** – the memory table, forget-everyone.
+- **Controls** – wake/sleep, mute, groove intensity, face-match strictness, and "make it do
+  things": play any sound, gesture or library move by name.
+- **Log** – the app's own log ring (last 400 lines). The daemon's per-app log is on the
+  dashboard too.
+
+API: `GET /api/mind`, `GET /api/log?n=`, `GET /api/catalog`, `POST /api/control {cmd, value}`.
 
 ## Auto-start at the festival
 

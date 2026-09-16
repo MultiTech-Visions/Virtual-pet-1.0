@@ -21,12 +21,14 @@ import os
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
 import numpy as np
 import platformdirs
+from pydantic import BaseModel
 from scipy.spatial.transform import Rotation as R
 
 from festival_pet import sounds
@@ -38,6 +40,21 @@ from festival_pet.senses import LoudSoundDetector, PickupDetector, TouchDetector
 from festival_pet.vision import Sighting
 
 logger = logging.getLogger("festival_pet")
+
+
+class RingLogHandler(logging.Handler):
+    """Keeps the last N log lines in memory for the web page."""
+
+    def __init__(self, capacity: int = 400) -> None:
+        super().__init__()
+        self.lines: deque[str] = deque(maxlen=capacity)
+        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(self.format(record))
+
+
+LOG_RING = RingLogHandler()
 
 DATA_DIR = Path(platformdirs.user_data_dir("festival_pet"))
 YUNET_MODEL = DATA_DIR / "models" / "face_detection_yunet_2023mar.onnx"
@@ -220,6 +237,9 @@ class Pet:
         self.actions_log: list[tuple[float, str, str]] = []
         self._next_doa = 0.0
         self._last = 0.0
+        self.muted = False
+        self.groove_scale = 1.0  # user knob on top of the brain's intensity
+        self._last_obs = Observation()
 
     # ------------------------------------------------------------------ lifecycle
     def start(self, now: float) -> None:
@@ -279,6 +299,7 @@ class Pet:
         if self.audio.beat.music:
             obs.music_bpm = self.audio.beat.state.bpm
             obs.music_confidence = self.audio.beat.state.confidence
+        self._last_obs = obs
 
         # ---------------- brain
         actions = beh.tick(obs, now, dt)
@@ -330,7 +351,8 @@ class Pet:
             self.actions_log.append((now, act.kind, act.name))
             del self.actions_log[:-2000]
         if act.kind == "sound":
-            self.sound.request(act.name, act.priority, now)
+            if not self.muted:
+                self.sound.request(act.name, act.priority, now)
         elif act.kind == "gesture":
             if self.move is None:
                 comp.request_gesture(act.name, now, act.priority)
@@ -355,7 +377,7 @@ class Pet:
                 period, t0 = 60.0 / FREE_DANCE_BPM, 0.0
                 phase = (now / period) % 1.0
             bar = ((now - t0) / (4 * period)) % 1.0
-            comp.groove = (phase, bar, float(act.name))
+            comp.groove = (phase, bar, float(act.name) * self.groove_scale)
         elif act.kind == "mirror":
             comp.mirror_roll = float(act.name)
 
@@ -368,6 +390,57 @@ class Pet:
             "recent_sounds": self.sound.played[-10:],
             "recent_actions": [f"{k}:{n}" for _, k, n in self.actions_log[-15:]],
         }
+
+    def mind(self) -> dict:
+        now = time.time()
+        o = self._last_obs
+        b = self.audio.beat.state
+        comp = self.p.composer
+        return {
+            "mind": self.p.behavior.mind(now),
+            "senses": {
+                "face": None if o.face is None else {"track": o.face.track_id, "yaw": round(o.face.yaw_deg, 1), "pitch": round(o.face.pitch_deg, 1), "size": round(o.face.area_frac, 3), "person": None if o.face.person is None else o.face.person.person_id, "similarity": round(o.face.similarity, 2), "tilt": round(o.face.roll_deg, 1)},
+                "held": o.held, "shaken": o.shaken,
+                "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
+                "listening": self.audio.stats["listening"], "voice_yaw": self.audio.last_voice_yaw,
+                "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
+            },
+            "controls": {"muted": self.muted, "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch._onset_ratio, "match_threshold": self.p.memory.match_threshold},
+            "recent_actions": [{"t": round(now - t, 1), "a": f"{k}:{n}"} for t, k, n in reversed(self.actions_log[-20:])],
+            "memory": self.p.memory.summary(),
+        }
+
+    def control(self, cmd: str, value: str | float | None) -> dict:
+        """Manual controls from the web page. Raises on unknown commands / names."""
+        now = time.time()
+        beh = self.p.behavior
+        if cmd == "sound":
+            self.sound.request(str(value), 5, now)
+        elif cmd == "gesture":
+            self.p.composer.request_gesture(str(value), now, 5)
+        elif cmd == "move":
+            self._dispatch(Action("move", str(value), 5), now)
+        elif cmd == "sleep":
+            beh.state, beh._state_since = "SLEEPING", now
+            beh._think(now, "told to sleep from the control page")
+        elif cmd == "wake":
+            beh.state, beh._state_since = "WAKING", now
+            self._dispatch(Action("wake", "control", 5), now)
+        elif cmd == "mute":
+            self.muted = bool(value)
+        elif cmd == "groove_scale":
+            self.groove_scale = float(value)
+        elif cmd == "scratch_onset_ratio":
+            self.audio.scratch._onset_ratio = float(value)
+        elif cmd == "match_threshold":
+            self.p.memory.match_threshold = float(value)
+        elif cmd == "forget":
+            self.p.memory.people.clear()
+            self.p.memory._dirty = True
+            self.p.memory.save(force=True)
+        else:
+            raise KeyError(f"unknown control '{cmd}'")
+        return {"ok": True}
 
 
 # ============================================================================ real robot
@@ -446,6 +519,48 @@ def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool 
     return Pet(parts), vision, io
 
 
+class Control(BaseModel):
+    """A manual control request from the web page."""
+
+    cmd: str
+    value: str | float | bool | None = None
+
+
+def install_routes(app, pet: Pet) -> None:
+    """Web API behind the pet's page (port 8042). Shared by the app and the tests."""
+    from fastapi import HTTPException
+
+    @app.get("/api/status")
+    def status() -> dict:
+        return pet.status()
+
+    @app.get("/api/mind")
+    def mind() -> dict:
+        return pet.mind()
+
+    @app.get("/api/log")
+    def log(n: int = 200) -> dict:
+        lines = list(LOG_RING.lines)
+        return {"lines": lines[-n:]}
+
+    @app.get("/api/catalog")
+    def catalog() -> dict:
+        from festival_pet.motion import GESTURES
+
+        return {"sounds": list(sounds.EMOTIONS), "gestures": list(GESTURES), "moves": ["curious1", "welcoming1", "loving1", "dance1", "dance2", "dance3", "laughing1", "surprised1", "yes1", "no1", "sleep1", "cheerful1"]}
+
+    @app.post("/api/control")
+    def control(c: Control) -> dict:
+        try:
+            return pet.control(c.cmd, c.value)
+        except (KeyError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/api/forget")
+    def forget() -> dict:
+        return pet.control("forget", None)
+
+
 try:
     from reachy_mini import ReachyMini, ReachyMiniApp
 except ImportError:  # the pure modules stay importable off-robot
@@ -460,6 +575,7 @@ class FestivalPetApp(ReachyMiniApp):  # type: ignore[misc]
 
     def run(self, reachy_mini: "ReachyMini", stop_event: threading.Event) -> None:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+        logging.getLogger().addHandler(LOG_RING)
         os.environ["HF_HUB_OFFLINE"] = "1"  # never touch the network on the festival ground
         pet, vision, io = build_real_pet(reachy_mini)
         self._install_status_routes(pet)
@@ -473,17 +589,7 @@ class FestivalPetApp(ReachyMiniApp):  # type: ignore[misc]
     def _install_status_routes(self, pet: Pet) -> None:
         if self.settings_app is None:
             return
-
-        @self.settings_app.get("/api/status")
-        def status() -> dict:
-            return pet.status()
-
-        @self.settings_app.post("/api/forget")
-        def forget() -> dict:
-            pet.p.memory.people.clear()
-            pet.p.memory._dirty = True
-            pet.p.memory.save(force=True)
-            return {"ok": True}
+        install_routes(self.settings_app, pet)
 
 
 if __name__ == "__main__":

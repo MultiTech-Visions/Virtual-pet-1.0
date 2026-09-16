@@ -3,52 +3,176 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Festival Pet</title>
+<title>Reachy's Mind</title>
 <style>
-  :root { --bg:#0f1220; --fg:#e8e8f0; --dim:#8b8fa8; --card:#1a1e33; --acc:#7cf5c9; }
-  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui, sans-serif; }
-  h1 { font-size:20px; margin:0 0 12px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
-  .card { background:var(--card); border-radius:12px; padding:12px; }
-  .k { color:var(--dim); font-size:13px; }
-  .v { font-size:22px; font-weight:600; }
-  .state { color:var(--acc); }
-  table { width:100%; border-collapse:collapse; font-size:14px; }
-  td, th { padding:4px 6px; text-align:left; border-bottom:1px solid #2a2f4a; }
-  button { background:#3a2030; color:#ffb3b3; border:0; border-radius:8px; padding:8px 12px; font-size:14px; }
+  :root { --bg:#0f1220; --fg:#e8e8f0; --dim:#8b8fa8; --card:#1a1e33; --acc:#7cf5c9; --warm:#ffb86b; --pink:#ff8ac9; --line:#2a2f4a; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:15px/1.4 system-ui, sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; margin:0 0 8px; }
+  nav { display:flex; gap:8px; margin:10px 0 14px; flex-wrap:wrap; }
+  nav button { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:999px; padding:6px 14px; font-size:14px; }
+  nav button.on { background:var(--acc); color:#08130f; border-color:var(--acc); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; }
+  .card { background:var(--card); border-radius:12px; padding:12px; min-width:0; }
+  .big { font-size:34px; font-weight:700; color:var(--acc); }
+  .sub { color:var(--dim); font-size:13px; }
+  .bar { height:10px; background:#0b0e1a; border-radius:999px; overflow:hidden; margin:6px 0 10px; }
+  .bar i { display:block; height:100%; background:var(--acc); transition:width .4s; }
+  .bar.pink i { background:var(--pink); }
+  ul.thoughts { list-style:none; margin:0; padding:0; max-height:320px; overflow:auto; }
+  ul.thoughts li { padding:6px 0; border-bottom:1px solid var(--line); }
+  ul.thoughts li:first-child { color:var(--warm); font-weight:600; }
+  ul.thoughts small { color:var(--dim); margin-right:8px; }
+  pre.log { background:#0b0e1a; padding:10px; border-radius:10px; font:12px/1.5 ui-monospace, monospace; max-height:60vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  table { width:100%; border-collapse:collapse; font-size:13px; } td, th { padding:4px 6px; text-align:left; border-bottom:1px solid var(--line); }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:13px; } .kv b { color:var(--dim); font-weight:500; }
+  .btns { display:flex; flex-wrap:wrap; gap:6px; } .btns button, select, input[type=range] { font-size:14px; }
+  button.act { background:#243055; color:var(--fg); border:0; border-radius:8px; padding:8px 12px; }
+  button.danger { background:#3a2030; color:#ffb3b3; }
+  label { display:block; margin:8px 0 2px; color:var(--dim); font-size:13px; }
+  .hidden { display:none; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#444; margin-right:6px; } .dot.on { background:var(--acc); }
 </style>
 </head>
 <body>
-<h1>Festival Pet</h1>
-<div class="grid">
-  <div class="card"><div class="k">State</div><div class="v state" id="state">…</div></div>
-  <div class="card"><div class="k">Energy / Social</div><div class="v" id="mood">…</div></div>
-  <div class="card"><div class="k">People remembered</div><div class="v" id="people">…</div></div>
-  <div class="card"><div class="k">Vision (detect / embed ms, faces)</div><div class="v" id="vision">…</div></div>
-</div>
-<div class="card" style="margin-top:12px">
-  <div class="k">Friends, by affection</div>
-  <table id="top"><thead><tr><th>#</th><th>tier</th><th>visits</th><th>attention s</th><th>pets</th><th>holds</th><th>affection</th></tr></thead><tbody></tbody></table>
-</div>
-<p><button onclick="if(confirm('Forget everyone?')) fetch('/api/forget',{method:'POST'})">Forget everyone</button></p>
+<h1>Reachy's Mind</h1>
+<div class="sub" id="conn">connecting…</div>
+<nav>
+  <button class="on" data-tab="mind">Mind</button>
+  <button data-tab="senses">Senses</button>
+  <button data-tab="people">People</button>
+  <button data-tab="controls">Controls</button>
+  <button data-tab="log">Log</button>
+</nav>
+
+<section id="tab-mind" class="grid">
+  <div class="card">
+    <h2>Right now</h2>
+    <div class="big" id="state">…</div>
+    <div class="sub" id="state-sub"></div>
+    <label>Energy</label><div class="bar"><i id="energy"></i></div>
+    <label>Social</label><div class="bar pink"><i id="social"></i></div>
+    <div class="kv" id="timers"></div>
+  </div>
+  <div class="card">
+    <h2>Thoughts</h2>
+    <ul class="thoughts" id="thoughts"></ul>
+  </div>
+  <div class="card">
+    <h2>Last actions</h2>
+    <ul class="thoughts" id="actions"></ul>
+  </div>
+</section>
+
+<section id="tab-senses" class="grid hidden">
+  <div class="card"><h2>Eyes</h2><div class="kv" id="eyes"></div></div>
+  <div class="card"><h2>Ears</h2><div class="kv" id="ears"></div></div>
+  <div class="card"><h2>Body</h2><div class="kv" id="body"></div></div>
+  <div class="card"><h2>Belly scratch tuning</h2>
+    <div class="sub">Scratch the shell and watch band energy jump well above the median. Lower the ratio if it never fires, raise it if music sets it off.</div>
+    <div class="kv" id="scratch"></div>
+    <label>Onset ratio: <span id="ratio-v"></span></label>
+    <input type="range" min="2" max="15" step="0.5" id="ratio" oninput="setVal('scratch_onset_ratio', this.value, 'ratio-v')">
+  </div>
+</section>
+
+<section id="tab-people" class="grid hidden">
+  <div class="card" style="grid-column:1/-1">
+    <h2>Friends, by affection</h2>
+    <div class="sub" id="people-sum"></div>
+    <table id="top"><thead><tr><th>#</th><th>tier</th><th>visits</th><th>attention s</th><th>pets</th><th>holds</th><th>affection</th><th>last seen</th></tr></thead><tbody></tbody></table>
+    <p><button class="act danger" onclick="if(confirm('Forget everyone?')) ctl('forget')">Forget everyone</button></p>
+  </div>
+</section>
+
+<section id="tab-controls" class="grid hidden">
+  <div class="card">
+    <h2>Body</h2>
+    <div class="btns">
+      <button class="act" onclick="ctl('wake')">Wake</button>
+      <button class="act" onclick="ctl('sleep')">Sleep</button>
+      <button class="act" id="mute" onclick="toggleMute()">Mute</button>
+    </div>
+    <label>Groove intensity ×<span id="groove-v"></span></label>
+    <input type="range" min="0" max="2" step="0.1" id="groove" oninput="setVal('groove_scale', this.value, 'groove-v')">
+    <label>Face match strictness <span id="match-v"></span> <span class="sub">(lower = recognises more easily, more mix-ups)</span></label>
+    <input type="range" min="0.3" max="0.6" step="0.01" id="match" oninput="setVal('match_threshold', this.value, 'match-v')">
+    <p class="sub">Speaker volume lives on the daemon dashboard (port 8000 → settings).</p>
+  </div>
+  <div class="card">
+    <h2>Make it do things</h2>
+    <label>Sound</label><select id="sel-sound"></select> <button class="act" onclick="ctl('sound', v('sel-sound'))">Play</button>
+    <label>Gesture</label><select id="sel-gesture"></select> <button class="act" onclick="ctl('gesture', v('sel-gesture'))">Do</button>
+    <label>Library move</label><select id="sel-move"></select> <button class="act" onclick="ctl('move', v('sel-move'))">Play</button>
+  </div>
+</section>
+
+<section id="tab-log" class="hidden">
+  <div class="card"><h2>App log</h2><pre class="log" id="log"></pre></div>
+</section>
+
 <script>
-async function refresh(){
-  try{
-    const r = await fetch('/api/status'); const s = await r.json();
-    document.getElementById('state').textContent = s.behavior.state + (s.behavior.engaged_person ? ' · #' + s.behavior.engaged_person : '');
-    document.getElementById('mood').textContent = s.behavior.energy + ' / ' + s.behavior.social;
-    const t = s.memory.tiers;
-    document.getElementById('people').textContent = s.memory.people + ' (' + t.bestie + ' besties, ' + t.friend + ' friends)';
-    document.getElementById('vision').textContent = s.vision.detect_ms.toFixed(0) + ' / ' + s.vision.embed_ms.toFixed(0) + ' ms, ' + s.vision.faces;
+const $ = id => document.getElementById(id);
+const v = id => $(id).value;
+let tab = 'mind', muted = false, slidersInit = false;
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  ['mind','senses','people','controls','log'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== tab));
+  refresh();
+});
+function kv(el, obj) {
+  $(el).innerHTML = Object.entries(obj).map(([k, val]) => `<b>${k}</b><span>${val === null || val === undefined ? '—' : (typeof val === 'object' ? JSON.stringify(val) : val)}</span>`).join('');
+}
+async function ctl(cmd, value) {
+  const r = await fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cmd, value})});
+  if (!r.ok) alert((await r.json()).detail);
+}
+function setVal(cmd, value, label) { $(label).textContent = value; ctl(cmd, parseFloat(value)); }
+function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
+async function loadCatalog() {
+  const c = await (await fetch('/api/catalog')).json();
+  for (const [id, list] of [['sel-sound', c.sounds], ['sel-gesture', c.gestures], ['sel-move', c.moves]])
+    $(id).innerHTML = list.map(x => `<option>${x}</option>`).join('');
+}
+async function refresh() {
+  try {
+    if (tab === 'log') {
+      const l = await (await fetch('/api/log?n=300')).json();
+      $('log').textContent = l.lines.join('\n'); $('conn').textContent = 'live';
+      return;
+    }
+    const d = await (await fetch('/api/mind')).json();
+    const m = d.mind, s = d.senses;
+    $('conn').textContent = 'live · ' + new Date().toLocaleTimeString();
+    $('state').textContent = m.state;
+    $('state-sub').textContent = `for ${m.state_for_s}s` + (m.engaged_person ? ` · with person #${m.engaged_person} (${m.engaged_tier})` : '') + (m.dizzy ? ' · dizzy' : '');
+    $('energy').style.width = (m.energy * 100) + '%'; $('social').style.width = (m.social * 100) + '%';
+    kv('timers', {'alone for': m.alone_for_s + ' s', 'lonely in': m.lonely_in_s + ' s', 'sleep in': m.sleep_in_s + ' s',
+      'next reaction': m.next_reaction_in_s === null ? '—' : m.next_reaction_in_s + ' s', 'next glance': m.next_glance_in_s === null ? '—' : m.next_glance_in_s + ' s',
+      'listening for trick': m.listening_for_trick_s > 0 ? m.listening_for_trick_s + ' s' : 'no', 'little dance': m.little_dance_s > 0 ? m.little_dance_s + ' s' : '—', 'next sneeze': m.next_sneeze_in_s + ' s', 'gaze': m.gaze ? m.gaze.map(x => x.toFixed(0)).join('°, ') + '°' : 'free'});
+    $('thoughts').innerHTML = m.thoughts.map(t => `<li><small>${t.t}s ago</small>${t.text}</li>`).join('') || '<li class="sub">…</li>';
+    $('actions').innerHTML = d.recent_actions.map(a => `<li><small>${a.t}s ago</small>${a.a}</li>`).join('');
+    kv('eyes', s.face ? s.face : {face: 'none'});
+    kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '°'});
+    kv('body', {held: s.held, shaken: s.shaken});
+    kv('scratch', s.scratch);
+    if (!slidersInit) { slidersInit = true;
+      $('ratio').value = d.controls.scratch_onset_ratio; $('ratio-v').textContent = d.controls.scratch_onset_ratio;
+      $('groove').value = d.controls.groove_scale; $('groove-v').textContent = d.controls.groove_scale;
+      $('match').value = d.controls.match_threshold; $('match-v').textContent = d.controls.match_threshold;
+      muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
+    const t = d.memory.tiers;
+    $('people-sum').textContent = `${d.memory.people} people · ${t.bestie} besties · ${t.friend} friends`;
     const tb = document.querySelector('#top tbody'); tb.innerHTML = '';
-    for (const p of s.memory.top) {
+    for (const p of d.memory.top) {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${p.id}</td><td>${p.tier}</td><td>${p.encounters}</td><td>${p.attention_s}</td><td>${p.pets}</td><td>${p.holds}</td><td>${p.affection}</td>`;
+      tr.innerHTML = `<td>${p.id}</td><td>${p.tier}</td><td>${p.encounters}</td><td>${p.attention_s}</td><td>${p.pets}</td><td>${p.holds}</td><td>${p.affection}</td><td>${new Date(p.last_seen*1000).toLocaleTimeString()}</td>`;
       tb.appendChild(tr);
     }
-  }catch(e){ document.getElementById('state').textContent = 'offline'; }
+  } catch (e) { $('conn').textContent = 'offline: ' + e; }
 }
-refresh(); setInterval(refresh, 1500);
+loadCatalog(); refresh(); setInterval(refresh, 500);
 </script>
 </body>
 </html>
