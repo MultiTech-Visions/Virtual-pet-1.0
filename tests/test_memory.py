@@ -76,3 +76,22 @@ def test_delete_and_merge(tmp_path):
         pass
     else:
         raise AssertionError("expected KeyError")
+
+
+def test_concurrent_saves_do_not_race(tmp_path):
+    import threading
+
+    mem = FaceMemory(tmp_path / "mem.json", save_interval=0.0)
+    p = mem.enroll(_vec(1), now=0.0)
+
+    def hammer():
+        for _ in range(300):
+            mem.add_attention(p, 0.01)
+            mem.save()
+
+    threads = [threading.Thread(target=hammer) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert FaceMemory(tmp_path / "mem.json").people[p.person_id].attention_seconds > 0

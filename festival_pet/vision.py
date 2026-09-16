@@ -263,4 +263,3 @@ class Vision:
                 continue
             with self._lock:
                 self._sighting = sighting
-            self.memory.save()

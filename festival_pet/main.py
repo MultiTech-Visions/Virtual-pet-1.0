@@ -155,7 +155,10 @@ class AudioSense:
         self._thread = threading.Thread(target=self._run, name="festival-pet-audio", daemon=True)
         self._doa_period = doa_period
         self.last_voice_yaw: float | None = None
-        self.stats = {"chunks": 0, "listening": False}
+        self.doa: tuple[float, bool] | None = None  # latest reading; the ONLY place the USB mic array is polled
+        self._doa_backoff_until = 0.0
+        self._doa_errors = 0
+        self.stats = {"chunks": 0, "listening": False, "doa_errors": 0}
 
     def start(self) -> None:
         self._thread.start()
@@ -188,14 +191,21 @@ class AudioSense:
                 self._events.put(("scratch", "", None))
             if self.rub.push(chunk, now):
                 self._events.put(("pet", "", None))
+            if now >= next_doa and now >= self._doa_backoff_until:
+                next_doa = now + self._doa_period
+                try:
+                    self.doa = self._io.doa()
+                except Exception as e:
+                    # The ReSpeaker DoA is a USB control transfer; it occasionally errors. Log it, back off, keep living.
+                    self._doa_errors += 1
+                    self.stats["doa_errors"] = self._doa_errors
+                    self._doa_backoff_until = now + min(30.0, 2.0 * self._doa_errors)
+                    logger.warning("DoA read failed (%d so far, backing off %.0fs): %r", self._doa_errors, self._doa_backoff_until - now, e)
+                if self.doa is not None and self.doa[1]:
+                    speech_until = now + self.SPEECH_HANGOVER
+                    self.last_voice_yaw = LoudSoundDetector.doa_to_yaw(self.doa[0])
             if self.spotter is None:
                 continue
-            if now >= next_doa:
-                next_doa = now + self._doa_period
-                doa = self._io.doa()
-                if doa is not None and doa[1]:
-                    speech_until = now + self.SPEECH_HANGOVER
-                    self.last_voice_yaw = LoudSoundDetector.doa_to_yaw(doa[0])
             if now < speech_until:
                 listening = True
                 self.spotter.push(chunk)
@@ -294,7 +304,7 @@ class Pet:
         obs.petting = self.audio.rub.rubbing
         if now >= self._next_doa:
             self._next_doa = now + 0.2
-            obs.loud_yaw_deg = self.loud.update(io.doa(), now)
+            obs.loud_yaw_deg = self.loud.update(self.audio.doa, now)
         sighting = self.p.latest_sighting()
         if sighting is not None and now - sighting.ts < 1.0:
             obs.face = self._to_face_obs(sighting)

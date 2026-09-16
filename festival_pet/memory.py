@@ -13,6 +13,7 @@ we default a bit stricter because a festival crowd is a lot of strangers.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -61,6 +62,7 @@ class FaceMemory:
         self._next_id = 1
         self._dirty = False
         self._last_save = 0.0
+        self._lock = threading.Lock()
         if self.path.exists():
             self._load()
 
@@ -74,24 +76,25 @@ class FaceMemory:
         self._next_id = data["next_id"]
 
     def save(self, force: bool = False) -> None:
-        """Write to disk if dirty and the debounce interval has elapsed (or force)."""
-        now = time.time()
-        if not self._dirty:
-            return
-        if not force and now - self._last_save < self.save_interval:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": SCHEMA_VERSION,
-            "next_id": self._next_id,
-            "people": {str(k): asdict(v) for k, v in self.people.items()},
-        }
-        tmp = self.path.with_suffix(".tmp")
-        with tmp.open("w") as f:
-            json.dump(payload, f)
-        tmp.replace(self.path)
-        self._dirty = False
-        self._last_save = now
+        """Write to disk if dirty and the debounce interval has elapsed (or force). Thread-safe."""
+        with self._lock:
+            now = time.time()
+            if not self._dirty:
+                return
+            if not force and now - self._last_save < self.save_interval:
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema_version": SCHEMA_VERSION,
+                "next_id": self._next_id,
+                "people": {str(k): asdict(v) for k, v in self.people.items()},
+            }
+            tmp = self.path.with_suffix(".tmp")
+            with tmp.open("w") as f:
+                json.dump(payload, f)
+            tmp.replace(self.path)
+            self._dirty = False
+            self._last_save = now
 
     # ------------------------------------------------------------------ matching
     @staticmethod
