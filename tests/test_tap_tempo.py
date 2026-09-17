@@ -61,6 +61,30 @@ def test_turn_pose_rotates_about_base_vertical():
     assert heading[0] == pytest.approx(0.0, abs=1e-9) and heading[1] == pytest.approx(math.cos(math.radians(10)))
     assert np.allclose(turn_pose(forward, 0.0), forward)
     assert np.allclose(turn_pose(forward, 90.0), head_pose(90.0, 10.0, 0.0, 0.0))  # same as authoring it turned
+    # the forward shift turns with the heading: 90 deg round, "forward" is along base -x, not still +y
+    shifted = head_pose(90.0, -30.0, 0.0, 0.0, 0.02)
+    assert shifted[0, 3] == pytest.approx(-0.02) and shifted[1, 3] == pytest.approx(0.0, abs=1e-12)
+    assert np.allclose(turn_pose(head_pose(0.0, -30.0, 0.0, 0.0, 0.02), 90.0), shifted)
+
+
+def test_bow_covers_the_house_and_plays_from_neutral():
+    from festival_pet.motion import BOW_S, g_bow
+
+    centre, right, left = g_bow(0.5 / 3), g_bow(1.5 / 3), g_bow(2.5 / 3)  # mid-dip of each bow
+    assert centre.pitch > 25 and abs(centre.yaw) < 1e-9 and centre.ant_r > 1.0 and centre.ant_l == 0.0
+    assert right.pitch > 25 and right.yaw < -19 and right.ant_l < -1.0 and right.ant_r == 0.0
+    assert left.pitch > 25 and left.yaw > 19 and left.ant_r > 1.0 and left.ant_l < -1.0
+    assert g_bow(0.0).pitch == 0.0 and g_bow(0.999).pitch < 2.0  # up at the start and the end
+    m = MotionComposer()
+    m.set_gaze((0.0, -30.0))  # looking up at someone standing
+    for i in range(100):
+        m.sample(i * 0.02, 0.02)
+    m.request_gesture("bow", 2.0, 4)
+    for i in range(100, 160):
+        head, _, _ = m.sample(i * 0.02, 0.02)
+    assert m._gaze[1] > -5.0  # gaze let go of the person, so the dip reads as a bow
+    assert head[1, 3] < 0.003  # and the up-look forward shift went with it
+    assert BOW_S == 6.0
 
 
 def test_groove_mix_scales_parts_and_body_sways_over_the_bar():

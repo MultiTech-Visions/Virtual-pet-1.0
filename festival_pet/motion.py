@@ -33,10 +33,16 @@ ANTENNA_DOWN = (-2.6, 2.6)  # relaxed / asleep (sleep pose is ±3.05)
 
 
 def head_pose(yaw: float, pitch: float, roll: float, z: float, x: float = 0.0) -> np.ndarray:
-    """Build a 4x4 head pose from degrees + z (and forward x) metres (matches create_head_pose)."""
+    """Build a 4x4 head pose from degrees + z (and forward x) metres (matches create_head_pose).
+
+    ``x`` is forward along the head's own heading: the pose is in the base frame, so the shift is
+    turned with the yaw, or a head looking 90 degrees round would be pushed sideways instead.
+    """
     pose = np.eye(4)
     pose[:3, :3] = R.from_euler("xyz", [roll, pitch, yaw], degrees=True).as_matrix()
-    pose[1, 3] = x  # forward is +y on this base (x was observed to slide the head to its right)
+    heading = math.radians(yaw)
+    pose[0, 3] = -x * math.sin(heading)  # forward is +y on this base (x was observed to slide the head to its right)
+    pose[1, 3] = x * math.cos(heading)
     pose[2, 3] = z
     return pose
 
@@ -271,12 +277,26 @@ def g_point(u: float, side: float) -> Offsets:
     return Offsets(yaw=side * 20.0 * pt, z=0.012 * bounce, pitch=-6.0 * bounce, roll=side * 6.0 * pt, ant_r=ant_r, ant_l=ant_l)
 
 
+BOW_S = 6.0
+BOW_YAWS = (0.0, -20.0, 20.0)  # centre, a little to its right, a little to its left: the whole house
+
+
 def g_bow(u: float) -> Offsets:
-    """A performer's bow: head dips forward and holds, the right antenna sweeps across in front, then the left."""
-    dip = _ease(min(1.0, u / 0.25)) * (1 - max(0.0, u - 0.8) / 0.2)
-    r = _pulse(min(1.0, max(0.0, (u - 0.1) / 0.4)))  # right arm 0.1-0.5
-    l = _pulse(min(1.0, max(0.0, (u - 0.45) / 0.4)))  # left arm 0.45-0.85
-    return Offsets(pitch=24.0 * dip, z=-0.008 * dip, ant_r=1.4 * r, ant_l=-1.4 * l)
+    """A performer's bow, three times: to the centre, to the right, to the left.
+
+    Each bow: the head turns (while up), dips well forward and holds, then comes back up. The right
+    antenna sweeps across in front on the first, the left on the second, both on the last. A solo
+    gesture, so the gaze goes to neutral first and the dip is not eaten by a head already looking up.
+    """
+    seg = min(2, int(u * 3))
+    v = u * 3 - seg
+    prev = BOW_YAWS[seg - 1] if seg else 0.0
+    yaw = prev + (BOW_YAWS[seg] - prev) * _ease(min(1.0, v / 0.2))
+    dip = _ease(min(1.0, max(0.0, (v - 0.15) / 0.25))) * (1 - _ease(min(1.0, max(0.0, (v - 0.72) / 0.28))))
+    arm = _pulse(min(1.0, max(0.0, (v - 0.15) / 0.7)))
+    ant_r = 1.4 * arm if seg in (0, 2) else 0.0
+    ant_l = -1.4 * arm if seg in (1, 2) else 0.0
+    return Offsets(yaw=yaw, pitch=30.0 * dip, z=-0.01 * dip, ant_r=ant_r, ant_l=ant_l)
 
 
 def g_glance(u: float, side: float) -> Offsets:
@@ -307,10 +327,10 @@ GESTURES: dict[str, tuple[float, str]] = {
     "lean": (2.4, "plain"),
     "shake": (0.55, "repeat"),
     "point": (2.6, "sided"),
-    "bow": (3.4, "plain"),
+    "bow": (BOW_S, "plain"),
 }
 
-SOLO_GESTURES = frozenset({"sneeze"})  # the whole body is the gesture: no groove, mimic, mirror or beep sway on top
+SOLO_GESTURES = frozenset({"sneeze", "bow"})  # the whole body is the gesture: no groove, mimic, mirror or beep sway on top
 
 _FUNCS = {
     "nod": g_nod, "tilt": g_tilt, "wiggle": g_wiggle, "bounce": g_bounce, "perk": g_perk,
@@ -411,7 +431,7 @@ class MotionComposer:
         self.mimic_gain = 0.9
         self._mimic_pose = np.zeros(3)
         self.voice_level = 0.0  # 0..1 loudness of the pet's own beeps; drives a little "talking" sway
-        self.forward_shift_m = 0.012  # slide the head forward by up to this when looking up, so it clears the body
+        self.forward_shift_m = 0.020  # slide the head forward by up to this when looking up, so it clears the body
         self.hold: tuple[float, float, float, float] | None = None  # (yaw, pitch, roll, until): a shown pose (mime game)
         self._hold_roll = 0.0
         self._voice = 0.0
