@@ -238,3 +238,19 @@ def test_pose_history_pairs_frames_with_the_pose_at_exposure():
     assert h.at(0.0)[2, 3] == 0 and h.at(99.0)[2, 3] == 49  # clamps to what it has
     h.record(20.0, np.eye(4))  # everything older than keep_s is dropped
     assert len(h._hist) == 1
+
+
+def test_gaze_holds_still_while_grooving():
+    m = MotionComposer()
+    m.set_gaze((0.0, 0.0))
+    for i in range(100):
+        m.sample(i * 0.02, 0.02)
+    m.groove, m._groove_level = (0.0, 0.0, 1.0), 1.0
+    m.set_gaze((30.0, 0.0))  # the "face" jumps: mid-groove that is more likely our own bob than them
+    for i in range(100, 150):
+        m.sample(i * 0.02, 0.02)
+    assert abs(m._gaze[0]) < 4.0  # barely moved in a second
+    m.groove, m._groove_level = None, 0.0
+    for i in range(150, 250):
+        m.sample(i * 0.02, 0.02)
+    assert m._gaze[0] > 25.0  # follows again once the groove is over

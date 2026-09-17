@@ -294,7 +294,7 @@ class GrooveMix:
 
     bob: float = 1.0  # head pitch/z on the beat
     sway: float = 1.0  # head roll/yaw over the bar
-    body: float = 0.5  # body yaw over the bar
+    body: float = 0.0  # body yaw over the bar (off by default: it swings the camera too)
     ears: float = 1.0  # antennas
 
     def as_dict(self) -> dict[str, float]:
@@ -449,6 +449,11 @@ class MotionComposer:
         else:
             target = np.array(self._gaze_target)
             rate = 6.0  # snappy but not twitchy; vision already filters
+        # While grooving, the face reading carries whatever of our own bob the camera timing did not cancel;
+        # chasing it would feed that error back into the head and the swing grows. Hold the gaze instead.
+        grooving = self._groove_level > 0.05
+        if grooving:
+            rate *= 0.02
         self._gaze += (target - self._gaze) * min(1.0, dt * rate)
 
         solo = self._gesture is not None and self._gesture.name in SOLO_GESTURES and now - self._gesture.start < self._gesture.duration
@@ -529,7 +534,7 @@ class MotionComposer:
 
         # Body follows the gaze (not the gesture wobble) when the head is far off-centre, slowly and with a deadband,
         # so the whole robot ends up facing the person and the head has room to move both ways.
-        if self.body_follow and s < 0.5:
+        if self.body_follow and s < 0.5 and not grooving:
             off_body = self._gaze[0] - self.body_yaw
             if abs(off_body) > BODY_DEADBAND:
                 step = min(abs(off_body) - BODY_DEADBAND * 0.5, BODY_RATE * dt)

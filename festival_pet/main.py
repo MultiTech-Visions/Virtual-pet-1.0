@@ -743,6 +743,19 @@ class Pet:
             self.keymap.set(key, press, hold)
         elif cmd == "key":  # fire a key action as if pressed (testing from the page)
             self.key_action(str(value), now, now)
+        elif cmd == "preview":
+            vision = getattr(self, "vision", None)
+            if vision is None:
+                raise KeyError("no vision on this pet")
+            vision.preview = bool(value)
+        elif cmd == "capture_face":
+            vision = getattr(self, "vision", None)
+            if vision is None:
+                raise KeyError("no vision on this pet")
+            if self._last_obs.face is None:
+                raise ValueError("no face in view to capture")
+            vision.capture_now = True
+            self.actions_log.append((now, "capture", "another view of the face"))
         elif cmd == "camera_lag_ms":
             if self.pose_history is None:
                 raise KeyError("no camera on this pet")
@@ -1076,6 +1089,16 @@ def install_routes(app, pet: Pet) -> None:
             return {"ok": True, "detail": io.power(action)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/camera.jpg")
+    def camera():
+        from fastapi.responses import Response
+
+        vision = getattr(pet, "vision", None)
+        jpeg = None if vision is None else vision.last_jpeg
+        if jpeg is None:
+            raise HTTPException(status_code=404, detail="preview is off (or no frame yet)")
+        return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/people/{person_id}/face.jpg")
     def face(person_id: int):

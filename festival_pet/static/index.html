@@ -84,7 +84,10 @@
 </section>
 
 <section id="tab-senses" class="grid hidden">
-  <div class="card"><h2>Eyes</h2><div class="kv" id="eyes"></div></div>
+  <div class="card"><h2>Eyes</h2><div class="kv" id="eyes"></div>
+    <div class="btns" style="margin-top:8px"><button class="act" id="preview-btn" onclick="togglePreview()">Show what it sees</button></div>
+    <img id="preview" class="hidden" alt="" style="width:100%; border-radius:10px; margin-top:8px; background:#0b0e1a">
+  </div>
   <div class="card mic"><h2>Ears</h2><div class="kv" id="ears"></div></div>
   <div class="card" style="grid-column:1/-1">
     <h2>Where the person is (last 20 s, world frame)</h2>
@@ -129,6 +132,7 @@
     <div class="toolbar">
       <span class="sub" id="people-sum"></span>
       <button class="act" id="merge-btn" disabled onclick="mergeSel()">Merge selected</button>
+      <button class="act" onclick="ctl('capture_face')">Capture another view of who it's looking at</button>
       <button class="act danger" onclick="if(confirm('Forget everyone?')) ctl('forget')">Forget everyone</button>
     </div>
     <div class="people" id="people"></div>
@@ -281,6 +285,14 @@ async function btPair(mac) {
 async function btForget(mac) { await fetch('/api/bt/forget', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cmd: 'forget', value: mac})}); btStatus(); }
 let btInfo = null;
 async function btStatus() { try { const r = await fetch('/api/bt'); btInfo = r.ok ? await r.json() : {error: (await r.json()).detail}; } catch (e) { btInfo = {error: String(e)}; } }
+let preview = false, previewTimer = null;
+function togglePreview() {
+  preview = !preview; ctl('preview', preview);
+  $('preview-btn').textContent = preview ? 'Hide what it sees' : 'Show what it sees';
+  $('preview').classList.toggle('hidden', !preview);
+  clearInterval(previewTimer);
+  if (preview) previewTimer = setInterval(() => { if (tab === 'senses') $('preview').src = '/api/camera.jpg?t=' + Date.now(); }, 250);
+}
 function toggleManualGroove() { mgroove = !mgroove; ctl('manual_groove', mgroove); $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off'); }
 function tapBeat(one) { ctl('tap', !!one); const b = $(one ? 'tap-one' : 'tap-beat'); b.classList.add('hit'); setTimeout(() => b.classList.remove('hit'), 120); }
 document.addEventListener('keydown', e => { if (tab !== 'controls' || e.target.tagName === 'INPUT') return; if (e.key === ' ') { e.preventDefault(); tapBeat(false); } else if (e.key === '1') tapBeat(true); });
@@ -400,14 +412,14 @@ async function refresh() {
       mflip = d.controls.mimic_flip; $('mflip').textContent = 'Mirror game: ' + (mflip ? 'mirror-image' : 'same direction'); }
     const t = d.memory.tiers;
     $('people-sum').textContent = `${d.memory.people} people · ${t.bestie} besties · ${t.friend} friends`;
-    const key = JSON.stringify(d.memory.top.map(p => [p.id, p.encounters, p.pets, p.holds, p.affection, p.has_face]));
+    const key = JSON.stringify(d.memory.top.map(p => [p.id, p.encounters, p.pets, p.holds, p.affection, p.has_face, p.views]));
     if (key !== lastPeopleKey) {  // only re-render when something changed, so taps are not lost
       lastPeopleKey = key;
       $('people').innerHTML = d.memory.top.map(p => `
         <div class="person ${selected.includes(p.id) ? 'sel' : ''}" data-id="${p.id}" onclick="toggleSel(${p.id})">
           ${p.has_face ? `<img src="/api/people/${p.id}/face.jpg?v=${p.encounters}" alt="">` : '<div class="noface">?</div>'}
           <div class="id">#${p.id} <span class="tier">${p.tier}</span></div>
-          <div class="meta">${p.encounters} visits · ${Math.round(p.attention_s)} s · ${p.pets} pets · ${p.holds} holds</div>
+          <div class="meta">${p.encounters} visits · ${Math.round(p.attention_s)} s · ${p.pets} pets · ${p.holds} holds · ${p.views} view${p.views === 1 ? '' : 's'}</div>
           <div class="meta">♥ ${p.affection} · seen ${new Date(p.last_seen*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
           <button class="act danger" onclick="delPerson(${p.id}, event)">forget</button>
         </div>`).join('') || '<div class="sub">nobody yet</div>';

@@ -230,6 +230,7 @@ class FaceMemory:
                         "first_seen": p.first_seen,
                         "last_seen": p.last_seen,
                         "has_face": self.thumbnail_path(p.person_id).exists(),
+                        "views": len(p.embeddings),
                     }
                     for p in self.people.values()
                 ),

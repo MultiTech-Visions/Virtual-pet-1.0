@@ -233,6 +233,10 @@ class Vision:
         with self._lock:
             return self._sighting
 
+    preview: bool = False  # keep a JPEG of each processed (320 px) frame for the page
+    last_jpeg: bytes | None = None
+    capture_now: bool = False  # page asked for one more embedding of the current person
+
     def set_active(self, active: bool) -> None:
         """Pause (camera idle, no CPU) or resume detection."""
         if active:
@@ -249,6 +253,10 @@ class Vision:
         scale = DETECT_WIDTH / W
         small = cv2.resize(frame_bgr, (DETECT_WIDTH, max(2, int(round(H * scale)) // 2 * 2)), interpolation=cv2.INTER_AREA)
         sh, sw = small.shape[:2]
+        if self.preview:
+            self.last_jpeg = _jpeg(small)
+        else:
+            self.last_jpeg = None
 
         t0 = time.perf_counter()
         faces = self.detector.detect(small)
@@ -319,10 +327,11 @@ class Vision:
         track.last_seen = now
         return faces[i], track
 
-    @staticmethod
-    def _embedding_due(track: Track, row: np.ndarray, now: float) -> bool:
+    def _embedding_due(self, track: Track, row: np.ndarray, now: float) -> bool:
         if min(row[2], row[3]) < EMBED_MIN_FACE_PX:
             return False
+        if self.capture_now:
+            return True
         if track.person is None and track.unknown_votes < UNKNOWN_VOTES_TO_ENROLL:
             return now - track.last_embed > 0.5
         return now - track.last_embed > EMBED_RECHECK
@@ -331,13 +340,18 @@ class Vision:
         assert self.recognizer is not None
         track.last_embed = now
         emb, crop = self.recognizer.embed(small, row)
+        forced, self.capture_now = self.capture_now, False
         person, sim = self.memory.match(emb)
+        if person is None and forced and track.person is not None:
+            person = track.person  # asked for another view of who we are already with: take it even if it matched badly
         if person is not None:
             track.person, track.similarity = person, sim
             track.unknown_votes = 0
             track.pending_embeddings.clear()
             track.pending_crops.clear()
-            self.memory.reinforce(person, emb, sim)
+            self.memory.reinforce(person, emb, 0.0 if forced else sim)  # forced: keep it whatever the similarity
+            if forced:
+                logger.info("captured another view of person #%d (similarity %.2f)", person.person_id, sim)
             if not self.memory.thumbnail_path(person.person_id).exists():
                 self.memory.set_thumbnail(person, _jpeg(crop))
             return
