@@ -268,13 +268,16 @@ def test_held_mode_asks_to_be_turned():
     pet = _pet()
     pet.control("pickup", True)
     assert pet.p.composer.held
-    pet.p.behavior.gaze = (100.0, 0.0)
-    pet.p.behavior.state = "SEARCHING"  # keeps that gaze
-    t = 1001.0
+    pet.p.behavior.state = "SEARCHING"  # looks where it last saw someone: way off to its left
+    pet.p.behavior._last_seen_yaw, pet.p.behavior._last_seen_pitch = 100.0, 0.0
+    pet.p.behavior._state_since = 1001.0
+    t, pointed = 1001.0, False
     while t < 1004.0:
         pet.step(t)
+        g = pet.p.composer._gesture
+        pointed = pointed or (g is not None and g.name == "point" and g.side > 0)
         t += 0.02
     assert any(k == "ask" and n == "turn me left" for _, k, n in pet.actions_log)
     assert any(k == "sound" and n == "huff" for _, k, n in pet.actions_log)
-    assert pet.p.composer._gesture is not None and pet.p.composer._gesture.name == "point"
+    assert pointed
     pet.stop()
