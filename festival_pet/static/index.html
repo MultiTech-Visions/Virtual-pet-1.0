@@ -321,7 +321,7 @@ async function refresh() {
   try {
     const m = d.mind, s = d.senses;
     $('conn').textContent = 'live · ' + new Date().toLocaleTimeString();
-    $('ver').textContent = 'v' + d.build.version + (d.build.commit ? ' · ' + d.build.commit : '') + (d.build.built ? ' · uploaded ' + d.build.built : '');
+    $('ver').textContent = 'v' + d.build.version;
     $('state').textContent = m.state;
     $('state-sub').textContent = `for ${m.state_for_s}s` + (m.engaged_person ? ` · with person #${m.engaged_person} (${m.engaged_tier})` : '') + (m.dizzy ? ' · dizzy' : '') + (m.mimicking ? ' · mirror game' : '');
     const f = d.feeling, fe = x => x ? `<b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
