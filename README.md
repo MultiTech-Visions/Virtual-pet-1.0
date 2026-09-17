@@ -115,7 +115,8 @@ ssh pollen@reachy-mini.local 'bash /home/pollen/festival_pet/scripts/setup_offli
 ```
 
 The script installs the app into the daemon's apps venv (`/venvs/apps_venv`), downloads
-the two OpenCV Zoo ONNX models (~39 MB) and the Vosk small English model (~40 MB) into
+the three OpenCV Zoo ONNX models (~51 MB, pinned by SHA-256 so they are fetched once and
+only again if the pin changes) and the Vosk small English model (~40 MB) into
 `~/.local/share/festival_pet/models/`, caches the
 `pollen-robotics/reachy-mini-emotions-library` dataset, and runs a load check.
 
