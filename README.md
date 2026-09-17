@@ -186,8 +186,7 @@ Polls the app twice a second. Tabs:
 - **Log** – the app's own log ring (last 400 lines). The daemon's per-app log is on the
   dashboard too.
 
-With ears off, every microphone card on Senses is hidden. When the robot is shut down (or the
-app stops) the page turns into a "Reachy is asleep" screen and keeps trying to reconnect.
+With ears off, every microphone card on Senses is hidden.
 
 API: `GET /api/mind`, `GET /api/log?n=`, `GET /api/catalog`, `POST /api/control {cmd, value}`,
 `GET /api/people/{id}/face.jpg`, `DELETE /api/people/{id}`, `POST /api/people/merge {keep, other}`.

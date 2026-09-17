@@ -31,10 +31,6 @@
   input[type=range] { width:100%; height:36px; margin:0 0 4px; accent-color:var(--acc); }
   .card { position:relative; }
   .who { position:absolute; top:10px; right:10px; width:64px; height:64px; border-radius:10px; object-fit:cover; border:2px solid var(--warm); }
-  #asleep { position:fixed; inset:0; background:var(--bg); z-index:50; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:24px; }
-  body.asleep { overflow:hidden; height:100vh; } body.asleep > :not(#asleep) { display:none; }  /* nothing to scroll to behind the sleep screen */
-  #asleep h2 { font-size:22px; color:var(--fg); text-transform:none; letter-spacing:0; margin:16px 0 6px; }
-  #asleep p { color:var(--dim); max-width:420px; margin:4px 0; }
   button.danger { background:#3a2030; color:#ffb3b3; }
   label { display:block; margin:8px 0 2px; color:var(--dim); font-size:13px; }
   .hidden { display:none; }
@@ -201,27 +197,6 @@
   <div class="card"><h2>App log</h2><pre class="log" id="log"></pre></div>
 </section>
 
-<div id="asleep" class="hidden" onclick="peek()">
-  <svg width="200" height="200" viewBox="0 0 200 200" aria-hidden="true">
-    <g stroke="#111" stroke-width="3" fill="#f4f4f6" stroke-linecap="round">
-      <path d="M62 178 C40 178 36 120 52 90 C66 64 134 64 148 90 C164 120 160 178 138 178 Z"/>
-      <rect x="66" y="170" width="68" height="12" rx="6" fill="#2b2b33"/>
-      <path d="M52 102 C48 70 84 46 116 52 C140 57 146 84 132 100 C120 114 86 118 62 108 Z" transform="rotate(-18 96 84)"/>
-      <line x1="112" y1="52" x2="128" y2="12"/><ellipse cx="129" cy="10" rx="4" ry="6" fill="#111" transform="rotate(22 129 10)"/>
-      <line x1="60" y1="66" x2="30" y2="50"/><ellipse cx="29" cy="49" rx="6" ry="4" fill="#111" transform="rotate(28 29 49)"/>
-      <circle cx="84" cy="90" r="10" fill="#111"/><circle cx="110" cy="80" r="10" fill="#111"/>
-      <path d="M78 92 q6 5 12 0 M104 82 q6 5 12 0" stroke="#fff" fill="none" stroke-width="2.5"/>
-    </g>
-    <g fill="#7b9cf5" font-family="system-ui, sans-serif" font-weight="800">
-      <text x="146" y="60" font-size="18">z</text><text x="158" y="42" font-size="24">z</text><text x="172" y="22" font-size="30">Z</text>
-    </g>
-  </svg>
-  <h2>Reachy is asleep</h2>
-  <p id="asleep-why">The robot is powered off, or the pet app is not running.</p>
-  <p>Power the robot on (it boots in about a minute), then touch an antenna to wake it and start the pet. This page reconnects on its own.</p>
-  <p class="sub" id="asleep-since"></p>
-  <p class="sub">tap anywhere to peek at the page</p>
-</div>
 <style>.feeling{font-size:1.1em;margin:4px 0 8px}.feeling b{color:#ffb86b;text-transform:capitalize}.act.big{font-size:1.15em;padding:14px 22px}.act.hit{filter:brightness(1.6)}</style>
 <script>
 const $ = id => document.getElementById(id);
@@ -273,7 +248,7 @@ async function loadVolume() {
 }
 async function power(action) {
   if (!confirm(action === 'shutdown' ? 'Shut the robot down?' : 'Reboot the robot?')) return;
-  $('power-msg').textContent = action + '…'; powerSent = action;
+  $('power-msg').textContent = action + '…';
   try { const r = await fetch('/api/power/' + action, {method:'POST'}); const j = await r.json(); $('power-msg').textContent = r.ok ? j.detail : ('failed: ' + j.detail); }
   catch (e) { $('power-msg').textContent = 'connection dropped (expected once it powers off)'; }
 }
@@ -312,12 +287,11 @@ async function refresh() {
       const r = await fetch('/api/log?n=300'); if (!r.ok) throw new Error('HTTP ' + r.status);
       const l = await r.json();
       $('log').textContent = l.lines.join('\n'); $('conn').textContent = 'live';
-      online(); return;
+      return;
     }
     const r = await fetch('/api/mind'); if (!r.ok) throw new Error('HTTP ' + r.status);
     d = await r.json();
-    online();
-  } catch (e) { offline(e); return; }
+  } catch (e) { $('conn').textContent = 'offline: ' + e; return; }
   try {
     const m = d.mind, s = d.senses;
     $('conn').textContent = 'live · ' + new Date().toLocaleTimeString();
@@ -384,26 +358,6 @@ async function refresh() {
         </div>`).join('') || '<div class="sub">nobody yet</div>';
     }
   } catch (e) { $('conn').textContent = 'live, but the page hit an error drawing: ' + e; console.error(e); }
-}
-let fails = 0, asleepSince = 0, powerSent = '';
-function peek() { $('asleep').classList.add('hidden'); document.body.classList.remove('asleep'); asleepSince = 0; lastOk = Date.now(); }
-function online() {
-  fails = 0; lastOk = Date.now();
-  if (asleepSince) { asleepSince = 0; powerSent = ''; $('asleep').classList.add('hidden'); document.body.classList.remove('asleep'); }
-}
-let lastOk = Date.now();
-function offline(e) {
-  $('conn').textContent = 'offline: ' + e;
-  fails++;
-  // A busy robot drops the odd poll; that is not "off". Sleep screen only after 20 s with no answer at all,
-  // or right away once we sent shutdown/reboot from this page.
-  const silentFor = Date.now() - lastOk;
-  if ((powerSent || silentFor > 20000) && !asleepSince) {
-    asleepSince = Date.now();
-    $('asleep-why').textContent = powerSent === 'reboot' ? 'Rebooting. Back in a minute or so.' : powerSent === 'shutdown' ? 'Shut down from this page.' : 'The robot is powered off, or the pet app is not running.';
-    $('asleep').classList.remove('hidden'); document.body.classList.add('asleep'); window.scrollTo(0, 0);
-  }
-  if (asleepSince) $('asleep-since').textContent = 'asleep for ' + Math.round((Date.now() - asleepSince) / 1000) + ' s · still trying to reconnect';
 }
 function drawFaceChart(hist, params) {
   const cv = $('facechart'); const W = cv.width = cv.clientWidth, H = cv.height; const g = cv.getContext('2d');
