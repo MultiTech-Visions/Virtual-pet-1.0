@@ -354,7 +354,9 @@ class Pet:
         self.pose_history: PoseHistory | None = None  # set on the real robot; fed every tick for the vision thread
         self.manual_groove = False  # groove to the tapped beat instead of what it hears/sees
         self._dance_seen = False  # edge: seed the tap clock once per dance
-        self.pickup_enabled = False  # IMU is in the head; off by default until tuned on the real robot
+        self.pickup_enabled = False  # "held in hand": the body never turns; it asks to be turned instead
+        self._short_since = 0.0
+        self._next_ask = 0.0
         self.asleep = False  # motors off, camera paused; ears stay on
         self._touch_settle_left = -1.0  # seconds of ticks to wait after sleep/wake before re-zeroing the ear detector
         self.set_vision_active: Callable[[bool], None] = lambda active: None
@@ -408,9 +410,7 @@ class Pet:
             self.pose_history.record(now, io.head_pose())  # measured pose, timestamped, for pairing with camera frames
         imu = io.imu()
         if imu is not None:
-            held, shaken = self.pickup.update(imu["accelerometer"], imu["gyroscope"], now, self_moving)
-            if self.pickup_enabled:
-                obs.held, obs.shaken = held, shaken
+            self.pickup.update(imu["accelerometer"], imu["gyroscope"], now, self_moving)  # stats only; "held" is the switch below
         # Antennas lag their command while animated; the detector raises its threshold then.
         busy = self.move is not None or comp.gesture_active(now)
         present_ants = io.present_antennas()
@@ -527,7 +527,7 @@ class Pet:
             else:
                 head, ants, move_body = self.move.evaluate(t)
                 # Moves are recorded body-forward: turn them with the body and add the move's own body swing.
-                body = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, comp.body_yaw + math.degrees(float(move_body))))
+                body = 0.0 if comp.held else max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, comp.body_yaw + math.degrees(float(move_body))))
                 head = turn_pose(head, body)
                 self.last_pose, self.last_ants = head, [float(ants[0]), float(ants[1])]
                 io.set_target(head, self.last_ants, math.radians(body))
@@ -545,6 +545,19 @@ class Pet:
             self.last_pose, self.last_ants = head, ants
             if not self.asleep:
                 io.set_target(head, ants, math.radians(body_yaw))
+        # Held in hand and straining to look somewhere the head cannot reach: ask to be turned that way.
+        if comp.held and not self.asleep and abs(comp.yaw_short) > 8.0 and self.move is None:
+            if self._short_since == 0.0:
+                self._short_since = now
+            elif now - self._short_since > 1.0 and now >= self._next_ask:
+                self._next_ask = now + 7.0
+                side = "+" if comp.yaw_short > 0 else "-"
+                beh._think(now, f"I can't see that far {'left' if side == '+' else 'right'}... turn me!")
+                self._dispatch(Action("sound", "huff", 3), now)
+                comp.request_gesture("point", now, 3, side=1.0 if side == "+" else -1.0)
+                self.actions_log.append((now, "ask", "turn me " + ("left" if side == "+" else "right")))
+        else:
+            self._short_since = 0.0
         self.p.memory.save()
 
     # ------------------------------------------------------------------ helpers
@@ -758,8 +771,9 @@ class Pet:
             self._dispatch(Action("wake", "control", 5), now)
         elif cmd == "mute":
             self.muted = bool(value)
-        elif cmd == "pickup":
+        elif cmd == "pickup":  # held-in-hand mode
             self.pickup_enabled = bool(value)
+            self.p.composer.held = self.pickup_enabled
         elif cmd == "ears":
             self.audio.enabled = bool(value)
         elif cmd == "mimic_flip":

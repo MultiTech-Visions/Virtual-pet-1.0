@@ -291,3 +291,17 @@ def test_dancing_is_not_interrupted_by_reactions_or_a_lost_face():
     # tracker blinks for 4 s while the dance lock holds: no search, no "where did they go"
     acts = _run(b, lambda t: Observation(dance_bpm=120.0), 20.0, 24.0)
     assert b.state == "ENGAGED" and not any(a.kind == "gesture" and a.name == "search" for a in acts)
+
+
+def test_idle_look_around_turns_the_gaze_wide():
+    b, _ = _brain()
+    _run(b, lambda t: Observation(), 0.0, 1.0)
+    wide = []
+    t = 1.0
+    while t < 40.0:
+        b.tick(Observation(), t, 0.05)
+        if b.gaze is not None:
+            wide.append(b.gaze[0])
+        t += 0.05
+    assert wide and max(abs(y) for y in wide) >= 35.0  # not a 22-degree head flick: a proper turn
+    assert any(y > 0 for y in wide) and any(y < 0 for y in wide)

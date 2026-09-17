@@ -259,6 +259,18 @@ def g_lean(u: float) -> Offsets:
     return Offsets(pitch=8.0 * e, roll=6.0 * e, z=-0.004 * e, ant_r=0.6 * e, ant_l=-0.6 * e)
 
 
+def g_point(u: float, side: float) -> Offsets:
+    """"Turn me that way!": a couple of head bounces, both antennas wiggle, then the antenna on that side
+    drops forward and stays pointing while the head strains that way. side +1 = its left."""
+    bounce = abs(math.sin(2 * math.pi * 2.5 * min(u, 0.4) / 0.4)) if u < 0.4 else 0.0
+    wig = math.sin(2 * math.pi * 6 * u) * (1 - u) * 0.4 if u < 0.45 else 0.0
+    pt = _ease(min(1.0, max(0.0, (u - 0.4) / 0.2))) * (1 - max(0.0, u - 0.85) / 0.15)  # the point, held, released at the end
+    # pointing = that antenna forward-down (right: +, left: -), the other perked
+    ant_r = wig + (1.1 * pt if side < 0 else -0.5 * pt)
+    ant_l = -wig + (-1.1 * pt if side > 0 else 0.5 * pt)
+    return Offsets(yaw=side * 20.0 * pt, z=0.012 * bounce, pitch=-6.0 * bounce, roll=side * 6.0 * pt, ant_r=ant_r, ant_l=ant_l)
+
+
 def g_glance(u: float, side: float) -> Offsets:
     e = _pulse(u) ** 0.6
     return Offsets(yaw=side * 22.0 * e, pitch=-3.0 * e + 5.0 * math.sin(math.pi * u * 2) * e, roll=side * 4.0 * e)
@@ -286,6 +298,7 @@ GESTURES: dict[str, tuple[float, str]] = {
     "flinch": (1.2, "sided"),
     "lean": (2.4, "plain"),
     "shake": (0.55, "repeat"),
+    "point": (2.6, "sided"),
 }
 
 SOLO_GESTURES = frozenset({"sneeze"})  # the whole body is the gesture: no groove, mimic, mirror or beep sway on top
@@ -295,7 +308,7 @@ _FUNCS = {
     "droop": g_droop, "startle": g_startle, "snuggle": g_snuggle, "dizzy": g_dizzy,
     "shake_off": g_shake_off, "search": g_search, "glance": g_glance,
     "shy": g_shy, "nod_off": g_nod_off, "sneeze": g_sneeze, "hiccup": g_hiccup, "tada": g_tada,
-    "flinch": g_flinch, "lean": g_lean, "shake": g_shake,
+    "flinch": g_flinch, "lean": g_lean, "shake": g_shake, "point": g_point,
 }
 
 
@@ -380,6 +393,8 @@ class MotionComposer:
         self._mirror = 0.0
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
+        self.held = False  # in someone's hands: the body never turns (see Pet.control("pickup"))
+        self.yaw_short = 0.0  # degrees the head wanted to turn beyond what it can, + = to its left (for asking to be turned)
         self.mimic: tuple[float, float, float] | None = None  # (yaw, pitch, roll) of the person's head to copy, or None
         self.mimic_flip = True  # mirror-image (True) or same-direction copy (False) for yaw and roll
         self.mimic_gain = 0.9
@@ -557,14 +572,18 @@ class MotionComposer:
 
         # Body follows the gaze (not the gesture wobble) when the head is far off-centre, slowly and with a deadband,
         # so the whole robot ends up facing the person and the head has room to move both ways.
-        if self.body_follow and s < 0.5 and not grooving:
+        if self.held:
+            self.body_yaw = 0.0
+        elif self.body_follow and s < 0.5 and not grooving:
             off_body = self._gaze[0] - self.body_yaw
             if abs(off_body) > BODY_DEADBAND:
                 step = min(abs(off_body) - BODY_DEADBAND * 0.5, BODY_RATE * dt)
                 self.body_yaw += math.copysign(step, off_body)
         self.body_yaw = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw))
-        body = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw + off.body * (1 - s)))
+        body = 0.0 if self.held else max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw + off.body * (1 - s)))
         # Never ask the head for more than it can do relative to the body.
+        wanted = yaw
         yaw = max(body - HEAD_YAW_LIMIT, min(body + HEAD_YAW_LIMIT, yaw))
+        self.yaw_short = wanted - yaw
         x = self.forward_shift_m * max(0.0, -pitch) / PITCH_LIMIT  # looking up: slide forward so the back of the head clears the body
         return head_pose(yaw, pitch, roll, z, x), [ant_r, ant_l], body

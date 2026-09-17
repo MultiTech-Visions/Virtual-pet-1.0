@@ -142,6 +142,8 @@ class Behavior:
     _last_lonely: float = -1e9
     _next_react: float = 0.0
     _next_glance: float = 0.0
+    _look_until: float = 0.0  # idle look-around: gaze held wide (body turns) until then
+    _look_at: tuple[float, float] = (0.0, 0.0)
     _next_purr: float = 0.0
     _last_touch: float = -1e9
     _engaged_track: int | None = None
@@ -596,12 +598,20 @@ class Behavior:
                     self.gaze = None
                     if obs.loud_yaw_deg is not None:
                         self.gaze = (obs.loud_yaw_deg, 0.0)
+                        self._look_until = 0.0
                         actions.append(Action("gesture", "perk", 2))
                         actions.append(Action("sound", "curious", 1))
                         self._next_glance = now + 2.0
                     elif now >= self._next_glance:
+                        # Look around properly: a wide gaze target, so the body turns too and it can see
+                        # someone standing right beside it, off camera. (A head-only glance never turned the body.)
                         self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
-                        actions.append(Action("gesture", "glance", 0))
+                        side = self.rng.choice((-1.0, 1.0))
+                        self._look_at = (side * self.rng.uniform(35.0, 100.0), self.rng.uniform(-6.0, 10.0))
+                        self._look_until = now + self.rng.uniform(1.8, 3.2)
+                        actions.append(Action("gesture", "glance:" + ("+" if side > 0 else "-"), 0))
+                    if now < self._look_until:
+                        self.gaze = self._look_at
                     alone_for = now - self._last_interaction
                     if self.mood.energy < 0.3 and not self._nodding_off and alone_for > 30.0 and self.rng.random() < dt * 0.02:
                         self._nodding_off = True

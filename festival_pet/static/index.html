@@ -147,13 +147,13 @@
       <button class="act" onclick="ctl('wake')">Wake</button>
       <button class="act" onclick="ctl('sleep')">Sleep</button>
       <button class="act" id="mute" onclick="toggleMute()">Mute</button>
-      <button class="act" id="pickup" onclick="togglePickup()">Pickup: off</button>
+      <button class="act" id="pickup" onclick="togglePickup()">Held in hand: off</button>
       <button class="act" id="bodyf" onclick="toggleBody()">Body finder: on</button>
       <button class="act" id="ears-btn" onclick="toggleEars()">Ears: on</button>
       <button class="act" id="mflip" onclick="toggleFlip()">Mirror game: mirror-image</button>
     </div>
     <div class="sub">Ears off stops all microphone processing (use it if the mics are dead). Mirror game: when someone's face fills the frame for 2 s it goes quiet and copies their head pose; flip if the direction feels wrong. Settings are remembered across restarts.</div>
-    <div class="sub">Pickup uses the IMU, which sits in the head. It is ignored while the pet moves itself, but leave it off unless the Senses tab shows it staying quiet on the desk.</div>
+    <div class="sub">Held in hand: the body never turns (everything else works). When it wants to look somewhere the head cannot reach, it huffs, bounces, wiggles and points that antenna: turn it that way.</div>
     <label>Groove intensity ×<span id="groove-v"></span></label>
     <input type="range" min="0" max="2" step="0.1" id="groove" oninput="setVal('groove_scale', this.value, 'groove-v')">
     <label>Face match strictness <span id="match-v"></span> <span class="sub">(lower = recognises more easily, more mix-ups)</span></label>
@@ -337,7 +337,7 @@ async function power(action) {
   catch (e) { $('power-msg').textContent = 'connection dropped (expected once it powers off)'; }
 }
 function toggleBody() { bodyf = !bodyf; ctl('body_finder', bodyf); $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
-function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off'); }
+function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Held in hand: ' + (pickup ? 'on' : 'off'); }
 async function loadCatalog() {
   let c;
   try { c = await (await fetch('/api/catalog')).json(); } catch (e) { setTimeout(loadCatalog, 2000); return; }  // app still starting
@@ -433,7 +433,7 @@ async function refresh() {
       $('groove').value = d.controls.groove_scale; $('groove-v').textContent = d.controls.groove_scale;
       $('match').value = d.controls.match_threshold; $('match-v').textContent = d.controls.match_threshold;
       muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute';
-      pickup = d.controls.pickup; $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off');
+      pickup = d.controls.pickup; $('pickup').textContent = 'Held in hand: ' + (pickup ? 'on' : 'off');
       if (d.controls.body_finder !== null) { bodyf = d.controls.body_finder; $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
       ears = d.controls.ears; $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off');
       mgroove = d.controls.manual_groove; $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off');

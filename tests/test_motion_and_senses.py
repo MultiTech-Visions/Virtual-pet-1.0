@@ -285,3 +285,31 @@ def test_gaze_holds_still_while_grooving():
     for i in range(150, 250):
         m.sample(i * 0.02, 0.02)
     assert m._gaze[0] > 25.0  # follows again once the groove is over
+
+
+def test_held_mode_locks_the_body_and_reports_the_shortfall():
+    m = MotionComposer()
+    m.held = True
+    m.set_gaze((90.0, 0.0))
+    for i in range(200):
+        _, _, body = m.sample(i * 0.02, 0.02)
+    assert body == 0.0 and m.yaw_short > 30  # wanted 90, head can do 45 from a body that will not turn
+    m.set_gaze((-20.0, 0.0))
+    for i in range(200, 400):
+        _, _, body = m.sample(i * 0.02, 0.02)
+    assert abs(m.yaw_short) < 1.0
+    m.held = False
+    m.set_gaze((90.0, 0.0))
+    for i in range(400, 700):
+        _, _, body = m.sample(i * 0.02, 0.02)
+    assert body > 30  # the body turns again
+
+
+def test_point_gesture_points_with_that_antenna():
+    from festival_pet.motion import g_point
+
+    left = g_point(0.7, 1.0)
+    assert left.ant_l < -0.8 and left.ant_r < 0 and left.yaw > 10  # left antenna forward-down, head strains left
+    right = g_point(0.7, -1.0)
+    assert right.ant_r > 0.8 and right.ant_l > 0 and right.yaw < -10
+    assert g_point(0.1, 1.0).z > 0.005  # bounces first

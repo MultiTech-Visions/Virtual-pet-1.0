@@ -262,3 +262,19 @@ def test_keypad_actions_reach_the_pet_and_the_map_persists(tmp_path):
     pet2.load_settings()
     assert pet2.keymap.keys["F1"] == {"press": "happy", "hold": "sleep"}
     pet.stop(); pet2.stop()
+
+
+def test_held_mode_asks_to_be_turned():
+    pet = _pet()
+    pet.control("pickup", True)
+    assert pet.p.composer.held
+    pet.p.behavior.gaze = (100.0, 0.0)
+    pet.p.behavior.state = "SEARCHING"  # keeps that gaze
+    t = 1001.0
+    while t < 1004.0:
+        pet.step(t)
+        t += 0.02
+    assert any(k == "ask" and n == "turn me left" for _, k, n in pet.actions_log)
+    assert any(k == "sound" and n == "huff" for _, k, n in pet.actions_log)
+    assert pet.p.composer._gesture is not None and pet.p.composer._gesture.name == "point"
+    pet.stop()
