@@ -244,6 +244,15 @@ class Behavior:
             if self.state == "SLEEPING":
                 actions.append(Action("wake", "touch", 5))
                 self._enter("WAKING", now)
+            elif obs.petting:
+                # An ear played with while being petted is an ear massage: lean in, no flinch.
+                side = "left" if obs.touched_side == 1 else "right"
+                self._think(now, f"mm, my {side} ear... keep going")
+                actions.append(Action("sound", self.rng.choice(["purr", "content"]), 3))
+                actions.append(Action("gesture", "lean", 3))
+                self.mood.social += 0.05
+                if self._engaged_person is not None:
+                    self.memory.add_pet(self._engaged_person)
             else:
                 # Ears are ticklish: pull the touched antenna away like a dog flicking its ear, and giggle.
                 self._ear_tickles = self._ear_tickles + 1 if now - self._last_ear_tickle < 6.0 else 1

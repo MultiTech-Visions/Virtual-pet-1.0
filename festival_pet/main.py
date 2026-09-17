@@ -40,7 +40,8 @@ from festival_pet.keypad import KeyMap, KeypadListener
 from festival_pet.memory import FaceMemory
 from festival_pet.mime import MimeGame
 from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose
-from festival_pet.senses import LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
+from festival_pet import songs
+from festival_pet.senses import ImuRubDetector, LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
 from festival_pet.tap_tempo import TapTempo
 from festival_pet.visual_rhythm import DanceDetector
@@ -69,6 +70,7 @@ VOSK_MODEL = DATA_DIR / "models" / "vosk-model-small-en-us-0.15"
 PERSON_MODEL = DATA_DIR / "models" / "person_detection_mediapipe_2023mar.onnx"
 MEMORY_FILE = DATA_DIR / "memory.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+SONGS_FILE = DATA_DIR / "songs.json"
 
 CONTROL_HZ = 50.0
 PLAY_LIBRARY_SOUNDS = False  # True = play Pollen's sidecar sound with library moves instead of our beeps
@@ -110,7 +112,7 @@ class SoundPlayer:
 
     def __init__(self, io: RobotIO, sample_rate: int = AUDIO_RATE) -> None:
         self._io = io
-        self._q: queue.Queue[tuple[int, str]] = queue.Queue()
+        self._q: queue.Queue[tuple[int, str, np.ndarray | None]] = queue.Queue()
         self._busy_until = 0.0
         self._busy_priority = 0
         self._sample_rate = sample_rate
@@ -142,15 +144,21 @@ class SoundPlayer:
         """Drop the request if something at least as important is still sounding."""
         if now < self._busy_until and self._busy_priority >= priority:
             return
-        self._q.put((priority, emotion))
+        self._q.put((priority, emotion, None))
+
+    def request_buffer(self, buf: np.ndarray, label: str, priority: int, now: float) -> None:
+        """Play a pre-rendered buffer (a song) under the same priority rule."""
+        if now < self._busy_until and self._busy_priority >= priority:
+            return
+        self._q.put((priority, label, buf))
 
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                priority, emotion = self._q.get(timeout=0.2)
+                priority, emotion, given = self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
-            buf = sounds.render_phrase(emotion, sample_rate=self._sample_rate)
+            buf = given if given is not None else sounds.render_phrase(emotion, sample_rate=self._sample_rate)
             dur = sounds.phrase_duration(buf, self._sample_rate)
             hop = self._sample_rate // 50
             n = len(buf) // hop
@@ -334,6 +342,7 @@ class Pet:
         self.audio = AudioSense(parts.io, parts.spotter)
         self.audio.own_sound_until = lambda: self.sound.busy_until
         self.pickup = PickupDetector()
+        self.imu_rub = ImuRubDetector()
         self.self_motion = SelfMotionGate()
         self.touch = TouchDetector()
         self.loud = LoudSoundDetector()
@@ -351,6 +360,12 @@ class Pet:
         self.keypad = KeypadListener()
         self.keymap = KeyMap()
         self.mime = MimeGame()
+        self.singing_enabled = False  # one of its idle activities when on
+        self.songs: list[dict] = []  # the repertoire (saved songs)
+        self.last_song: dict | None = None
+        self._singing_until = 0.0
+        self._next_song_at = 0.0
+        self.songs_file: Path | None = None
         self.pose_history: PoseHistory | None = None  # set on the real robot; fed every tick for the vision thread
         self.manual_groove = False  # groove to the tapped beat instead of what it hears/sees
         self._dance_seen = False  # edge: seed the tap clock once per dance
@@ -411,6 +426,8 @@ class Pet:
         imu = io.imu()
         if imu is not None:
             self.pickup.update(imu["accelerometer"], imu["gyroscope"], now, self_moving)  # stats only; "held" is the switch below
+            if self.imu_rub.update(self.pickup.stats["gyro"], self_moving, now):
+                obs.petted = True  # a hand just started rubbing the head (felt through the IMU: works with ears off)
         # Antennas lag their command while animated; the detector raises its threshold then.
         busy = self.move is not None or comp.gesture_active(now)
         present_ants = io.present_antennas()
@@ -425,7 +442,8 @@ class Pet:
         else:
             obs.touched = self.touch.update(self.last_ants, present_ants, busy, dt)
         obs.touched_side = self.touch.last_side
-        obs.petting = self.audio.rub.rubbing
+        obs.petting = self.audio.rub.rubbing or self.imu_rub.rubbing
+        comp.petted = obs.petting
         if now >= self._next_doa:
             self._next_doa = now + 0.2
             deaf = now < self.audio.deaf_until or now < self.sound.busy_until + 0.5
@@ -499,6 +517,18 @@ class Pet:
             beh._mimic_candidate_since = 0.0
             if beh.mimicking:
                 beh.mimicking = False
+
+        # ---------------- singing (an idle activity when enabled)
+        if now < self._singing_until:
+            song = self.last_song
+            comp.groove = (self.tap.phase(now), self.tap.bar_phase(now), 0.7 * self.groove_scale) if song else comp.groove
+            beh._next_react = max(beh._next_react, now + 2.0)
+            if now >= self._singing_until - 0.02:
+                comp.request_gesture("bow", now, 4)  # take a bow
+                beh._think(now, "thank you, thank you")
+        elif (self.singing_enabled and not self.asleep and beh.state in ("IDLE", "ENGAGED") and beh.mood.energy > 0.35
+              and now >= self._next_song_at and self.move is None and not comp.gesture_active(now) and not self.mime.active):
+            self.sing(now)
 
         # ---------------- brain
         actions = beh.tick(obs, now, dt)
@@ -643,6 +673,38 @@ class Pet:
         elif act.kind == "heard":
             self.transcript.append((now, act.name, act.name.split("|")[1:]))
 
+    # ------------------------------------------------------------------ singing
+    def sing(self, now: float, song: dict | None = None) -> dict:
+        """Sing ``song``, or a saved one (half the time, if any), or make one up. Returns the song."""
+        rng = self.p.composer.rng
+        if song is None:
+            song = rng.choice(self.songs) if self.songs and rng.random() < 0.5 else songs.compose(rng)
+        buf = songs.render(song)
+        dur = songs.duration(song)
+        self.sound.request_buffer(buf, "song:" + song["name"], 2, now)
+        self.last_song = song
+        self._singing_until = now + dur
+        self._next_song_at = now + rng.uniform(90.0, 240.0)
+        self.tap.set_bpm(song["bpm"], beat_at=now + 0.08)  # bob along; the page shows the tempo too
+        self.audio.deaf_until = max(self.audio.deaf_until, now + dur + 0.5)
+        self.p.behavior._think(now, "a song! " + songs.describe(song))
+        self.actions_log.append((now, "song", song["name"]))
+        return song
+
+    def save_last_song(self) -> dict:
+        if self.last_song is None:
+            raise ValueError("it has not sung anything yet")
+        if self.last_song not in self.songs:
+            self.songs.append(self.last_song)
+            if self.songs_file is not None:
+                self.songs_file.parent.mkdir(parents=True, exist_ok=True)
+                self.songs_file.write_text(json.dumps(self.songs, indent=1))
+        return self.last_song
+
+    def load_songs(self) -> None:
+        if self.songs_file is not None and self.songs_file.exists():
+            self.songs = json.loads(self.songs_file.read_text())
+
     def _mime_action(self, item: tuple, now: float) -> None:
         kind = item[0]
         comp = self.p.composer
@@ -722,13 +784,14 @@ class Pet:
             "mind": self.p.behavior.mind(now),
             "feeling": self._feeling(now),
             "mime": self.mime.status(now),
+            "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs], "next_in_s": round(max(0.0, self._next_song_at - now)) if self.singing_enabled else None},
             "build": build_info(),
             "asleep": self.asleep,
             "transcript": [{"t": round(now - t, 1), "text": txt.split("|")[0], "intents": ints} for t, txt, ints in reversed(self.transcript)],
             "senses": {
                 "body": None if o.body is None else {"yaw": round(o.body.yaw_deg, 1), "pitch": round(o.body.pitch_deg, 1), "size": round(o.body.area_frac, 3)},
                 "face": None if o.face is None else {"track": o.face.track_id, "yaw": round(o.face.yaw_deg, 1), "pitch": round(o.face.pitch_deg, 1), "size": round(o.face.area_frac, 3), "person": None if o.face.person is None else o.face.person.person_id, "similarity": round(o.face.similarity, 2), "tilt": round(o.face.roll_deg, 1), "head_yaw": round(o.face.head_yaw_deg, 1), "head_pitch": round(o.face.head_pitch_deg, 1), "smile": round(o.face.smile, 2)},
-                "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
+                "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "imu_rub": self.imu_rub.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
                 "keypad": {"devices": list(self.keypad.devices.values()), "last_key": None if self.keypad.last_key is None else {"key": self.keypad.last_key[0], "t": round(now - self.keypad.last_key[1], 1)}, "error": self.keypad.error},
                 "tap": {"bpm": round(self.tap.bpm, 1), "beat": self.tap.beat_in_bar(now) if self.tap.active else 0, "bar": self.tap.bar_in_phrase(now) if self.tap.active else 0, "downbeat_known": self.tap.downbeat_known},
@@ -741,7 +804,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
             "dance_params": {"min_amp": self.dance._min_amp, "min_conf": self.dance._min_conf},
@@ -800,6 +863,17 @@ class Pet:
             else:
                 for item in self.mime.stop(now):
                     self._mime_action(item, now)
+        elif cmd == "singing":
+            self.singing_enabled = bool(value)
+            self._next_song_at = now + 20.0  # first song soon after switching on
+        elif cmd == "sing":
+            if self.asleep:
+                raise ValueError("asleep")
+            self.sing(now)
+        elif cmd == "save_song":
+            self.save_last_song()
+        elif cmd == "imu_rub_gyro":
+            self.imu_rub.gyro_lo = float(value)
         elif cmd == "head_forward_mm":
             self.p.composer.forward_shift_m = float(value) / 1000.0
         elif cmd == "preview":
@@ -855,7 +929,7 @@ class Pet:
         return {"ok": True}
 
     # ------------------------------------------------------------------ settings persistence
-    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
         c = self.mind()["controls"]
@@ -1039,6 +1113,8 @@ def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool 
     pet.vision = vision
     pet.pose_history = poses
     pet.settings_file = SETTINGS_FILE
+    pet.songs_file = SONGS_FILE
+    pet.load_songs()
     pet.load_settings()
     return pet, vision, io
 

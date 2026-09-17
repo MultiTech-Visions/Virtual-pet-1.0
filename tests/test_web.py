@@ -1,5 +1,6 @@
 """The pet's web API with a fully fake robot (no SDK, no sim)."""
 
+import json
 import logging
 import threading
 
@@ -281,3 +282,50 @@ def test_held_mode_asks_to_be_turned():
     assert any(k == "sound" and n == "huff" for _, k, n in pet.actions_log)
     assert pointed
     pet.stop()
+
+
+def test_singing_sings_bows_and_saves(tmp_path):
+    from festival_pet import songs
+
+    pet = _pet()
+    pet.songs_file = tmp_path / "songs.json"
+    app = FastAPI(); install_routes(app, pet); c = TestClient(app)
+    assert c.post("/api/control", json={"cmd": "save_song"}).status_code == 400  # nothing sung yet
+    song = pet.sing(1000.2)  # on the pet's own (fake) clock, so the step loop below is short
+    assert pet.last_song is song and pet.tap.bpm == song["bpm"]
+    assert c.get("/api/mind").json()["song"]["last"]["name"] == song["name"]
+    t, end = 1000.2, pet._singing_until
+    assert end - 1000.2 < 40
+    while t < end + 0.5:
+        pet.step(t); t += 0.02
+    assert pet.p.composer._gesture is not None and pet.p.composer._gesture.name == "bow"
+    assert c.post("/api/control", json={"cmd": "save_song"}).status_code == 200
+    assert json.loads(pet.songs_file.read_text())[0]["name"] == pet.last_song["name"]
+    assert c.get("/api/mind").json()["song"]["last"]["saved"]
+    pet2 = _pet(); pet2.songs_file = pet.songs_file; pet2.load_songs()
+    assert pet2.songs == pet.songs
+    assert c.post("/api/control", json={"cmd": "singing", "value": True}).status_code == 200
+    assert c.get("/api/mind").json()["song"]["next_in_s"] is not None
+    pet.stop(); pet2.stop()
+
+
+def test_imu_rub_reads_as_petting_and_lowers_the_antennas():
+    from festival_pet.senses import ImuRubDetector
+
+    d = ImuRubDetector()
+    t = 0.0
+    started = []
+    for i in range(60):  # 1.2 s of hand jitter on a still robot
+        started.append(d.update(0.3, False, t)); t += 0.02
+    assert d.rubbing and started.count(True) == 1
+    for i in range(60):  # hand gone
+        d.update(0.01, False, t); t += 0.02
+    assert not d.rubbing
+    for i in range(60):  # the robot moving itself is not a rub
+        d.update(0.3, True, t); t += 0.02
+    assert not d.rubbing
+    m = MotionComposer()
+    m.petted = True
+    for i in range(300):
+        _, ants, _ = m.sample(i * 0.02, 0.02)
+    assert ants[0] > 0.5 and ants[1] < -0.5  # antennas eased down

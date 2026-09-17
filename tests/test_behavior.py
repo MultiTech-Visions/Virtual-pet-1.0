@@ -305,3 +305,13 @@ def test_idle_look_around_turns_the_gaze_wide():
         t += 0.05
     assert wide and max(abs(y) for y in wide) >= 35.0  # not a 22-degree head flick: a proper turn
     assert any(y > 0 for y in wide) and any(y < 0 for y in wide)
+
+
+def test_ear_played_with_while_petted_is_enjoyed_not_flinched():
+    b, _ = _brain()
+    _run(b, lambda t: Observation(), 0.0, 1.0)
+    acts = b.tick(Observation(touched=True, touched_side=1, petting=True), 1.0, 0.05)
+    names = [(a.kind, a.name) for a in acts]
+    assert ("gesture", "lean") in names and not any(n.startswith("flinch") for k, n in names if k == "gesture")
+    acts = b.tick(Observation(touched=True, touched_side=1), 10.0, 0.05)
+    assert any(k == "gesture" and n.startswith("flinch") for k, n in [(a.kind, a.name) for a in acts])

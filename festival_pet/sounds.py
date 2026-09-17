@@ -351,7 +351,7 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
     elif emotion == "yes":
         out = concat(chirp(j(900, 1000), j(1400, 1500), 0.09, sr), silence(0.04, sr), chirp(j(1300, 1400), j(1900, 2000), 0.12, sr))
     elif emotion == "huff":
-        out = concat(tone(j(420, 480), 0.08, sr, harmonics=0.5, attack=0.02, release=0.3), noise_burst(j(0.1, 0.14), sr))
+        out = concat(tone(j(420, 480), 0.08, sr, harmonics=0.5, attack=0.02, release=0.3), noise_burst(j(0.22, 0.28), sr))
     elif emotion == "hiccup":
         out = concat(tone(j(500, 600), 0.03, sr, attack=0.02, release=0.3), chirp(j(900, 1100), j(1500, 1900), 0.06, sr, curve=1.8))
     elif emotion == "sing":

@@ -103,7 +103,10 @@
     <canvas id="chart" height="160" style="width:100%; background:#0b0e1a; border-radius:10px; margin-top:8px"></canvas>
     <div class="kv" id="levels" style="margin-top:8px"></div>
   </div>
-  <div class="card"><h2>Body</h2><div class="kv" id="body"></div></div>
+  <div class="card"><h2>Body</h2><div class="kv" id="body"></div>
+    <label>Head-pet from the IMU: gyro jitter floor <span id="imurub-v"></span> rad/s <span class="sub">(works with ears off; rub the head and watch "imu rub fraction" climb, set the floor just under what a rub gives)</span></label>
+    <input type="range" min="0.03" max="0.6" step="0.01" id="imurub" oninput="setVal('imu_rub_gyro', this.value, 'imurub-v')">
+  </div>
   <div class="card mic"><h2>Head-pet tuning</h2>
     <div class="sub">Easiest: tap <b>Calibrate</b>, stay quiet 3 s, then rub the head for 3 s. Manual: rub energy must exceed the floor, exceed ratio × baseline, and flatness must exceed its minimum.</div>
     <p><button class="act" onclick="ctl('calibrate','rub')">Calibrate head pets</button> <span class="sub" id="calib-rub"></span></p>
@@ -234,6 +237,16 @@
     <div class="sub">The numbers the game judges by. Turn, nod, tilt and watch them move; the move counts at ±14° turn, ±10° nod, ±10° tilt, held for 0.4 s.</div>
     <div class="kv" id="yourhead"></div>
   </div>
+  <div class="card">
+    <h2>Singing</h2>
+    <div class="sub">Drumline-style rhythms on its "sing" blip: quarters, eighths, triplets, paradiddles, flams, rolls; two pitches for the two hands. With singing on it makes up a song every few minutes when it is idle or hanging out with someone, bobs along, and takes a bow. Save the good ones: it mixes saved songs with new ideas.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act" id="sing-btn" onclick="toggleSinging()">Singing: off</button>
+      <button class="act" onclick="ctl('sing')">Sing now</button>
+      <button class="act" onclick="ctl('save_song')">Save last song</button>
+    </div>
+    <div class="kv" id="song"></div>
+  </div>
   <div class="card" style="grid-column:1/-1">
     <h2>Lexicon: what its sounds mean</h2>
     <div class="sub">Tap to hear each one.</div>
@@ -345,7 +358,8 @@ async function loadCatalog() {
     $(id).innerHTML = list.map(x => `<button onclick="ctl('${kind}', '${x}')">${x.replace(/_/g, ' ')}</button>`).join('');
   $('lexicon').innerHTML = c.sounds.map(x => `<tr><td><button class="act" style="min-height:0;padding:6px 12px" onclick="ctl('sound', '${x}')">${x.replace(/_/g, ' ')}</button></td><td>${c.meanings[x]}</td></tr>`).join('');
 }
-let mimeOn = false;
+let mimeOn = false, singing = false;
+function toggleSinging() { singing = !singing; ctl('singing', singing); $('sing-btn').textContent = 'Singing: ' + (singing ? 'on' : 'off'); }
 let selected = [];
 function toggleSel(id) {
   selected = selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id].slice(-2);
@@ -382,9 +396,12 @@ async function refresh() {
     const m = d.mind, s = d.senses;
     $('conn').textContent = 'live · ' + new Date().toLocaleTimeString();
     $('ver').textContent = 'v' + d.build.version;
-    $('state').textContent = m.state;
+    const STATE_EMOJI = {SLEEPING: '😴', WAKING: '🥱', IDLE: m.energy < 0.3 ? '😪' : '🙂', ENGAGED: '😊', SEARCHING: '🤔', HELD: '🤗'};
+    $('state').textContent = (STATE_EMOJI[m.state] || '') + ' ' + m.state + (m.dizzy ? ' 😵' : '') + (m.mimicking ? ' 🪞' : '') + (d.mime.active ? ' 🎭' : '') + (d.song.singing ? ' 🎵' : '') + (s.dance.dancing ? ' 🕺' : '');
     $('state-sub').textContent = `for ${m.state_for_s}s` + (m.engaged_person ? ` · with person #${m.engaged_person} (${m.engaged_tier})` : '') + (m.dizzy ? ' · dizzy' : '') + (m.mimicking ? ' · mirror game' : '');
-    const f = d.feeling, fe = x => x ? `<b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
+    const FEEL = {nod: '👍', tilt: '🤨', wiggle: '😆', bounce: '🤩', perk: '👀', droop: '😞', startle: '😳', snuggle: '🥰', dizzy: '😵‍💫', shake_off: '😤', search: '🔍', glance: '👀', shy: '☺️', nod_off: '😴', sneeze: '🤧', hiccup: '😮', tada: '🎉', flinch: '😖', lean: '😌', shake: '🙅', point: '👉', bow: '🙇',
+      hello_new: '👋', hello_friend: '😄', hello_bestie: '🥳', curious: '🧐', happy: '😊', excited: '🤩', content: '😌', purr: '😻', giggle: '🤭', surprised: '😲', confused: '😕', sad: '😢', lonely: '🥺', sleepy: '😪', yawn: '🥱', wake: '🌅', annoyed: '😠', low_battery: '🪫', name: '❓', ticklish: '😂', sing: '🎵', mirror_start: '🪞', mirror_end: '🪞', mime_start: '🎭', mime_end: '🎭', mime_cue: '👁️', yes: '✅', huff: '😤'};
+    const f = d.feeling, fe = x => x ? `${FEEL[x.name.split(':')[0]] || ''} <b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
     $('feeling').innerHTML = `feeling: ${fe(f.motion)} · sounding: ${fe(f.sound)}`;
     $('energy').style.width = (m.energy * 100) + '%'; $('social').style.width = (m.social * 100) + '%';
     kv('timers', {'alone for': m.alone_for_s + ' s', 'lonely in': m.lonely_in_s + ' s', 'sleep in': m.sleep_in_s + ' s',
@@ -404,6 +421,8 @@ async function refresh() {
     document.querySelectorAll('.card.mic').forEach(c => c.classList.toggle('hidden', !d.controls.ears));
     if (m.engaged_person) { const src = `/api/people/${m.engaged_person}/face.jpg`; if (!$('who').src.endsWith(src)) { $('who').src = src; } $('who').classList.remove('hidden'); } else $('who').classList.add('hidden');
     drawKeymap(d.controls.keymap);
+    const sg = d.song;
+    kv('song', {now: sg.singing ? 'singing 🎵' : 'quiet', 'last song': sg.last ? `${sg.last.name} · ${sg.last.bpm} bpm · ${sg.last.bars.join(' ')}${sg.last.saved ? ' (saved)' : ''}` : '—', repertoire: sg.repertoire.length ? sg.repertoire.join(', ') : 'nothing saved yet', 'next song in': sg.next_in_s === null ? 'singing is off' : sg.next_in_s + ' s'});
     const mg = d.mime; mimeOn = mg.active;
     $('mime-btn').textContent = mimeOn ? 'Stop mime game' : 'Start mime game';
     kv('mime', {state: mimeOn ? mg.state : (mg.outcome ? 'over: ' + mg.outcome : 'not playing'), move: mg.move || '—', step: mg.of ? `${mg.step} of ${mg.of}` : '—', attempt: mimeOn ? mg.attempt : '—', 'time to copy': mg.time_left_s === null ? '—' : mg.time_left_s + ' s'});
@@ -416,7 +435,7 @@ async function refresh() {
     $('tap-v').textContent = d.senses.tap.bpm ? `${d.senses.tap.bpm} bpm · beat ${d.senses.tap.beat} · bar ${d.senses.tap.bar}${d.senses.tap.downbeat_known ? '' : ' (no "1" yet)'}` : 'no tempo tapped';
     if (document.activeElement !== $('bpm')) $('bpm').value = d.senses.tap.bpm || '';
     kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '° (+ = left)', 'mic array DoA': s.doa ? `${s.doa.angle_deg}° (0 = left, 90 = front), speech: ${s.doa.speech}` : '—', 'last speech': s.speech_s_ago === null ? 'never' : s.speech_s_ago + ' s ago'});
-    kv('body', {held: s.held, shaken: s.shaken, 'head being petted': s.head_pet.rubbing, 'imu accel dev / gyro': s.imu.accel_dev + ' / ' + s.imu.gyro, 'imu gated (self-moving)': s.imu.gated, 'head rate rad/s': s.head_rate, 'ear deviation': s.ears.dev.join(' / '), 'ear droop baseline': s.ears.baseline.join(' / ')});
+    kv('body', {held: s.held, shaken: s.shaken, 'head being petted (mics)': s.head_pet.rubbing, 'head being petted (imu)': s.imu_rub.rubbing, 'imu rub fraction': s.imu_rub.fraction, 'imu accel dev / gyro': s.imu.accel_dev + ' / ' + s.imu.gyro, 'imu gated (self-moving)': s.imu.gated, 'head rate rad/s': s.head_rate, 'ear deviation': s.ears.dev.join(' / '), 'ear droop baseline': s.ears.baseline.join(' / ')});
     kv('scratch', s.scratch);
     kv('rub', s.head_pet);
     kv('levels', s.levels);
@@ -437,6 +456,8 @@ async function refresh() {
       if (d.controls.body_finder !== null) { bodyf = d.controls.body_finder; $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
       ears = d.controls.ears; $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off');
       mgroove = d.controls.manual_groove; $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off');
+      singing = d.controls.singing; $('sing-btn').textContent = 'Singing: ' + (singing ? 'on' : 'off');
+      $('imurub').value = d.controls.imu_rub_gyro; $('imurub-v').textContent = d.controls.imu_rub_gyro;
       $('fwd').value = d.controls.head_forward_mm; $('fwd-v').textContent = d.controls.head_forward_mm;
       if (d.controls.camera_lag_ms !== null) { $('lag').value = d.controls.camera_lag_ms; $('lag-v').textContent = d.controls.camera_lag_ms; } else { $('lag').disabled = true; $('lag-v').textContent = 'n/a'; }
       btStatus();

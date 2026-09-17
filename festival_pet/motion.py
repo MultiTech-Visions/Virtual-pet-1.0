@@ -36,7 +36,7 @@ def head_pose(yaw: float, pitch: float, roll: float, z: float, x: float = 0.0) -
     """Build a 4x4 head pose from degrees + z (and forward x) metres (matches create_head_pose)."""
     pose = np.eye(4)
     pose[:3, :3] = R.from_euler("xyz", [roll, pitch, yaw], degrees=True).as_matrix()
-    pose[0, 3] = x
+    pose[1, 3] = x  # forward is +y on this base (x was observed to slide the head to its right)
     pose[2, 3] = z
     return pose
 
@@ -271,6 +271,14 @@ def g_point(u: float, side: float) -> Offsets:
     return Offsets(yaw=side * 20.0 * pt, z=0.012 * bounce, pitch=-6.0 * bounce, roll=side * 6.0 * pt, ant_r=ant_r, ant_l=ant_l)
 
 
+def g_bow(u: float) -> Offsets:
+    """A performer's bow: head dips forward and holds, the right antenna sweeps across in front, then the left."""
+    dip = _ease(min(1.0, u / 0.25)) * (1 - max(0.0, u - 0.8) / 0.2)
+    r = _pulse(min(1.0, max(0.0, (u - 0.1) / 0.4)))  # right arm 0.1-0.5
+    l = _pulse(min(1.0, max(0.0, (u - 0.45) / 0.4)))  # left arm 0.45-0.85
+    return Offsets(pitch=24.0 * dip, z=-0.008 * dip, ant_r=1.4 * r, ant_l=-1.4 * l)
+
+
 def g_glance(u: float, side: float) -> Offsets:
     e = _pulse(u) ** 0.6
     return Offsets(yaw=side * 22.0 * e, pitch=-3.0 * e + 5.0 * math.sin(math.pi * u * 2) * e, roll=side * 4.0 * e)
@@ -299,6 +307,7 @@ GESTURES: dict[str, tuple[float, str]] = {
     "lean": (2.4, "plain"),
     "shake": (0.55, "repeat"),
     "point": (2.6, "sided"),
+    "bow": (3.4, "plain"),
 }
 
 SOLO_GESTURES = frozenset({"sneeze"})  # the whole body is the gesture: no groove, mimic, mirror or beep sway on top
@@ -308,7 +317,7 @@ _FUNCS = {
     "droop": g_droop, "startle": g_startle, "snuggle": g_snuggle, "dizzy": g_dizzy,
     "shake_off": g_shake_off, "search": g_search, "glance": g_glance,
     "shy": g_shy, "nod_off": g_nod_off, "sneeze": g_sneeze, "hiccup": g_hiccup, "tada": g_tada,
-    "flinch": g_flinch, "lean": g_lean, "shake": g_shake, "point": g_point,
+    "flinch": g_flinch, "lean": g_lean, "shake": g_shake, "point": g_point, "bow": g_bow,
 }
 
 
@@ -394,6 +403,8 @@ class MotionComposer:
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
         self.held = False  # in someone's hands: the body never turns (see Pet.control("pickup"))
+        self.petted = False  # a hand on the head: the antennas ease down like a dog's ears
+        self._pet_level = 0.0
         self.yaw_short = 0.0  # degrees the head wanted to turn beyond what it can, + = to its left (for asking to be turned)
         self.mimic: tuple[float, float, float] | None = None  # (yaw, pitch, roll) of the person's head to copy, or None
         self.mimic_flip = True  # mirror-image (True) or same-direction copy (False) for yaw and roll
@@ -539,6 +550,11 @@ class MotionComposer:
         else:
             self._mirror += (0.0 - self._mirror) * min(1.0, dt * 1.5)
         off.roll += self._mirror
+
+        # being petted: antennas lower slowly, and come back up slowly when the hand goes
+        self._pet_level += ((1.0 if self.petted else 0.0) - self._pet_level) * min(1.0, dt * (0.6 if self.petted else 0.4))
+        off.ant_r += 0.9 * self._pet_level
+        off.ant_l += -0.9 * self._pet_level
 
         # gesture overlay
         off += self._gesture_offsets(now)

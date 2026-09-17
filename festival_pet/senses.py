@@ -108,6 +108,36 @@ class PoseHistory:
         return self.at(time.time() - self.lag_s)
 
 
+class ImuRubDetector:
+    """A hand rubbing the head shows up in the head's IMU as sustained small gyro jitter: too small to be
+    a lift, too steady to be a knock. Deaf-friendly head-pet detection (the mics normally do this)."""
+
+    def __init__(self, gyro_lo: float = 0.12, gyro_hi: float = 1.0, window_s: float = 1.0, need: float = 0.6, release_s: float = 0.7) -> None:
+        self.gyro_lo, self.gyro_hi = gyro_lo, gyro_hi
+        self._win, self._need, self._release = window_s, need, release_s
+        self._hist: deque[tuple[float, bool]] = deque()
+        self._last_in_band = 0.0
+        self.rubbing = False
+        self.stats = {"fraction": 0.0, "rubbing": False}
+
+    def update(self, gyro_mag: float, self_moving: bool, now: float) -> bool:
+        """Returns True on the tick rubbing starts (an edge, for the 'petted' reaction)."""
+        in_band = (not self_moving) and self.gyro_lo <= gyro_mag <= self.gyro_hi
+        self._hist.append((now, in_band))
+        while self._hist and now - self._hist[0][0] > self._win:
+            self._hist.popleft()
+        frac = sum(1 for _, b in self._hist if b) / max(1, len(self._hist))
+        if in_band:
+            self._last_in_band = now
+        started = False
+        if not self.rubbing and frac >= self._need and len(self._hist) >= 10:
+            self.rubbing, started = True, True
+        elif self.rubbing and now - self._last_in_band > self._release:
+            self.rubbing = False
+        self.stats = {"fraction": round(frac, 2), "rubbing": self.rubbing}
+        return started
+
+
 class SelfMotionGate:
     """Tracks how fast the app is commanding the head, so head-mounted sensors can be gated."""
 

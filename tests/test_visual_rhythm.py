@@ -79,3 +79,15 @@ def test_smile_ratio_from_landmarks():
     neutral = np.array([0, 0, 100, 100, 30, 40, 70, 40, 50, 60, 36, 75, 64, 75, 0.9])
     smiling = np.array([0, 0, 100, 100, 30, 40, 70, 40, 50, 60, 31, 75, 69, 75, 0.9])
     assert smile_from_landmarks(neutral) < 0.75 < 0.9 < smile_from_landmarks(smiling)
+
+
+def test_stale_track_relocks_instead_of_crashing():
+    """Regression: a track older than FORGET_AFTER with a new face in view raised UnboundLocalError."""
+    from festival_pet.vision import FORGET_AFTER, Track, Vision
+
+    v = Vision.__new__(Vision)  # no models needed for _select
+    v._track = Track(1, 0.0, 0.0, 0.01, 0.0)
+    v._next_track_id = 2
+    faces = np.array([[100.0, 80.0, 60.0, 60.0] + [0.0] * 11])
+    face, track = v._select(faces, 320, 240, FORGET_AFTER + 5.0)
+    assert track.track_id == 2 and np.array_equal(face, faces[0])

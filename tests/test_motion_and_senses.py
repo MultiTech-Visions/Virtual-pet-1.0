@@ -235,16 +235,16 @@ def test_head_slides_forward_when_looking_up_and_pose_hold_looks_there():
     m.set_gaze((0.0, -30.0))
     for i in range(200):
         head, _, _ = m.sample(i * 0.02, 0.02)
-    assert head[0, 3] > 0.008  # forward shift near the top of the range
+    assert head[1, 3] > 0.008  # forward shift near the top of the range
     m.set_gaze((0.0, 20.0))
     for i in range(200, 400):
         head, _, _ = m.sample(i * 0.02, 0.02)
-    assert head[0, 3] == 0.0  # none when looking down
+    assert head[1, 3] == 0.0 and head[0, 3] == 0.0  # none when looking down
     m.forward_shift_m = 0.0
     m.set_gaze((0.0, -30.0))
     for i in range(400, 600):
         head, _, _ = m.sample(i * 0.02, 0.02)
-    assert head[0, 3] == 0.0
+    assert head[1, 3] == 0.0
     # a held pose overrides the gaze, with roll
     m.hold = (25.0, 0.0, 15.0, 12.0 + 3.0)
     for i in range(600, 700):

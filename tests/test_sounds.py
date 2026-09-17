@@ -44,3 +44,27 @@ def test_sneeze_sound_is_timed_to_the_gesture():
 
 def test_every_sound_has_a_meaning():
     assert set(sounds.MEANINGS) == set(sounds.EMOTIONS)
+
+
+def test_songs_compose_render_and_describe():
+    from festival_pet import songs
+
+    rng = random.Random(7)
+    seen = set()
+    for _ in range(10):
+        song = songs.compose(rng)
+        seen.add(tuple(song["bars"]))
+        assert song["bars"][-1] == "roll_and_stop" and 4 <= len(song["bars"]) <= 9
+        buf = songs.render(song)
+        assert buf.dtype == np.float32 and np.max(np.abs(buf)) <= 0.8001 and np.isfinite(buf).all()
+        assert abs(len(buf) / 16000 - songs.duration(song)) < 0.01
+        assert len(songs.hits(song)) >= 4 * len(song["bars"]) - 4
+        assert song["name"] in songs.describe(song)
+    assert len(seen) > 3  # variety
+    # a paradiddle bar has 16 hits with accents on each group of four
+    assert [a for _, _, a in songs.PATTERNS["paradiddle"]] == [1, 0, 0, 0] * 4
+
+
+def test_huff_has_a_real_puff():
+    buf = sounds.render_phrase("huff", random.Random(1))
+    assert sounds.phrase_duration(buf) > 0.28

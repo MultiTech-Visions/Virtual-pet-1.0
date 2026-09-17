@@ -328,6 +328,8 @@ class Vision:
                 if recently:
                     return None  # someone else; keep waiting for our target briefly
                 track = None  # they left and someone else showed up elsewhere
+        else:
+            track = None  # no track, or one too stale to associate with: lock afresh below
         if track is None:
             i = int(np.argmax(areas))  # new lock: the biggest (closest) face wins
             track = Track(self._next_track_id, 0.0, 0.0, 0.0, now)
