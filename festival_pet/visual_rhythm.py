@@ -66,6 +66,8 @@ class DanceDetector:
             if not peaks:
                 continue
             top = max(seg[i] for i in peaks)
+            if top <= 0.0:  # every peak anti-correlated: no rhythm on this axis (and 0.8*top would exceed top)
+                continue
             k = min(i for i in peaks if seg[i] >= 0.8 * top)
             conf = float(seg[k])
             lag_s = (lo + k) / 10.0

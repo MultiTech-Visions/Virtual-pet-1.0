@@ -29,6 +29,7 @@ class NullIO:
     def goto(self, head, antennas, duration): pass
     def sleep_body(self): self.slept = True
     def wake_body(self): self.woke = True
+    def motor_mode(self): return "enabled"
 
 
 class FakeMove:
@@ -191,3 +192,22 @@ def test_settings_persist(tmp_path):
     pet2.load_settings()
     assert pet2.audio.enabled is False and pet2.groove_scale == 1.5 and pet2.p.composer.mimic_flip is False
     pet.stop(); pet2.stop()
+
+
+def test_start_wakes_a_limp_robot_even_when_the_pet_thinks_it_is_awake():
+    """The daemon boots asleep (motors disabled); an app launched into that must turn the motors on itself."""
+    class LimpIO(NullIO):
+        def motor_mode(self): return "disabled"
+    mem = FaceMemory("/nonexistent/never-written.json")
+    io = LimpIO()
+    pet = Pet(PetParts(io, mem, lambda name: FakeMove(), lambda: None, None, Behavior(mem), MotionComposer()))
+    assert not pet.asleep
+    pet.start(1000.0)
+    assert getattr(io, "woke", False)
+    pet.stop()
+
+    io2 = NullIO()  # already torqued: no wake move on start
+    pet2 = Pet(PetParts(io2, mem, lambda name: FakeMove(), lambda: None, None, Behavior(mem), MotionComposer()))
+    pet2.start(1000.0)
+    assert not getattr(io2, "woke", False)
+    pet2.stop()

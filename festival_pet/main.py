@@ -92,6 +92,7 @@ class RobotIO(Protocol):
     def goto(self, head: np.ndarray, antennas: list[float], duration: float) -> None: ...
     def sleep_body(self) -> None: ...  # nest the head, then torque off
     def wake_body(self) -> None: ...  # torque on, lift to neutral
+    def motor_mode(self) -> str: ...  # "enabled", "disabled" or "gravity_compensation", as the daemon reports it
 
 
 class MoveLike(Protocol):
@@ -517,7 +518,9 @@ class Pet:
                 if PLAY_LIBRARY_SOUNDS and move.sound_path is not None:
                     self.p.io.play_file(str(move.sound_path))
         elif act.kind == "wake":
-            if self.asleep:
+            # Never trust the flag alone: the daemon boots asleep (--no-wake-up-on-start) and an app can be
+            # launched into that, so a limp robot is woken whatever we think our state is.
+            if self.asleep or self.p.io.motor_mode() != "enabled":
                 self.audio.deaf_until = float("inf")
                 try:
                     self.p.io.wake_body()  # daemon wake_up: motors on, lift; blocks ~2 s
