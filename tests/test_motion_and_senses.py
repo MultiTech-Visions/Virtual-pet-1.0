@@ -199,27 +199,58 @@ def test_repeatable_nod_varies_and_lasts_longer():
 
 
 def test_sneeze_is_a_full_bit_and_silences_the_rest():
-    from festival_pet.motion import SNEEZE_S, g_sneeze
+    from festival_pet.motion import ANT_FULL_DOWN, SNEEZE_S, g_sneeze
 
-    down = g_sneeze(0.3 / SNEEZE_S)
-    assert down.pitch > 8 and down.ant_r > 0.5  # looking down, antennas drooped
-    lifts = [g_sneeze(t / SNEEZE_S).pitch for t in (0.9, 1.5, 2.1)]
+    down = g_sneeze(0.8 / SNEEZE_S)
+    assert down.pitch > 8 and down.ant_r > ANT_FULL_DOWN - 0.05  # looking down, antennas laid right back
+    lifts = [g_sneeze(t / SNEEZE_S).pitch for t in (1.8, 3.0, 4.2)]
     assert lifts[0] > lifts[1] > lifts[2] < 0  # three lifts, each further back
-    assert g_sneeze(2.2 / SNEEZE_S).ant_r < -0.6  # antennas full up just before the choo
-    choo = g_sneeze(2.6 / SNEEZE_S)
-    assert choo.pitch > 20 and choo.ant_r > 0.8  # hard nod down, antennas dropped
-    assert 5 < g_sneeze(3.5 / SNEEZE_S).pitch < choo.pitch  # slow recovery, still down at 3.5 s
-    assert abs(g_sneeze(4.7 / SNEEZE_S).yaw) > 2  # clearing shake
-    assert abs(g_sneeze(0.999).pitch) < 1 and abs(g_sneeze(0.999).yaw) < 1  # ends home
+    ants = [g_sneeze(t / SNEEZE_S).ant_r for t in (2.3, 3.5, 4.7)]
+    assert ants[0] > ants[1] > ants[2]  # antennas rise a step per lift
+    wind = g_sneeze(5.35 / SNEEZE_S)
+    assert wind.pitch < -20 and wind.ant_r > 0.4 and wind.ant_l < -0.4  # head back, antennas crossed on top
+    choo = g_sneeze(5.7 / SNEEZE_S)
+    assert choo.pitch > 20 and choo.ant_r < -1.2 and choo.ant_l > 1.2  # hard nod down, antennas out wide
+    mid = g_sneeze(7.0 / SNEEZE_S)
+    assert 5 < mid.pitch < choo.pitch  # slow recovery, still down at 7 s
+    assert abs(g_sneeze(9.2 / SNEEZE_S).yaw) > 2  # clearing shake
+    assert abs(g_sneeze(0.999).pitch) < 1 and abs(g_sneeze(0.999).yaw) < 1 and abs(g_sneeze(0.999).ant_r) < 0.1  # ends home
 
     m = MotionComposer()
+    m.set_gaze((30.0, -30.0))
+    for i in range(100):
+        m.sample(i * 0.02, 0.02)
     m.groove, m._groove_level = (0.0, 0.0, 1.0), 1.0
     m.mimic = (30.0, 0.0, 0.0)
-    assert m.request_gesture("sneeze", 0.0, 3)
-    for i in range(1, 60):
+    assert m.request_gesture("sneeze", 2.0, 3)
+    for i in range(100, 200):
         m.sample(i * 0.02, 0.02)
     assert m._groove_level < 0.5  # groove faded out under the sneeze
     assert abs(m._mimic_pose[0]) < 1.0  # mimic never crept in
+    assert abs(m._gaze[0]) < 3.0 and abs(m._gaze[1]) < 3.0  # it stopped looking at them: the bit plays from neutral
+
+
+def test_head_slides_forward_when_looking_up_and_pose_hold_looks_there():
+    m = MotionComposer()
+    m.set_gaze((0.0, -30.0))
+    for i in range(200):
+        head, _, _ = m.sample(i * 0.02, 0.02)
+    assert head[0, 3] > 0.008  # forward shift near the top of the range
+    m.set_gaze((0.0, 20.0))
+    for i in range(200, 400):
+        head, _, _ = m.sample(i * 0.02, 0.02)
+    assert head[0, 3] == 0.0  # none when looking down
+    m.forward_shift_m = 0.0
+    m.set_gaze((0.0, -30.0))
+    for i in range(400, 600):
+        head, _, _ = m.sample(i * 0.02, 0.02)
+    assert head[0, 3] == 0.0
+    # a held pose overrides the gaze, with roll
+    m.hold = (25.0, 0.0, 15.0, 12.0 + 3.0)
+    for i in range(600, 700):
+        m.sample(i * 0.02, 0.02)
+    assert m._gaze[0] > 20 and m._hold_roll > 12
+
 
 
 def test_pose_history_pairs_frames_with_the_pose_at_exposure():

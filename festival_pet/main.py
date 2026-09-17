@@ -38,6 +38,7 @@ from festival_pet.audio_features import BeatTracker, LevelMeter, RubDetector, Sc
 from festival_pet.behavior import Action, Behavior, FaceObs, Observation
 from festival_pet.keypad import KeyMap, KeypadListener
 from festival_pet.memory import FaceMemory
+from festival_pet.mime import MimeGame
 from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose
 from festival_pet.senses import LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
@@ -349,6 +350,7 @@ class Pet:
         self.tap = TapTempo()  # hand-tapped beat from the control page or a paired keypad
         self.keypad = KeypadListener()
         self.keymap = KeyMap()
+        self.mime = MimeGame()
         self.pose_history: PoseHistory | None = None  # set on the real robot; fed every tick for the vision thread
         self.manual_groove = False  # groove to the tapped beat instead of what it hears/sees
         self._dance_seen = False  # edge: seed the tap clock once per dance
@@ -489,6 +491,15 @@ class Pet:
         for action, t_ev in fired:
             self.key_action(action, t_ev, now)
 
+        # ---------------- mime game (leads; the brain's own games and reactions wait)
+        if self.mime.active:
+            for item in self.mime.tick(obs.face, now):
+                self._mime_action(item, now)
+            beh._next_react = max(beh._next_react, now + 3.0)
+            beh._mimic_candidate_since = 0.0
+            if beh.mimicking:
+                beh.mimicking = False
+
         # ---------------- brain
         actions = beh.tick(obs, now, dt)
         comp.energy = beh.mood.energy
@@ -543,7 +554,7 @@ class Pet:
         io = self.p.io
         pose = look_at_image_pose(s.u, s.v, io.K, io.D, s.head_pose_at_capture, io.T_head_cam)
         roll, pitch, yaw = R.from_matrix(pose[:3, :3]).as_euler("xyz", degrees=True)
-        return FaceObs(s.track_id, float(yaw), float(pitch), s.area_frac, s.person, s.similarity, s.roll_deg, s.head_yaw_deg, s.head_pitch_deg)
+        return FaceObs(s.track_id, float(yaw), float(pitch), s.area_frac, s.person, s.similarity, s.roll_deg, s.head_yaw_deg, s.head_pitch_deg, s.smile)
 
     def _dispatch(self, act: Action, now: float) -> None:
         comp = self.p.composer
@@ -619,6 +630,25 @@ class Pet:
         elif act.kind == "heard":
             self.transcript.append((now, act.name, act.name.split("|")[1:]))
 
+    def _mime_action(self, item: tuple, now: float) -> None:
+        kind = item[0]
+        comp = self.p.composer
+        if kind == "sound":
+            self._dispatch(Action("sound", item[1], 3), now)
+        elif kind == "gesture":
+            comp.request_gesture(item[1], now, 3)
+        elif kind == "hold":
+            comp.hold = None if item[1] is None else (item[1][0], item[1][1], item[1][2], now + item[1][3])
+        elif kind == "capture":
+            vision = getattr(self, "vision", None)
+            if vision is not None:
+                vision.capture_now = True
+        elif kind == "think":
+            self.p.behavior._think(now, item[1])
+        else:
+            raise KeyError(f"unknown mime action {item!r}")
+        self.p.behavior._last_interaction = now
+
     def key_action(self, action: str, t_ev: float, now: float) -> None:
         """One keypad action. ``t_ev`` is the key's own timestamp: taps use it so USB/BT latency does not smear the beat."""
         beh, comp = self.p.behavior, self.p.composer
@@ -635,6 +665,8 @@ class Pet:
         elif action == "happy":
             self._dispatch(Action("sound", "happy", 3), now)
             comp.request_gesture("bounce", now, 3)
+        elif action == "mime":
+            self.control("mime", not self.mime.active)
         elif action == "manual_groove":
             self.control("manual_groove", not self.manual_groove)
             self._dispatch(Action("sound", "happy" if self.manual_groove else "curious", 3), now)
@@ -676,12 +708,13 @@ class Pet:
         return {
             "mind": self.p.behavior.mind(now),
             "feeling": self._feeling(now),
+            "mime": self.mime.status(now),
             "build": build_info(),
             "asleep": self.asleep,
             "transcript": [{"t": round(now - t, 1), "text": txt.split("|")[0], "intents": ints} for t, txt, ints in reversed(self.transcript)],
             "senses": {
                 "body": None if o.body is None else {"yaw": round(o.body.yaw_deg, 1), "pitch": round(o.body.pitch_deg, 1), "size": round(o.body.area_frac, 3)},
-                "face": None if o.face is None else {"track": o.face.track_id, "yaw": round(o.face.yaw_deg, 1), "pitch": round(o.face.pitch_deg, 1), "size": round(o.face.area_frac, 3), "person": None if o.face.person is None else o.face.person.person_id, "similarity": round(o.face.similarity, 2), "tilt": round(o.face.roll_deg, 1)},
+                "face": None if o.face is None else {"track": o.face.track_id, "yaw": round(o.face.yaw_deg, 1), "pitch": round(o.face.pitch_deg, 1), "size": round(o.face.area_frac, 3), "person": None if o.face.person is None else o.face.person.person_id, "similarity": round(o.face.similarity, 2), "tilt": round(o.face.roll_deg, 1), "head_yaw": round(o.face.head_yaw_deg, 1), "head_pitch": round(o.face.head_pitch_deg, 1), "smile": round(o.face.smile, 2)},
                 "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
                 "keypad": {"devices": list(self.keypad.devices.values()), "last_key": None if self.keypad.last_key is None else {"key": self.keypad.last_key[0], "t": round(now - self.keypad.last_key[1], 1)}, "error": self.keypad.error},
@@ -695,7 +728,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
             "dance_params": {"min_amp": self.dance._min_amp, "min_conf": self.dance._min_conf},
@@ -743,6 +776,18 @@ class Pet:
             self.keymap.set(key, press, hold)
         elif cmd == "key":  # fire a key action as if pressed (testing from the page)
             self.key_action(str(value), now, now)
+        elif cmd == "mime":
+            if bool(value):
+                if self._last_obs.face is None:
+                    raise ValueError("nobody in view to play with")
+                self.mime.mirror_image = self.p.composer.mimic_flip
+                for item in self.mime.start(now):
+                    self._mime_action(item, now)
+            else:
+                for item in self.mime.stop(now):
+                    self._mime_action(item, now)
+        elif cmd == "head_forward_mm":
+            self.p.composer.forward_shift_m = float(value) / 1000.0
         elif cmd == "preview":
             vision = getattr(self, "vision", None)
             if vision is None:
@@ -796,7 +841,7 @@ class Pet:
         return {"ok": True}
 
     # ------------------------------------------------------------------ settings persistence
-    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
         c = self.mind()["controls"]
@@ -1017,7 +1062,7 @@ def install_routes(app, pet: Pet) -> None:
     def catalog() -> dict:
         from festival_pet.motion import GESTURES
 
-        return {"sounds": list(sounds.EMOTIONS), "gestures": list(GESTURES), "moves": ["curious1", "welcoming1", "loving1", "dance1", "dance2", "dance3", "laughing1", "surprised1", "yes1", "no1", "sleep1", "cheerful1"]}
+        return {"sounds": list(sounds.EMOTIONS), "meanings": sounds.MEANINGS, "gestures": list(GESTURES), "moves": ["curious1", "welcoming1", "loving1", "dance1", "dance2", "dance3", "laughing1", "surprised1", "yes1", "no1", "sleep1", "cheerful1"]}
 
     @app.post("/api/control")
     def control(c: Control) -> dict:

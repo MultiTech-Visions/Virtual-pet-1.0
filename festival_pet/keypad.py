@@ -45,7 +45,7 @@ KEYCODES = {
 }
 KEYNAMES = {v: k for k, v in KEYCODES.items()}
 
-ACTIONS = ("tap", "downbeat", "tilt_left", "tilt_right", "nod", "manual_groove", "wake", "sleep", "mute", "happy", "none")
+ACTIONS = ("tap", "downbeat", "tilt_left", "tilt_right", "nod", "manual_groove", "mime", "wake", "sleep", "mute", "happy", "none")
 HOLD_S = 0.8  # hold a key this long for its hold action
 
 # The PCsensor MK424 keypad sends A B C D from the factory; a QWERTY keyboard gets the same plus obvious extras.

@@ -55,6 +55,7 @@
   <button data-tab="senses">Senses</button>
   <button data-tab="people">People</button>
   <button data-tab="controls">Controls</button>
+  <button data-tab="play">Play</button>
   <button data-tab="log">Log</button>
 </nav>
 
@@ -73,7 +74,7 @@
     <h2>Thoughts</h2>
     <ul class="thoughts" id="thoughts"></ul>
   </div>
-  <div class="card">
+  <div class="card" id="heard-card">
     <h2>What it heard</h2>
     <ul class="thoughts" id="transcript"></ul>
   </div>
@@ -157,27 +158,11 @@
     <input type="range" min="0" max="2" step="0.1" id="groove" oninput="setVal('groove_scale', this.value, 'groove-v')">
     <label>Face match strictness <span id="match-v"></span> <span class="sub">(lower = recognises more easily, more mix-ups)</span></label>
     <input type="range" min="0.3" max="0.6" step="0.01" id="match" oninput="setVal('match_threshold', this.value, 'match-v')">
+    <label>Head forward when looking up: <span id="fwd-v"></span> mm <span class="sub">(so the back of the head clears the body; 0 = off)</span></label>
+    <input type="range" min="0" max="25" step="1" id="fwd" oninput="setVal('head_forward_mm', this.value, 'fwd-v')">
     <label>Speaker volume: <span id="vol-v">…</span></label>
     <input type="range" min="0" max="100" step="5" id="vol" onchange="setVolume(this.value)">
     <div class="sub">Releasing the slider plays the daemon's test sound at the new level.</div>
-  </div>
-  <div class="card" style="grid-column:1/-1">
-    <h2>Keypad</h2>
-    <div class="sub">Any paired Bluetooth (or plugged-in USB) keyboard is a hand controller. Pair once here; it reconnects on its own after that. The PCsensor MK424 sends A B C D and pairs with PIN 1234.</div>
-    <div class="kv" id="keypad" style="margin:8px 0"></div>
-    <div class="btns">
-      <button class="act" id="bt-scan" onclick="btScan()">Scan for keyboards (8 s)</button>
-      <label style="display:inline-block;margin:0">PIN <input type="text" id="bt-pin" value="1234" style="width:5em;font-size:15px"></label>
-    </div>
-    <div id="bt-list" class="sub" style="margin:6px 0"></div>
-    <div id="bt-msg" class="sub"></div>
-    <label>Key map <span class="sub">(short press / hold 0.8 s; set both to none to drop a key)</span></label>
-    <table id="keymap"></table>
-    <div class="btns" style="margin-top:6px">
-      <input type="text" id="km-key" placeholder="key (A, SPACE, F1…)" style="width:11em;font-size:15px">
-      <select id="km-press"></select><select id="km-hold"></select>
-      <button class="act" onclick="setKey($('km-key').value, $('km-press').value, $('km-hold').value)">Set</button>
-    </div>
   </div>
   <div class="card">
     <h2>Groove</h2>
@@ -199,6 +184,31 @@
     <input type="range" min="0" max="2" step="0.1" id="g-ears" oninput="setVal('groove_ears', this.value, 'g-ears-v')">
     <div class="sub">These dials shape every groove, tapped or heard. "Groove intensity" in the Body card is the master.</div>
   </div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Puppet it</h2>
+    <div class="sub">Tap to fire immediately. Sounds queue behind whatever is playing; gestures and moves preempt.</div>
+    <label>Sounds</label><div class="grid-btns" id="btn-sound"></div>
+    <label>Gestures</label><div class="grid-btns" id="btn-gesture"></div>
+    <label>Library moves</label><div class="grid-btns" id="btn-move"></div>
+  </div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Keypad</h2>
+    <div class="sub">Any paired Bluetooth (or plugged-in USB) keyboard is a hand controller. Pair once here; it reconnects on its own after that. The PCsensor MK424 sends A B C D and pairs with PIN 1234.</div>
+    <div class="kv" id="keypad" style="margin:8px 0"></div>
+    <div class="btns">
+      <button class="act" id="bt-scan" onclick="btScan()">Scan for keyboards (8 s)</button>
+      <label style="display:inline-block;margin:0">PIN <input type="text" id="bt-pin" value="1234" style="width:5em;font-size:15px"></label>
+    </div>
+    <div id="bt-list" class="sub" style="margin:6px 0"></div>
+    <div id="bt-msg" class="sub"></div>
+    <label>Key map <span class="sub">(short press / hold 0.8 s; set both to none to drop a key)</span></label>
+    <table id="keymap"></table>
+    <div class="btns" style="margin-top:6px">
+      <input type="text" id="km-key" placeholder="key (A, SPACE, F1…)" style="width:11em;font-size:15px">
+      <select id="km-press"></select><select id="km-hold"></select>
+      <button class="act" onclick="setKey($('km-key').value, $('km-press').value, $('km-hold').value)">Set</button>
+    </div>
+  </div>
   <div class="card">
     <h2>Power</h2>
     <div class="btns">
@@ -208,12 +218,26 @@
     <div class="sub">Shut down nests the head first, then powers the Pi off. Give it ~20 s before switching off the battery.</div>
     <div class="sub" id="power-msg"></div>
   </div>
+</section>
+
+<section id="tab-play" class="grid hidden">
+  <div class="card">
+    <h2>Mime game: do what I do</h2>
+    <div class="sub">It shows a head move, then watches your head for the same one (as in a mirror: its left is your right, unless the mirror-game direction is flipped). Copy it and it moves on; ignore it and it shows you again, gets huffy, then sulks. 3–5 random moves per game. Every copied move also stores a fresh view of your face.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act big" id="mime-btn" onclick="ctl('mime', !mimeOn)">Start mime game</button>
+    </div>
+    <div class="kv" id="mime"></div>
+  </div>
+  <div class="card">
+    <h2>What it sees of your head</h2>
+    <div class="sub">The numbers the game judges by. Turn, nod, tilt and watch them move; the move counts at ±14° turn, ±10° nod, ±10° tilt, held for 0.4 s.</div>
+    <div class="kv" id="yourhead"></div>
+  </div>
   <div class="card" style="grid-column:1/-1">
-    <h2>Puppet it</h2>
-    <div class="sub">Tap to fire immediately. Sounds queue behind whatever is playing; gestures and moves preempt.</div>
-    <label>Sounds</label><div class="grid-btns" id="btn-sound"></div>
-    <label>Gestures</label><div class="grid-btns" id="btn-gesture"></div>
-    <label>Library moves</label><div class="grid-btns" id="btn-move"></div>
+    <h2>Lexicon: what its sounds mean</h2>
+    <div class="sub">Tap to hear each one.</div>
+    <table id="lexicon"></table>
   </div>
 </section>
 
@@ -229,7 +253,7 @@ let tab = 'mind', muted = false, slidersInit = false;
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   tab = b.dataset.tab;
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
-  ['mind','senses','people','controls','log'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== tab));
+  ['mind','senses','people','controls','play','log'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== tab));
   refresh();
 });
 function kv(el, obj) {
@@ -319,7 +343,9 @@ async function loadCatalog() {
   try { c = await (await fetch('/api/catalog')).json(); } catch (e) { setTimeout(loadCatalog, 2000); return; }  // app still starting
   for (const [id, kind, list] of [['btn-sound', 'sound', c.sounds], ['btn-gesture', 'gesture', c.gestures], ['btn-move', 'move', c.moves]])
     $(id).innerHTML = list.map(x => `<button onclick="ctl('${kind}', '${x}')">${x.replace(/_/g, ' ')}</button>`).join('');
+  $('lexicon').innerHTML = c.sounds.map(x => `<tr><td><button class="act" style="min-height:0;padding:6px 12px" onclick="ctl('sound', '${x}')">${x.replace(/_/g, ' ')}</button></td><td>${c.meanings[x]}</td></tr>`).join('');
 }
+let mimeOn = false;
 let selected = [];
 function toggleSel(id) {
   selected = selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id].slice(-2);
@@ -370,7 +396,7 @@ async function refresh() {
     $('state-sub').textContent += d.asleep ? ' · motors off, camera off' : '';
     const fc = s.face || {};  // fixed rows so nothing jumps when the face comes and goes
     kv('eyes', {face: s.face ? 'yes' : 'none', track: fc.track ?? '—', yaw: s.face ? fc.yaw + '°' : '—', pitch: s.face ? fc.pitch + '°' : '—', size: fc.size ?? '—',
-      person: s.face ? (fc.person === null ? 'stranger' : '#' + fc.person) : '—', similarity: fc.similarity ?? '—', tilt: s.face ? fc.tilt + '°' : '—',
+      person: s.face ? (fc.person === null ? 'stranger' : '#' + fc.person) : '—', similarity: fc.similarity ?? '—', tilt: s.face ? fc.tilt + '°' : '—', 'head turned / nodded': s.face ? `${fc.head_yaw}° / ${fc.head_pitch}°` : '—', smile: s.face ? fc.smile : '—',
       body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
       'dancing?': s.dance.dancing ? `yes, ${s.dance.bpm} bpm (conf ${s.dance.confidence}), holds ${s.dance.holds_for_s} s` : `no (conf ${s.dance.confidence}, amp ${s.dance.amplitude}°)`,
       'mirror game': s.mimic ? `copying: yaw ${s.mimic.yaw}° pitch ${s.mimic.pitch}° roll ${s.mimic.roll}°` : 'off'});
@@ -378,6 +404,11 @@ async function refresh() {
     document.querySelectorAll('.card.mic').forEach(c => c.classList.toggle('hidden', !d.controls.ears));
     if (m.engaged_person) { const src = `/api/people/${m.engaged_person}/face.jpg`; if (!$('who').src.endsWith(src)) { $('who').src = src; } $('who').classList.remove('hidden'); } else $('who').classList.add('hidden');
     drawKeymap(d.controls.keymap);
+    const mg = d.mime; mimeOn = mg.active;
+    $('mime-btn').textContent = mimeOn ? 'Stop mime game' : 'Start mime game';
+    kv('mime', {state: mimeOn ? mg.state : (mg.outcome ? 'over: ' + mg.outcome : 'not playing'), move: mg.move || '—', step: mg.of ? `${mg.step} of ${mg.of}` : '—', attempt: mimeOn ? mg.attempt : '—', 'time to copy': mg.time_left_s === null ? '—' : mg.time_left_s + ' s'});
+    kv('yourhead', {'turned (yaw)': s.face ? s.face.head_yaw + '°' : '—', 'nodded (pitch)': s.face ? s.face.head_pitch + '°' : '—', 'tilted (roll)': s.face ? s.face.tilt + '°' : '—', 'smile': s.face ? s.face.smile + (s.face.smile >= 0.8 ? ' 😀' : '') : '—'});
+    $('heard-card').classList.toggle('hidden', !d.controls.ears);
     const kp = s.keypad, bt = btInfo || {};
     kv('keypad', {'keyboards seen by the app': kp.devices.length ? kp.devices.join(', ') : 'none', 'last key': kp.last_key ? `${kp.last_key.key} (${kp.last_key.t}s ago)` : '—', 'input access': kp.error || 'ok',
       'bluetooth': bt.error ? bt.error : bt.powered === undefined ? '…' : (bt.powered ? 'on' : 'off'),
@@ -406,6 +437,7 @@ async function refresh() {
       if (d.controls.body_finder !== null) { bodyf = d.controls.body_finder; $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
       ears = d.controls.ears; $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off');
       mgroove = d.controls.manual_groove; $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off');
+      $('fwd').value = d.controls.head_forward_mm; $('fwd-v').textContent = d.controls.head_forward_mm;
       if (d.controls.camera_lag_ms !== null) { $('lag').value = d.controls.camera_lag_ms; $('lag-v').textContent = d.controls.camera_lag_ms; } else { $('lag').disabled = true; $('lag-v').textContent = 'n/a'; }
       btStatus();
       for (const k of ['bob', 'sway', 'body', 'ears']) { $('g-' + k).value = d.controls['groove_' + k]; $('g-' + k + '-v').textContent = d.controls['groove_' + k]; }

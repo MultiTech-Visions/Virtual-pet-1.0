@@ -32,10 +32,11 @@ ANTENNA_NEUTRAL = (-0.1745, 0.1745)  # SDK INIT_ANTENNAS_JOINT_POSITIONS (right,
 ANTENNA_DOWN = (-2.6, 2.6)  # relaxed / asleep (sleep pose is ±3.05)
 
 
-def head_pose(yaw: float, pitch: float, roll: float, z: float) -> np.ndarray:
-    """Build a 4x4 head pose from degrees + z metres (matches create_head_pose)."""
+def head_pose(yaw: float, pitch: float, roll: float, z: float, x: float = 0.0) -> np.ndarray:
+    """Build a 4x4 head pose from degrees + z (and forward x) metres (matches create_head_pose)."""
     pose = np.eye(4)
     pose[:3, :3] = R.from_euler("xyz", [roll, pitch, yaw], degrees=True).as_matrix()
+    pose[0, 3] = x
     pose[2, 3] = z
     return pose
 
@@ -160,52 +161,62 @@ def g_nod_off(u: float) -> Offsets:
     return Offsets(pitch=-6.0 * j, z=0.006 * j, ant_r=-0.4 * j, ant_l=0.4 * j)
 
 
-SNEEZE_S = 5.3  # the whole bit, timed to sounds.render_phrase("sneeze")
+SNEEZE_S = 10.6  # the whole bit, timed to sounds.render_phrase("sneeze")
+ANT_FULL_DOWN = 2.3  # offset from neutral that lays the antennas right back (ANTENNA_DOWN)
 
 
 def g_sneeze(u: float) -> Offsets:
-    """A proper sneeze, in seconds along ``SNEEZE_S``:
+    """A proper sneeze, in seconds along ``SNEEZE_S`` (the gaze is released for it: it stops looking at you):
 
-    0.0-0.6  uh oh: look down, antennas droop, a small head shake trying to clear it
-    0.6-2.4  build-up: three quick light lifts of the head ("ah... ah... AH"), antennas rising in steps
-    2.4-2.6  choo: head snaps down hard, antennas drop
-    2.6-4.5  slow recovery back to neutral
-    4.5-5.3  a little clearing shake
+    0.0-1.2   uh oh: looks down, antennas drop all the way, a small head shake trying to clear it
+    1.2-4.8   build-up: three lifts of the head, each further back, antennas rising a step each time
+    4.8-5.4   wind-up: head right back, antennas whip up and cross on top
+    5.4-5.7   CHOO: head snaps down hard, antennas swing out wide
+    5.7-8.5   slow recovery to neutral, antennas drooped a little
+    8.5-10.6  clearing shake, antennas perk back to normal
     """
     t = u * SNEEZE_S
     o = Offsets()
-    if t < 0.6:
-        e = _ease(min(1.0, t / 0.25))
+    if t < 1.2:
+        e = _ease(min(1.0, t / 0.4))
         o.pitch = 14.0 * e
-        o.ant_r, o.ant_l = 0.9 * e, -0.9 * e  # droop
-        o.yaw = 5.0 * math.sin(2 * math.pi * 2 * t / 0.6) * e  # trying to shake it off
-    elif t < 2.4:
-        k = (t - 0.6) / 1.8  # 0..1 over the build-up
-        lift_n = min(2, int(k * 3))  # which of the three lifts
-        w = (k * 3) % 1.0  # progress within this lift
-        lift = 6.0 * (lift_n + 1) * _pulse(min(1.0, w / 0.7))  # short sharp lift, then hold the gain
-        base_pitch = 14.0 * (1 - k)  # coming up out of the look-down
-        o.pitch = base_pitch - lift
+        o.ant_r, o.ant_l = ANT_FULL_DOWN * e, -ANT_FULL_DOWN * e
+        o.yaw = 5.0 * math.sin(2 * math.pi * 2 * (t - 0.4) / 0.8) * (1.0 if 0.4 <= t < 1.2 else 0.0)
+    elif t < 4.8:
+        k = (t - 1.2) / 3.6
+        lift_n = min(2, int(k * 3))
+        w = (k * 3) % 1.0
+        lift = 6.0 * (lift_n + 1) * _pulse(min(1.0, w / 0.7))
+        o.pitch = 14.0 * (1 - k) - lift
         o.z = 0.004 * (lift_n + 1) * _pulse(min(1.0, w / 0.7))
-        up = -1.1 * k  # antennas climb from droop (0.9) to full up (-1.1) in steps
-        step = 0.9 + (up - 0.9) * (lift_n + _ease(min(1.0, w / 0.5))) / 3
-        o.ant_r, o.ant_l = step, -step
-    elif t < 2.6:
-        j = (t - 2.4) / 0.2
-        o.pitch = -18.0 + (24.0 + 18.0) * _ease(j)  # from the last lift straight down
-        o.z = -0.012 * _ease(j)
-        o.ant_r, o.ant_l = -1.1 + 2.1 * _ease(j), 1.1 - 2.1 * _ease(j)  # drop
+        # antennas: from laid back (2.3) up to near vertical (-0.2), one step per lift
+        top = -0.2
+        start = ANT_FULL_DOWN + (top - ANT_FULL_DOWN) * lift_n / 3
+        end = ANT_FULL_DOWN + (top - ANT_FULL_DOWN) * (lift_n + 1) / 3
+        a = start + (end - start) * _ease(min(1.0, w / 0.5))
+        o.ant_r, o.ant_l = a, -a
+    elif t < 5.4:
+        j = _ease((t - 4.8) / 0.6)
+        o.pitch = -18.0 - 6.0 * j
+        o.z = 0.012
+        o.ant_r, o.ant_l = -0.2 + 0.9 * j, 0.2 - 0.9 * j  # past vertical, crossing on top
+    elif t < 5.7:
+        j = _ease((t - 5.4) / 0.3)
+        o.pitch = -24.0 + 48.0 * j
+        o.z = 0.012 - 0.024 * j
+        o.ant_r, o.ant_l = 0.7 - 2.1 * j, -0.7 + 2.1 * j  # whip out wide (-1.4 / +1.4)
         o.roll = 3.0 * math.sin(30 * j)
-    elif t < 4.5:
-        r = 1 - _ease((t - 2.6) / 1.9)  # slow recovery
+    elif t < 8.5:
+        r = 1 - _ease((t - 5.7) / 2.8)
         o.pitch = 24.0 * r
         o.z = -0.012 * r
-        o.ant_r, o.ant_l = 1.0 * r, -1.0 * r
+        d = 0.6  # a little droop while it recovers
+        o.ant_r, o.ant_l = -1.4 * r + d * (1 - r), 1.4 * r - d * (1 - r)
     else:
-        j = (t - 4.5) / 0.8
-        sw = math.sin(2 * math.pi * 2.5 * j) * (1 - j)
+        j = (t - 8.5) / 2.1
+        sw = math.sin(2 * math.pi * 2.5 * min(1.0, j * 1.6)) * (1 - j)
         o.yaw = 6.0 * sw
-        o.ant_r, o.ant_l = -0.25 * (1 - j), 0.25 * (1 - j)  # a little perk as it clears
+        o.ant_r, o.ant_l = 0.6 * (1 - j) - 0.3 * _pulse(j), -0.6 * (1 - j) + 0.3 * _pulse(j)  # droop fades, a small perk
     return o
 
 
@@ -374,6 +385,9 @@ class MotionComposer:
         self.mimic_gain = 0.9
         self._mimic_pose = np.zeros(3)
         self.voice_level = 0.0  # 0..1 loudness of the pet's own beeps; drives a little "talking" sway
+        self.forward_shift_m = 0.012  # slide the head forward by up to this when looking up, so it clears the body
+        self.hold: tuple[float, float, float, float] | None = None  # (yaw, pitch, roll, until): a shown pose (mime game)
+        self._hold_roll = 0.0
         self._voice = 0.0
         self._voice_phases = [self.rng.uniform(0, 2 * math.pi) for _ in range(4)]
 
@@ -440,8 +454,17 @@ class MotionComposer:
         off.ant_r += -ant_sway
         off.ant_l += ant_sway
 
+        solo = self._gesture is not None and self._gesture.name in SOLO_GESTURES and now - self._gesture.start < self._gesture.duration
+        holding = self.hold is not None and now < self.hold[3]
+
         # slow idle drift when nobody is being looked at
-        if self._gaze_target is None:
+        if holding:
+            target = np.array(self.hold[:2])  # showing a pose: look there, not at them
+            rate = 5.0
+        elif solo:
+            target = np.zeros(2)  # a solo gesture plays from neutral: it stops looking at you
+            rate = 5.0
+        elif self._gaze_target is None:
             drift_yaw = 9.0 * amp * math.sin(2 * math.pi * 0.045 * now + self._drift_phase)
             drift_pitch = 3.0 * amp * math.sin(2 * math.pi * 0.03 * now + 0.7)
             target = np.array([drift_yaw, drift_pitch])
@@ -452,11 +475,11 @@ class MotionComposer:
         # While grooving, the face reading carries whatever of our own bob the camera timing did not cancel;
         # chasing it would feed that error back into the head and the swing grows. Hold the gaze instead.
         grooving = self._groove_level > 0.05
-        if grooving:
+        if grooving and not (solo or holding):
             rate *= 0.02
         self._gaze += (target - self._gaze) * min(1.0, dt * rate)
-
-        solo = self._gesture is not None and self._gesture.name in SOLO_GESTURES and now - self._gesture.start < self._gesture.duration
+        self._hold_roll += ((self.hold[2] if holding else 0.0) - self._hold_roll) * min(1.0, dt * 5.0)
+        off.roll += self._hold_roll
 
         # music groove overlay, faded in and out
         want = self.groove[2] if self.groove is not None and not solo else 0.0
@@ -543,4 +566,5 @@ class MotionComposer:
         body = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw + off.body * (1 - s)))
         # Never ask the head for more than it can do relative to the body.
         yaw = max(body - HEAD_YAW_LIMIT, min(body + HEAD_YAW_LIMIT, yaw))
-        return head_pose(yaw, pitch, roll, z), [ant_r, ant_l], body
+        x = self.forward_shift_m * max(0.0, -pitch) / PITCH_LIMIT  # looking up: slide forward so the back of the head clears the body
+        return head_pose(yaw, pitch, roll, z, x), [ant_r, ant_l], body

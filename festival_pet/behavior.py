@@ -42,6 +42,7 @@ class FaceObs:
     roll_deg: float = 0.0  # the person's head tilt
     head_yaw_deg: float = 0.0  # where their head is turned (rough)
     head_pitch_deg: float = 0.0
+    smile: float = 0.0  # mouth width / eye distance; 0.8+ is a smile
 
 
 @dataclass
@@ -158,6 +159,7 @@ class Behavior:
     _close_since: float = 0.0
     _shy_done_track: int | None = None
     _next_sneeze: float = 0.0
+    _sneeze_show_until: float = 0.0
     _next_sing: float = 0.0
     _nodding_off: bool = False
     _music_since: float = 0.0
@@ -366,6 +368,12 @@ class Behavior:
 
         if obs.face is not None:
             actions.append(Action("mirror", f"{obs.face.roll_deg:.1f}", 0))
+            if self._sneeze_show_until and now >= self._sneeze_show_until:
+                self._sneeze_show_until = 0.0
+                if obs.face.smile >= 0.8:
+                    self._think(now, "they're smiling at my sneeze... hehe")
+                    actions.append(Action("sound", "giggle", 2))
+                    actions.append(Action("gesture", "wiggle", 2))
 
         if pickup_edge:
             self._last_interaction = now
@@ -497,13 +505,14 @@ class Behavior:
                         elif now - self._mimic_candidate_since >= t.mimic_hold and obs.dance_bpm == 0:
                             self.mimicking, self._mimic_since = True, now
                             self._think(now, "you're right up close... let's play mirror. I'll copy you")
-                            actions.append(Action("sound", "curious", 1))
+                            actions.append(Action("sound", "mirror_start", 2))
                     else:
                         self._mimic_candidate_since = 0.0
                 elif face.area_frac < t.mimic_exit_area or now - self._mimic_since > t.mimic_max_s or obs.dance_bpm > 0:
                     self.mimicking = False
                     self._mimic_candidate_since = 0.0
                     self._think(now, "mirror game over")
+                    actions.append(Action("sound", "mirror_end", 2))
                     actions.append(Action("gesture", "wiggle", 1))
                 if self.mimicking:
                     actions.append(Action("mimic", f"{face.head_yaw_deg:.1f},{face.head_pitch_deg:.1f},{face.roll_deg:.1f}", 0))
@@ -559,6 +568,7 @@ class Behavior:
                 if self.mimicking and now - self._last_face_time > 1.0:
                     self.mimicking = False
                     self._think(now, "mirror game over (lost you)")
+                    actions.append(Action("sound", "mirror_end", 2))
                 if self.state == "ENGAGED" and obs.dance_bpm > 0:
                     pass  # mid-dance the tracker blinks a lot (we are moving too): keep dancing, keep the gaze
                 elif self.state == "ENGAGED":
@@ -615,6 +625,7 @@ class Behavior:
                 actions.append(Action("sound", "sneeze", 3))
                 self._think(now, "ah... ah... choo!")
                 actions.append(Action("gesture", "sneeze", 3))
+                self._sneeze_show_until = now + 10.6  # motion.SNEEZE_S; after it, a smile in the audience gets a giggle
             elif self.rng.random() < dt * t.hiccup_chance_per_s:
                 actions.append(Action("sound", "hiccup", 1))
                 actions.append(Action("gesture", "hiccup", 1))

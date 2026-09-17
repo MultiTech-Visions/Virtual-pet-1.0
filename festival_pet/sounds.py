@@ -156,7 +156,27 @@ EMOTIONS = (
     "hiccup",
     "sing",  # one blip on the beat
     "tada",  # finished a trick
+    "mirror_start",  # "let's play mirror": two-note rising call
+    "mirror_end",  # the same call, falling
+    "mime_start",  # "do what I do": a three-note fanfare
+    "mime_end",  # the fanfare, closed
+    "mime_cue",  # "watch this" blip before each shown move
+    "yes",  # "you did it": bright double blip
+    "huff",  # "no? like THIS": a short exasperated puff
 )
+
+# What each sound means, for the lexicon on the Play tab.
+MEANINGS = {
+    "hello_new": "oh? hi! (a stranger)", "hello_friend": "hi again! (a friend)", "hello_bestie": "YOU! (a bestie)", "content": "mm, being held or petted", "happy": "pleased", "excited": "very pleased (a bestie, a party)",
+    "curious": "hm? what's that?", "giggle": "that tickles / that's funny", "surprised": "oh!", "confused": "where did you go?",
+    "sad": "aw... / you left", "lonely": "nobody has visited for a while", "sleepy": "running out of energy", "yawn": "about to nod off",
+    "wake": "waking up", "dizzy": "you shook me", "annoyed": "stop that / come ON", "low_battery": "battery low",
+    "name": "huh? me?", "ticklish": "belly scratch", "shy": "you are staring at me", "sneeze": "achoo", "hiccup": "hic",
+    "sing": "singing along to the beat", "tada": "finished a trick", "purr": "being petted, content",
+    "mirror_start": "let's play mirror: I'll copy you", "mirror_end": "mirror game over",
+    "mime_start": "let's play mime: do what I do", "mime_end": "mime game over", "mime_cue": "watch this move",
+    "yes": "you did it!", "huff": "no? like THIS. again",
+}
 
 
 def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
@@ -302,19 +322,36 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
             tone(j(650, 750), j(0.06, 0.1), sr, harmonics=0.1),
         )
     elif emotion == "sneeze":
-        # Timed to motion.g_sneeze: 0.6 s of nothing (look down, shake), three rising inhales 0.6 s apart,
-        # the choo at 2.4 s, a groggy low note during the recovery.
+        # Timed to motion.g_sneeze (10.6 s): 1.2 s of nothing (look down, shake), three rising inhales 1.2 s apart,
+        # a rising wind-up squeak, the choo at 5.4 s, a groggy low note during the recovery.
         inhale = lambda f0, f1, d: chirp(f0, f1, d, sr, curve=2.0, attack=0.5, release=0.3)  # noqa: E731
         out = concat(
-            silence(0.6, sr),
-            inhale(j(500, 560), j(800, 900), 0.28), silence(0.32, sr),
-            inhale(j(650, 720), j(1050, 1150), 0.30), silence(0.30, sr),
-            inhale(j(850, 950), j(1500, 1700), 0.36), silence(0.24, sr),
-            noise_burst(j(0.14, 0.2), sr),  # choo
-            chirp(j(1400, 1800), j(450, 550), j(0.14, 0.2), sr, curve=0.5),
-            silence(0.5, sr),
-            tone(j(380, 440), j(0.25, 0.35), sr, harmonics=0.15, attack=0.3, release=0.5),  # ugh
+            silence(1.2, sr),
+            inhale(j(500, 560), j(800, 900), 0.4), silence(0.8, sr),
+            inhale(j(650, 720), j(1050, 1150), 0.45), silence(0.75, sr),
+            inhale(j(850, 950), j(1500, 1700), 0.5), silence(0.7, sr),
+            chirp(j(1200, 1400), j(2200, 2600), 0.5, sr, curve=1.5, attack=0.3, release=0.1),  # wind-up
+            silence(0.1, sr),
+            noise_burst(j(0.18, 0.24), sr),  # choo
+            chirp(j(1400, 1800), j(450, 550), j(0.18, 0.24), sr, curve=0.5),
+            silence(0.9, sr),
+            tone(j(380, 440), j(0.35, 0.45), sr, harmonics=0.15, attack=0.3, release=0.5),  # ugh
         )
+    elif emotion in ("mirror_start", "mirror_end"):
+        up = emotion == "mirror_start"
+        a, b = (j(700, 760), j(1050, 1150)) if up else (j(1050, 1150), j(700, 760))
+        out = concat(tone(a, 0.14, sr, harmonics=0.2), silence(0.04, sr), tone(b, 0.22, sr, harmonics=0.2))
+    elif emotion in ("mime_start", "mime_end"):
+        up = emotion == "mime_start"
+        fs = (j(600, 640), j(800, 840), j(1000, 1060)) if up else (j(1000, 1060), j(800, 840), j(600, 640))
+        notes = [tone(f, 0.11, sr, harmonics=0.3) for f in fs]
+        out = concat(notes[0], silence(0.03, sr), notes[1], silence(0.03, sr), notes[2], silence(0.05, sr), warble(fs[2], 0.25, rate=10, depth=0.05, sample_rate=sr))
+    elif emotion == "mime_cue":
+        out = concat(tone(j(1300, 1400), 0.06, sr, harmonics=0.4), silence(0.05, sr), tone(j(1300, 1400), 0.06, sr, harmonics=0.4))
+    elif emotion == "yes":
+        out = concat(chirp(j(900, 1000), j(1400, 1500), 0.09, sr), silence(0.04, sr), chirp(j(1300, 1400), j(1900, 2000), 0.12, sr))
+    elif emotion == "huff":
+        out = concat(tone(j(420, 480), 0.08, sr, harmonics=0.5, attack=0.02, release=0.3), noise_burst(j(0.1, 0.14), sr))
     elif emotion == "hiccup":
         out = concat(tone(j(500, 600), 0.03, sr, attack=0.02, release=0.3), chirp(j(900, 1100), j(1500, 1900), 0.06, sr, curve=1.8))
     elif emotion == "sing":

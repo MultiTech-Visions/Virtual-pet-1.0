@@ -123,6 +123,7 @@ class Sighting:
     head_pitch_deg: float = 0.0  # + = looking down (rough)
     cx: float = 0.0  # normalised centre in [-1, 1], for rhythm detection
     cy: float = 0.0
+    smile: float = 0.0  # mouth width / eye distance (see smile_from_landmarks)
 
 
 def head_pose_from_landmarks(row: np.ndarray) -> tuple[float, float, float]:
@@ -144,6 +145,16 @@ def head_pose_from_landmarks(row: np.ndarray) -> tuple[float, float, float]:
     ratio = (ny - eye_mid[1]) / face_h  # ~0.55 frontal
     pitch = 120.0 * (ratio - 0.55)
     return max(-45.0, min(45.0, yaw)), max(-30.0, min(30.0, pitch)), roll
+
+
+def smile_from_landmarks(row: np.ndarray) -> float:
+    """Mouth width over eye distance: ~0.6-0.7 neutral, 0.8+ a real smile (rough; landmarks, not a model)."""
+    rex, rey, lex, ley, nx, ny, mrx, mry, mlx, mly = (float(v) for v in row[4:14])
+    eye_dist = max(1.0, math.hypot(lex - rex, ley - rey))
+    return math.hypot(mlx - mrx, mly - mry) / eye_dist
+
+
+SMILE_RATIO = 0.8
 
 
 def _jpeg(crop_bgr: np.ndarray) -> bytes:
@@ -281,7 +292,7 @@ class Vision:
         v = (y + h * 0.45) / scale  # aim a little above bbox centre: between the eyes
         yaw_p, pitch_p, roll = head_pose_from_landmarks(row)
         return Sighting(track.track_id, float(u), float(v), track.area_frac, track.person, track.similarity, head_pose, now, roll,
-                        "face", yaw_p, pitch_p, track.cx, track.cy)
+                        "face", yaw_p, pitch_p, track.cx, track.cy, smile_from_landmarks(row))
 
     def _body_fallback(self, small: np.ndarray, scale: float, head_pose: np.ndarray, now: float) -> Sighting | None:
         """No face: look for a torso (cheaper rate) and report where the head should be, above it."""

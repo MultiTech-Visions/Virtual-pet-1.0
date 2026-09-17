@@ -145,6 +145,28 @@ update, logs (`/logs`) all work as before. A daemon update from the dashboard re
 `launcher.sh`, so run the script (or the installer) again afterwards. To undo: reverse the
 `-m` edit in `launcher.sh` and restart the daemon.
 
+## Play tab: the mime game, and the lexicon
+
+**Mime game** ("do what I do"): start it from the Play tab (or a keypad key mapped to `mime`).
+It plays a three-note fanfare, then shows a head move (look left/right/up/down, tilt left/right;
+3–5 of them, random every game, never the same twice in a row), returns to neutral and watches
+your head for 4 s. Copy it as in a mirror (flip with the mirror-game direction switch) and it
+chirps "yes", nods, stores a fresh view of your face, and shows the next one. Ignore it and it
+shows the move again, bigger, with a huff; ignore that and it shows it a third time with an
+annoyed shake; ignore that and it droops, sulks and gives up. Do the whole set and it does a
+ta-da. If it loses your face for 5 s it looks around, confused, and stops. The Play tab shows
+the numbers it judges by (your head's turn / nod / tilt and a smile estimate from the mouth
+width), so you can see what counts.
+
+**Lexicon**: every sound with what it means, tap to hear. Distinct calls: a rising two-note for
+"let's play mirror" (falling for "mirror over"), the fanfare for the mime game, a double blip
+before each shown move, a bright "yes", a puffed "huff".
+
+**Sneeze**: 10.6 s. It stops looking at you, looks down with the antennas laid right back, gives
+a little shake, lifts three times with rising inhales while the antennas climb a step each time,
+whips them up and crossed with a squeak, then CHOO: head down hard, antennas out wide; slow
+recovery with a droop, then a clearing shake. If you are smiling at it afterwards, it giggles.
+
 ## A keypad in someone's hand
 
 Any Bluetooth (or USB) keyboard the robot is paired with is a hand controller: the app reads
@@ -199,7 +221,8 @@ Polls the app twice a second. Tabs:
   (the first tapped is kept; embeddings and stats combine). **Forget** a single person, or
   everyone.
 - **Controls** – wake/sleep, mute, pickup on/off, body finder on/off, **ears on/off** (stops all
-  microphone processing, for dead mics or CPU), mirror-game direction, groove intensity,
+  microphone processing, for dead mics or CPU; also hides the microphone cards and "what it heard"), mirror-game direction, groove intensity, a head-forward slider (slides the head
+  forward by up to N mm as it looks up, so the back of the head clears the body; default 12),
   face-match strictness, speaker volume, shut down / reboot, a **Groove** card (manual groove
   on/off, *Tap beat* / *Tap "1"* buttons with a live bpm / beat / bar readout, a BPM box, and
   head-bob / head-sway / body-sway / antenna dials), and a puppet panel: every sound, gesture

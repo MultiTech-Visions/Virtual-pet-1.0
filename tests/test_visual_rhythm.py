@@ -70,3 +70,12 @@ def test_dancing_sticks_for_several_bars_after_the_rhythm_is_lost():
         t += 0.125
         d.push(t, 0.0, 0.0)
     assert not d.state.dancing  # release: 8 bars at 120 bpm is 16 s, then it stops
+
+
+def test_smile_ratio_from_landmarks():
+    from festival_pet.vision import smile_from_landmarks
+
+    # x, y, w, h, right_eye, left_eye, nose, mouth_right, mouth_left, score
+    neutral = np.array([0, 0, 100, 100, 30, 40, 70, 40, 50, 60, 36, 75, 64, 75, 0.9])
+    smiling = np.array([0, 0, 100, 100, 30, 40, 70, 40, 50, 60, 31, 75, 69, 75, 0.9])
+    assert smile_from_landmarks(neutral) < 0.75 < 0.9 < smile_from_landmarks(smiling)
