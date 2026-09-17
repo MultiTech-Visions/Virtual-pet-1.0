@@ -608,9 +608,9 @@ class Behavior:
         if awake and self.state in ("IDLE", "ENGAGED"):
             if now >= self._next_sneeze:
                 self._next_sneeze = now + self.rng.uniform(t.sneeze_min, t.sneeze_max)
-                actions.append(Action("sound", "sneeze", 2))
+                actions.append(Action("sound", "sneeze", 3))
                 self._think(now, "ah... ah... choo!")
-                actions.append(Action("gesture", "sneeze", 2))
+                actions.append(Action("gesture", "sneeze", 3))
             elif self.rng.random() < dt * t.hiccup_chance_per_s:
                 actions.append(Action("sound", "hiccup", 1))
                 actions.append(Action("gesture", "hiccup", 1))

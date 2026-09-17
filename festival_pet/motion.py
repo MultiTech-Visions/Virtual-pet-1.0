@@ -160,14 +160,53 @@ def g_nod_off(u: float) -> Offsets:
     return Offsets(pitch=-6.0 * j, z=0.006 * j, ant_r=-0.4 * j, ant_l=0.4 * j)
 
 
+SNEEZE_S = 5.3  # the whole bit, timed to sounds.render_phrase("sneeze")
+
+
 def g_sneeze(u: float) -> Offsets:
-    # inhale: head back, antennas up ... achoo: snap forward, antennas splay
-    if u < 0.45:
-        e = _ease(u / 0.45)
-        return Offsets(pitch=-12.0 * e, z=0.008 * e, ant_r=-0.8 * e, ant_l=0.8 * e)
-    j = (u - 0.45) / 0.55
-    snap = math.exp(-6 * j)
-    return Offsets(pitch=20.0 * snap, z=-0.012 * snap, ant_r=0.9 * snap, ant_l=-0.9 * snap, roll=4.0 * math.sin(20 * j) * snap)
+    """A proper sneeze, in seconds along ``SNEEZE_S``:
+
+    0.0-0.6  uh oh: look down, antennas droop, a small head shake trying to clear it
+    0.6-2.4  build-up: three quick light lifts of the head ("ah... ah... AH"), antennas rising in steps
+    2.4-2.6  choo: head snaps down hard, antennas drop
+    2.6-4.5  slow recovery back to neutral
+    4.5-5.3  a little clearing shake
+    """
+    t = u * SNEEZE_S
+    o = Offsets()
+    if t < 0.6:
+        e = _ease(min(1.0, t / 0.25))
+        o.pitch = 14.0 * e
+        o.ant_r, o.ant_l = 0.9 * e, -0.9 * e  # droop
+        o.yaw = 5.0 * math.sin(2 * math.pi * 2 * t / 0.6) * e  # trying to shake it off
+    elif t < 2.4:
+        k = (t - 0.6) / 1.8  # 0..1 over the build-up
+        lift_n = min(2, int(k * 3))  # which of the three lifts
+        w = (k * 3) % 1.0  # progress within this lift
+        lift = 6.0 * (lift_n + 1) * _pulse(min(1.0, w / 0.7))  # short sharp lift, then hold the gain
+        base_pitch = 14.0 * (1 - k)  # coming up out of the look-down
+        o.pitch = base_pitch - lift
+        o.z = 0.004 * (lift_n + 1) * _pulse(min(1.0, w / 0.7))
+        up = -1.1 * k  # antennas climb from droop (0.9) to full up (-1.1) in steps
+        step = 0.9 + (up - 0.9) * (lift_n + _ease(min(1.0, w / 0.5))) / 3
+        o.ant_r, o.ant_l = step, -step
+    elif t < 2.6:
+        j = (t - 2.4) / 0.2
+        o.pitch = -18.0 + (24.0 + 18.0) * _ease(j)  # from the last lift straight down
+        o.z = -0.012 * _ease(j)
+        o.ant_r, o.ant_l = -1.1 + 2.1 * _ease(j), 1.1 - 2.1 * _ease(j)  # drop
+        o.roll = 3.0 * math.sin(30 * j)
+    elif t < 4.5:
+        r = 1 - _ease((t - 2.6) / 1.9)  # slow recovery
+        o.pitch = 24.0 * r
+        o.z = -0.012 * r
+        o.ant_r, o.ant_l = 1.0 * r, -1.0 * r
+    else:
+        j = (t - 4.5) / 0.8
+        sw = math.sin(2 * math.pi * 2.5 * j) * (1 - j)
+        o.yaw = 6.0 * sw
+        o.ant_r, o.ant_l = -0.25 * (1 - j), 0.25 * (1 - j)  # a little perk as it clears
+    return o
 
 
 def g_hiccup(u: float) -> Offsets:
@@ -230,13 +269,15 @@ GESTURES: dict[str, tuple[float, str]] = {
     "glance": (2.0, "sided"),
     "shy": (3.0, "sided"),
     "nod_off": (4.0, "plain"),
-    "sneeze": (1.4, "plain"),
+    "sneeze": (SNEEZE_S, "plain"),
     "hiccup": (0.5, "plain"),
     "tada": (1.6, "plain"),
     "flinch": (1.2, "sided"),
     "lean": (2.4, "plain"),
     "shake": (0.55, "repeat"),
 }
+
+SOLO_GESTURES = frozenset({"sneeze"})  # the whole body is the gesture: no groove, mimic, mirror or beep sway on top
 
 _FUNCS = {
     "nod": g_nod, "tilt": g_tilt, "wiggle": g_wiggle, "bounce": g_bounce, "perk": g_perk,
@@ -410,8 +451,10 @@ class MotionComposer:
             rate = 6.0  # snappy but not twitchy; vision already filters
         self._gaze += (target - self._gaze) * min(1.0, dt * rate)
 
+        solo = self._gesture is not None and self._gesture.name in SOLO_GESTURES and now - self._gesture.start < self._gesture.duration
+
         # music groove overlay, faded in and out
-        want = self.groove[2] if self.groove is not None else 0.0
+        want = self.groove[2] if self.groove is not None and not solo else 0.0
         self._groove_level += (want - self._groove_level) * min(1.0, dt * 0.8)
         if self.groove is not None and self._groove_level > 0.02:
             if self.groove_phrase is not None:
@@ -426,7 +469,7 @@ class MotionComposer:
 
         # beep sway: several slow sines gated by the loudness envelope, so the head "talks" with the sound
         self._voice += (self.voice_level - self._voice) * min(1.0, dt * 25.0)
-        if self._voice > 0.01:
+        if self._voice > 0.01 and not solo:
             v = self._voice
             ph = self._voice_phases
             off.pitch += 3.0 * v * math.sin(2 * math.pi * 2.2 * now + ph[0])
@@ -437,7 +480,7 @@ class MotionComposer:
             off.ant_l += 0.15 * v
 
         # mimic game: copy the person's head pose (mirror-image by default), smoothly, on top of looking at them
-        if self.mimic is not None:
+        if self.mimic is not None and not solo:
             sign = -1.0 if self.mimic_flip else 1.0
             target = np.array([sign * self.mimic[0], self.mimic[1], sign * self.mimic[2]]) * self.mimic_gain
         else:
@@ -448,7 +491,7 @@ class MotionComposer:
         off.roll += float(self._mimic_pose[2])
 
         # otherwise mirror the person's head tilt a little (slow, so it reads as empathy not tracking)
-        if self.mimic is None:
+        if self.mimic is None and not solo:
             self._mirror += (max(-20.0, min(20.0, self.mirror_roll * 0.8)) - self._mirror) * min(1.0, dt * 1.5)
         else:
             self._mirror += (0.0 - self._mirror) * min(1.0, dt * 1.5)

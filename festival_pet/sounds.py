@@ -302,11 +302,18 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
             tone(j(650, 750), j(0.06, 0.1), sr, harmonics=0.1),
         )
     elif emotion == "sneeze":
+        # Timed to motion.g_sneeze: 0.6 s of nothing (look down, shake), three rising inhales 0.6 s apart,
+        # the choo at 2.4 s, a groggy low note during the recovery.
+        inhale = lambda f0, f1, d: chirp(f0, f1, d, sr, curve=2.0, attack=0.5, release=0.3)  # noqa: E731
         out = concat(
-            chirp(j(500, 600), j(1200, 1500), j(0.25, 0.35), sr, curve=2.5, attack=0.6),  # ah... ah...
-            silence(0.04, sr),
-            noise_burst(j(0.12, 0.18), sr),  # choo
-            chirp(j(1400, 1800), j(500, 600), j(0.12, 0.18), sr, curve=0.5),
+            silence(0.6, sr),
+            inhale(j(500, 560), j(800, 900), 0.28), silence(0.32, sr),
+            inhale(j(650, 720), j(1050, 1150), 0.30), silence(0.30, sr),
+            inhale(j(850, 950), j(1500, 1700), 0.36), silence(0.24, sr),
+            noise_burst(j(0.14, 0.2), sr),  # choo
+            chirp(j(1400, 1800), j(450, 550), j(0.14, 0.2), sr, curve=0.5),
+            silence(0.5, sr),
+            tone(j(380, 440), j(0.25, 0.35), sr, harmonics=0.15, attack=0.3, release=0.5),  # ugh
         )
     elif emotion == "hiccup":
         out = concat(tone(j(500, 600), 0.03, sr, attack=0.02, release=0.3), chirp(j(900, 1100), j(1500, 1900), 0.06, sr, curve=1.8))

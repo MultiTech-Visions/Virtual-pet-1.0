@@ -60,6 +60,7 @@
     <h2>Right now</h2>
     <div class="big" id="state">…</div>
     <div class="sub" id="state-sub"></div>
+    <div class="feeling" id="feeling"></div>
     <label>Energy</label><div class="bar"><i id="energy"></i></div>
     <label>Social</label><div class="bar pink"><i id="social"></i></div>
     <div class="kv" id="timers"></div>
@@ -187,7 +188,7 @@
   <div class="card"><h2>App log</h2><pre class="log" id="log"></pre></div>
 </section>
 
-<style>.act.big{font-size:1.15em;padding:14px 22px}.act.hit{filter:brightness(1.6)}</style>
+<style>.feeling{font-size:1.1em;margin:4px 0 8px}.feeling b{color:#ffb86b;text-transform:capitalize}.act.big{font-size:1.15em;padding:14px 22px}.act.hit{filter:brightness(1.6)}</style>
 <script>
 const $ = id => document.getElementById(id);
 const v = id => $(id).value;
@@ -282,6 +283,8 @@ async function refresh() {
     $('conn').textContent = 'live · ' + new Date().toLocaleTimeString();
     $('state').textContent = m.state;
     $('state-sub').textContent = `for ${m.state_for_s}s` + (m.engaged_person ? ` · with person #${m.engaged_person} (${m.engaged_tier})` : '') + (m.dizzy ? ' · dizzy' : '') + (m.mimicking ? ' · mirror game' : '');
+    const f = d.feeling, fe = x => x ? `<b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
+    $('feeling').innerHTML = `feeling: ${fe(f.motion)} · sounding: ${fe(f.sound)}`;
     $('energy').style.width = (m.energy * 100) + '%'; $('social').style.width = (m.social * 100) + '%';
     kv('timers', {'alone for': m.alone_for_s + ' s', 'lonely in': m.lonely_in_s + ' s', 'sleep in': m.sleep_in_s + ' s',
       'next reaction': m.next_reaction_in_s === null ? '—' : m.next_reaction_in_s + ' s', 'next glance': m.next_glance_in_s === null ? '—' : m.next_glance_in_s + ' s',

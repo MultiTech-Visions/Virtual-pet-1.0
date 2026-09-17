@@ -196,3 +196,27 @@ def test_repeatable_nod_varies_and_lasts_longer():
     m2 = MotionComposer()
     m2.request_gesture("nod", 0.0, 5)
     assert 2 <= m2._gesture.reps <= 4
+
+
+def test_sneeze_is_a_full_bit_and_silences_the_rest():
+    from festival_pet.motion import SNEEZE_S, g_sneeze
+
+    down = g_sneeze(0.3 / SNEEZE_S)
+    assert down.pitch > 8 and down.ant_r > 0.5  # looking down, antennas drooped
+    lifts = [g_sneeze(t / SNEEZE_S).pitch for t in (0.9, 1.5, 2.1)]
+    assert lifts[0] > lifts[1] > lifts[2] < 0  # three lifts, each further back
+    assert g_sneeze(2.2 / SNEEZE_S).ant_r < -0.6  # antennas full up just before the choo
+    choo = g_sneeze(2.6 / SNEEZE_S)
+    assert choo.pitch > 20 and choo.ant_r > 0.8  # hard nod down, antennas dropped
+    assert 5 < g_sneeze(3.5 / SNEEZE_S).pitch < choo.pitch  # slow recovery, still down at 3.5 s
+    assert abs(g_sneeze(4.7 / SNEEZE_S).yaw) > 2  # clearing shake
+    assert abs(g_sneeze(0.999).pitch) < 1 and abs(g_sneeze(0.999).yaw) < 1  # ends home
+
+    m = MotionComposer()
+    m.groove, m._groove_level = (0.0, 0.0, 1.0), 1.0
+    m.mimic = (30.0, 0.0, 0.0)
+    assert m.request_gesture("sneeze", 0.0, 3)
+    for i in range(1, 60):
+        m.sample(i * 0.02, 0.02)
+    assert m._groove_level < 0.5  # groove faded out under the sneeze
+    assert abs(m._mimic_pose[0]) < 1.0  # mimic never crept in

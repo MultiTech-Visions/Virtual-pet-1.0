@@ -591,6 +591,17 @@ class Pet:
         elif act.kind == "heard":
             self.transcript.append((now, act.name, act.name.split("|")[1:]))
 
+    def _feeling(self, now: float) -> dict:
+        """The most recent gesture/move and sound, for the top of the Mind page."""
+        out: dict = {"motion": None, "sound": None}
+        for t, kind, name in reversed(self.actions_log):
+            key = "motion" if kind in ("gesture", "move") else "sound" if kind == "sound" else None
+            if key is not None and out[key] is None:
+                out[key] = {"name": name, "t": round(now - t, 1)}
+            if out["motion"] is not None and out["sound"] is not None:
+                break
+        return out
+
     def status(self) -> dict:
         b = self.audio.beat.state
         return {
@@ -608,6 +619,7 @@ class Pet:
         comp = self.p.composer
         return {
             "mind": self.p.behavior.mind(now),
+            "feeling": self._feeling(now),
             "asleep": self.asleep,
             "transcript": [{"t": round(now - t, 1), "text": txt.split("|")[0], "intents": ints} for t, txt, ints in reversed(self.transcript)],
             "senses": {
