@@ -11,6 +11,8 @@ def test_tarball_normalizes_crlf_and_keeps_layout(tmp_path):
     root = tmp_path
     (root / "festival_pet").mkdir()
     (root / "scripts").mkdir()
+    (root / "dashboard" / "reachy_dashboard" / "static" / "css").mkdir(parents=True)
+    (root / "dashboard" / "reachy_dashboard" / "static" / "css" / "app.css").write_bytes(b"body{}\r\n")
     (root / "festival_pet" / "main.py").write_bytes(b"print('hi')\r\n")
     (root / "festival_pet" / "__pycache__").mkdir()
     (root / "festival_pet" / "__pycache__" / "x.pyc").write_bytes(b"junk")
@@ -20,6 +22,7 @@ def test_tarball_normalizes_crlf_and_keeps_layout(tmp_path):
     tar = tarfile.open(fileobj=io.BytesIO(ri.make_tarball(root)), mode="r:gz")
     names = tar.getnames()
     assert "scripts/setup_offline.sh" in names and "festival_pet/main.py" in names
+    assert "dashboard/reachy_dashboard/static/css/app.css" in names
     assert not any("__pycache__" in n for n in names)
     sh = tar.extractfile("scripts/setup_offline.sh").read()
     assert b"\r" not in sh and sh.endswith(b"pipefail\n")

@@ -42,7 +42,7 @@ GITHUB_ZIP = "https://github.com/MultiTech-Visions/Virtual-pet-1.0/archive/refs/
 DEFAULT_BRANCH = "claude/reachy-festival-robot-xqb2ao"
 
 # Files worth shipping; everything else in the repo (tests, fixtures, git) stays home.
-SHIP = ("festival_pet", "scripts", "pyproject.toml", "README.md")
+SHIP = ("festival_pet", "dashboard", "scripts", "pyproject.toml", "README.md")
 
 
 def source_root() -> Path | None:
@@ -185,6 +185,12 @@ class Robot:
     def setup(self) -> None:
         self.run(f"bash {REMOTE_DIR}/scripts/setup_offline.sh")
 
+    def restore_dashboard(self) -> None:
+        """Put the web dashboard back on port 8000; the script is root-only, so the SSH password goes to sudo on stdin."""
+        import shlex
+
+        self.run(f"printf '%s\\n' {shlex.quote(self.password)} | sudo -S -p '' bash {REMOTE_DIR}/scripts/restore_dashboard.sh")
+
     def _api(self, method: str, path: str, body: dict | None = None) -> dict | list | None:
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(f"http://{self.host}:{self.daemon_port}/api{path}", data=data, method=method, headers={"Content-Type": "application/json"})
@@ -255,6 +261,10 @@ class Steps:
             raise RuntimeError("setup finished but the app is not installed in the apps venv")
         return f"v{before or '—'} → v{after}"
 
+    def restore_dashboard(self) -> str:
+        self.robot.restore_dashboard()
+        return f"http://{self.robot.host}:{self.robot.daemon_port}"
+
     def startup_and_start(self) -> str:
         msgs = []
         if self.set_startup:
@@ -272,6 +282,7 @@ class Steps:
             ("Gather the app files", self.gather_source),
             ("Upload to the robot", self.upload),
             ("Install on the robot (can take a few minutes)", self.run_setup),
+            ("Restore the port-8000 web dashboard & restart the daemon", self.restore_dashboard),
             ("Set as start-up app & start", self.startup_and_start),
         ]
 

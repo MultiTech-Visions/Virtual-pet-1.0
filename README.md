@@ -77,7 +77,9 @@ festival_pet/
   hearing.py    Vosk name / trick-word spotting
   sounds.py     procedural droid vocalisations
   static/       tiny status page served at http://reachy-mini.local:8042
+dashboard/      the port-8000 web dashboard Pollen removed in reachy-mini 1.9.0, re-mounted onto the daemon
 scripts/setup_offline.sh   one-time install + model/move-library download on the robot
+scripts/restore_dashboard.sh   puts the web dashboard back on http://reachy-mini.local:8000
 scripts/sim_harness.py     drives the whole pet against the SDK's MuJoCo simulator
 tests/                     pytest suite for everything that does not need the robot
 ```
@@ -95,7 +97,8 @@ tests/                     pytest suite for everything that does not need the ro
    offline once the models are cached).
 3. It uploads the app files bundled inside the installer (or, if you untick that box, the
    latest from GitHub), runs the setup script on the robot, streams its output into the
-   window, then makes the pet the start-up app and starts it.
+   window, puts the web dashboard back on port 8000 (restarting the daemon), then makes the
+   pet the start-up app and starts it.
 
 Run it again whenever there is a new version: the same steps upgrade in place. On macOS the
 first launch may need right-click → Open (unsigned app). Developers can also run it from
@@ -119,6 +122,26 @@ the two OpenCV Zoo ONNX models (~39 MB) and the Vosk small English model (~40 MB
 Then open the dashboard at `http://reachy-mini.local:8000`, find **festival_pet** in the
 installed apps and start it. The pet's own page ("Reachy's Mind") is at
 `http://reachy-mini.local:8042`.
+
+### The web dashboard on port 8000 (removed by Pollen, put back here)
+
+reachy-mini 1.9.0 deleted the daemon's web dashboard: `http://reachy-mini.local:8000` now
+shows "Web Dashboard Deprecated, download the Reachy Mini Control app". The REST API behind
+it is unchanged, so `dashboard/` ships the last dashboard Pollen released (1.8.4, minus its
+"deprecated soon" banner) as a package, `reachy_dashboard`, that runs the same daemon with
+the dashboard mounted back on. The installer does this on every run; by hand, on the robot:
+
+```bash
+sudo bash /home/pollen/festival_pet/scripts/restore_dashboard.sh
+```
+
+It installs the package into the daemon's venv (`/venvs/mini_daemon`, no dependency
+changes), rewrites the daemon's `launcher.sh` so it runs `python -u -m reachy_dashboard`
+instead of `python -u -m reachy_mini.daemon.app.main` (same arguments, same daemon), and
+restarts the daemon. Apps, app store, move player, volume, Wi‑Fi (`/settings`), daemon
+update, logs (`/logs`) all work as before. A daemon update from the dashboard rewrites
+`launcher.sh`, so run the script (or the installer) again afterwards. To undo: reverse the
+`-m` edit in `launcher.sh` and restart the daemon.
 
 ## Wi‑Fi at the festival: let the robot be the hotspot
 

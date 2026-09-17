@@ -57,5 +57,6 @@ print("ok:", len(lib.list_moves()), "moves available offline")
 PYEOF
 
 echo
-echo "Done. Open http://reachy-mini.local:8000 and start 'festival_pet',"
-echo "or make it the startup app: see README 'Auto-start at the festival'."
+echo "Done. If http://reachy-mini.local:8000 shows 'Web Dashboard Deprecated' (reachy-mini >= 1.9.0), put it back:"
+echo "  sudo bash $APP_DIR/scripts/restore_dashboard.sh"
+echo "then open it, start 'festival_pet', or make it the startup app: see README 'Auto-start at the festival'."
