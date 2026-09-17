@@ -1,9 +1,12 @@
 """Seeing a beat instead of hearing one: rhythmic body/face motion = dancing.
 
-Feed the tracked target's centre (normalised image coords) at whatever rate the
-detector runs (~8 Hz for faces, ~2.5 Hz for bodies). A person dancing bobs their
-head/torso at 50-150 BPM (0.8-2.5 Hz); we look for a strong autocorrelation
-peak of the vertical (and horizontal) motion over a rolling window.
+Feed the tracked target's direction in the WORLD frame (yaw, pitch in degrees, as the
+gaze code computes it from the pixel position and the head pose at capture) at whatever
+rate the detector runs (~8 Hz for faces, ~2.5 Hz for bodies). World angles matter: the
+camera sits in the head, so once the pet bobs along, the face bobs in the image by the
+pet's own motion, and raw image coordinates would measure the pet, not the person.
+A person dancing bobs their head/torso at 50-150 BPM (0.8-2.5 Hz); we look for a
+strong autocorrelation peak of the vertical (and horizontal) motion over a rolling window.
 """
 
 from __future__ import annotations
@@ -21,12 +24,12 @@ class DanceState:
     dancing: bool
     bpm: float
     confidence: float
-    amplitude: float  # normalised image units, peak-to-peak-ish
+    amplitude: float  # degrees, peak-to-peak-ish
     since: float  # when dancing started (0 if not)
 
 
 class DanceDetector:
-    def __init__(self, window_s: float = 5.0, min_amp: float = 0.03, min_conf: float = 0.45, hold_s: float = 2.5, release_bars: float = 4.0, min_release_s: float = 8.0) -> None:
+    def __init__(self, window_s: float = 5.0, min_amp: float = 1.5, min_conf: float = 0.45, hold_s: float = 2.5, release_bars: float = 8.0, min_release_s: float = 16.0) -> None:
         self._win = window_s
         self._min_amp = min_amp
         self._min_conf = min_conf
@@ -42,8 +45,8 @@ class DanceDetector:
         self._period = 0.0
         self.state = DanceState(False, 0.0, 0.0, 0.0, 0.0)
 
-    def push(self, now: float, cx: float, cy: float) -> DanceState:
-        self._pts.append((now, cx, cy))
+    def push(self, now: float, yaw_deg: float, pitch_deg: float) -> DanceState:
+        self._pts.append((now, yaw_deg, pitch_deg))
         while self._pts and now - self._pts[0][0] > self._win:
             self._pts.popleft()
         if len(self._pts) < 12 or now - self._pts[0][0] < 3.0:

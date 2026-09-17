@@ -26,8 +26,14 @@
   pre.log { background:#0b0e1a; padding:10px; border-radius:10px; font:12px/1.5 ui-monospace, monospace; max-height:60vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }
   table { width:100%; border-collapse:collapse; font-size:13px; } td, th { padding:4px 6px; text-align:left; border-bottom:1px solid var(--line); }
   .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:13px; } .kv b { color:var(--dim); font-weight:500; }
-  .btns { display:flex; flex-wrap:wrap; gap:6px; } .btns button, select, input[type=range] { font-size:14px; }
-  button.act { background:#243055; color:var(--fg); border:0; border-radius:8px; padding:8px 12px; }
+  .btns { display:flex; flex-wrap:wrap; gap:10px; } .btns button, select, input[type=range] { font-size:15px; }
+  button.act { background:#243055; color:var(--fg); border:0; border-radius:10px; padding:12px 16px; min-height:44px; }
+  input[type=range] { width:100%; height:36px; margin:0 0 4px; accent-color:var(--acc); }
+  .card { position:relative; }
+  .who { position:absolute; top:10px; right:10px; width:64px; height:64px; border-radius:10px; object-fit:cover; border:2px solid var(--warm); }
+  #asleep { position:fixed; inset:0; background:var(--bg); z-index:50; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:24px; }
+  #asleep h2 { font-size:22px; color:var(--fg); text-transform:none; letter-spacing:0; margin:16px 0 6px; }
+  #asleep p { color:var(--dim); max-width:420px; margin:4px 0; }
   button.danger { background:#3a2030; color:#ffb3b3; }
   label { display:block; margin:8px 0 2px; color:var(--dim); font-size:13px; }
   .hidden { display:none; }
@@ -58,6 +64,7 @@
 <section id="tab-mind" class="grid">
   <div class="card">
     <h2>Right now</h2>
+    <img id="who" class="who hidden" alt="" onerror="this.classList.add('hidden')">
     <div class="big" id="state">…</div>
     <div class="sub" id="state-sub"></div>
     <div class="feeling" id="feeling"></div>
@@ -81,15 +88,20 @@
 
 <section id="tab-senses" class="grid hidden">
   <div class="card"><h2>Eyes</h2><div class="kv" id="eyes"></div></div>
-  <div class="card"><h2>Ears</h2><div class="kv" id="ears"></div></div>
+  <div class="card mic"><h2>Ears</h2><div class="kv" id="ears"></div></div>
   <div class="card" style="grid-column:1/-1">
+    <h2>Where the person is (last 20 s, world frame)</h2>
+    <div class="sub">Green = yaw (left/right), orange = pitch (up/down), in degrees from where the pet's body points; the pet's own head motion is already taken out. Dashed lines = the dance detector's amplitude floor (± half of <span id="dance-amp"></span>°). Shaded = it thinks they are dancing. Bob so the orange trace swings past the dashed lines at a steady rate for ~4 s.</div>
+    <canvas id="facechart" height="160" style="width:100%; background:#0b0e1a; border-radius:10px; margin-top:8px"></canvas>
+  </div>
+  <div class="card mic" style="grid-column:1/-1">
     <h2>Microphone levels (last 20 s)</h2>
     <div class="sub">If <b>chunks</b> is not climbing, no audio is arriving at all. Green = loudness (RMS). Orange = head-rub energy with its floor as the dashed line. Pink = belly-scratch band energy with its floor. Blue dots = flatness (0–1). Rub the head or scratch the belly and watch which trace jumps.</div>
     <canvas id="chart" height="160" style="width:100%; background:#0b0e1a; border-radius:10px; margin-top:8px"></canvas>
     <div class="kv" id="levels" style="margin-top:8px"></div>
   </div>
   <div class="card"><h2>Body</h2><div class="kv" id="body"></div></div>
-  <div class="card"><h2>Head-pet tuning</h2>
+  <div class="card mic"><h2>Head-pet tuning</h2>
     <div class="sub">Easiest: tap <b>Calibrate</b>, stay quiet 3 s, then rub the head for 3 s. Manual: rub energy must exceed the floor, exceed ratio × baseline, and flatness must exceed its minimum.</div>
     <p><button class="act" onclick="ctl('calibrate','rub')">Calibrate head pets</button> <span class="sub" id="calib-rub"></span></p>
     <div class="kv" id="rub"></div>
@@ -100,7 +112,7 @@
     <label>Floor (log10): <span id="rfloor-v"></span></label>
     <input type="range" min="-9" max="1" step="0.1" id="rfloor" oninput="setLog('rub_floor', this.value, 'rfloor-v')">
   </div>
-  <div class="card"><h2>Belly scratch tuning</h2>
+  <div class="card mic"><h2>Belly scratch tuning</h2>
     <div class="sub">Easiest: tap <b>Calibrate</b>, stay quiet 3 s, then scratch for 3 s. It sets the floor and ratio from what it heard.</div>
     <p><button class="act" onclick="ctl('calibrate','scratch')">Calibrate belly scratch</button> <span class="sub" id="calib-scratch"></span></p>
     <div class="kv" id="scratch"></div>
@@ -188,6 +200,26 @@
   <div class="card"><h2>App log</h2><pre class="log" id="log"></pre></div>
 </section>
 
+<div id="asleep" class="hidden">
+  <svg width="200" height="200" viewBox="0 0 200 200" aria-hidden="true">
+    <g stroke="#111" stroke-width="3" fill="#f4f4f6" stroke-linecap="round">
+      <path d="M62 178 C40 178 36 120 52 90 C66 64 134 64 148 90 C164 120 160 178 138 178 Z"/>
+      <rect x="66" y="170" width="68" height="12" rx="6" fill="#2b2b33"/>
+      <path d="M52 102 C48 70 84 46 116 52 C140 57 146 84 132 100 C120 114 86 118 62 108 Z" transform="rotate(-18 96 84)"/>
+      <line x1="112" y1="52" x2="128" y2="12"/><ellipse cx="129" cy="10" rx="4" ry="6" fill="#111" transform="rotate(22 129 10)"/>
+      <line x1="60" y1="66" x2="30" y2="50"/><ellipse cx="29" cy="49" rx="6" ry="4" fill="#111" transform="rotate(28 29 49)"/>
+      <circle cx="84" cy="90" r="10" fill="#111"/><circle cx="110" cy="80" r="10" fill="#111"/>
+      <path d="M78 92 q6 5 12 0 M104 82 q6 5 12 0" stroke="#fff" fill="none" stroke-width="2.5"/>
+    </g>
+    <g fill="#7b9cf5" font-family="system-ui, sans-serif" font-weight="800">
+      <text x="146" y="60" font-size="18">z</text><text x="158" y="42" font-size="24">z</text><text x="172" y="22" font-size="30">Z</text>
+    </g>
+  </svg>
+  <h2>Reachy is asleep</h2>
+  <p id="asleep-why">The robot is powered off, or the pet app is not running.</p>
+  <p>Power the robot on (it boots in about a minute), then touch an antenna to wake it and start the pet. This page reconnects on its own.</p>
+  <p class="sub" id="asleep-since"></p>
+</div>
 <style>.feeling{font-size:1.1em;margin:4px 0 8px}.feeling b{color:#ffb86b;text-transform:capitalize}.act.big{font-size:1.15em;padding:14px 22px}.act.hit{filter:brightness(1.6)}</style>
 <script>
 const $ = id => document.getElementById(id);
@@ -239,7 +271,7 @@ async function loadVolume() {
 }
 async function power(action) {
   if (!confirm(action === 'shutdown' ? 'Shut the robot down?' : 'Reboot the robot?')) return;
-  $('power-msg').textContent = action + '…';
+  $('power-msg').textContent = action + '…'; powerSent = action;
   try { const r = await fetch('/api/power/' + action, {method:'POST'}); const j = await r.json(); $('power-msg').textContent = r.ok ? j.detail : ('failed: ' + j.detail); }
   catch (e) { $('power-msg').textContent = 'connection dropped (expected once it powers off)'; }
 }
@@ -293,9 +325,17 @@ async function refresh() {
     $('actions').innerHTML = d.recent_actions.map(a => `<li><small>${a.t}s ago</small>${a.a}</li>`).join('');
     $('transcript').innerHTML = d.transcript.map(x => `<li><small>${x.t}s ago</small>“${x.text}”${x.intents.length ? ' <span class="tier">→ ' + x.intents.join(', ') + '</span>' : ''}</li>`).join('') || '<li class="sub">nothing yet</li>';
     $('state-sub').textContent += d.asleep ? ' · motors off, camera off' : '';
-    kv('eyes', Object.assign(s.face ? s.face : {face: 'none'}, {body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
-      'dancing?': s.dance.dancing ? `yes, ${s.dance.bpm} bpm (conf ${s.dance.confidence})` : `no (conf ${s.dance.confidence}, amp ${s.dance.amplitude})`,
-      'mirror game': s.mimic ? `copying: yaw ${s.mimic.yaw}° pitch ${s.mimic.pitch}° roll ${s.mimic.roll}°` : 'off'}));
+    const fc = s.face || {};  // fixed rows so nothing jumps when the face comes and goes
+    kv('eyes', {face: s.face ? 'yes' : 'none', track: fc.track ?? '—', yaw: s.face ? fc.yaw + '°' : '—', pitch: s.face ? fc.pitch + '°' : '—', size: fc.size ?? '—',
+      person: s.face ? (fc.person === null ? 'stranger' : '#' + fc.person) : '—', similarity: fc.similarity ?? '—', tilt: s.face ? fc.tilt + '°' : '—',
+      body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
+      'dancing?': s.dance.dancing ? `yes, ${s.dance.bpm} bpm (conf ${s.dance.confidence}), holds ${s.dance.holds_for_s} s` : `no (conf ${s.dance.confidence}, amp ${s.dance.amplitude}°)`,
+      'mirror game': s.mimic ? `copying: yaw ${s.mimic.yaw}° pitch ${s.mimic.pitch}° roll ${s.mimic.roll}°` : 'off'});
+    $('dance-amp').textContent = d.dance_params.min_amp; drawFaceChart(d.face_history, d.dance_params);
+    document.querySelectorAll('.card.mic').forEach(c => c.classList.toggle('hidden', !d.controls.ears));
+    if (m.engaged_person) { const src = `/api/people/${m.engaged_person}/face.jpg`; if (!$('who').src.endsWith(src)) { $('who').src = src; } $('who').classList.remove('hidden'); } else $('who').classList.add('hidden');
+    if (asleepSince) { asleepSince = 0; $('asleep').classList.add('hidden'); }
+    fails = 0;
     $('tap-v').textContent = d.senses.tap.bpm ? `${d.senses.tap.bpm} bpm · beat ${d.senses.tap.beat} · bar ${d.senses.tap.bar}${d.senses.tap.downbeat_known ? '' : ' (no "1" yet)'}` : 'no tempo tapped';
     if (document.activeElement !== $('bpm')) $('bpm').value = d.senses.tap.bpm || '';
     kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '° (+ = left)', 'mic array DoA': s.doa ? `${s.doa.angle_deg}° (0 = left, 90 = front), speech: ${s.doa.speech}` : '—', 'last speech': s.speech_s_ago === null ? 'never' : s.speech_s_ago + ' s ago'});
@@ -336,7 +376,33 @@ async function refresh() {
           <button class="act danger" onclick="delPerson(${p.id}, event)">forget</button>
         </div>`).join('') || '<div class="sub">nobody yet</div>';
     }
-  } catch (e) { $('conn').textContent = 'offline: ' + e; }
+  } catch (e) {
+    $('conn').textContent = 'offline: ' + e;
+    if (++fails >= (powerSent ? 1 : 6) && !asleepSince) {  // ~3 s of silence, or right away after we sent shutdown/reboot
+      asleepSince = Date.now();
+      $('asleep-why').textContent = powerSent === 'reboot' ? 'Rebooting. Back in a minute or so.' : powerSent === 'shutdown' ? 'Shut down from this page.' : 'The robot is powered off, or the pet app is not running.';
+      $('asleep').classList.remove('hidden');
+    }
+    if (asleepSince) $('asleep-since').textContent = 'asleep for ' + Math.round((Date.now() - asleepSince) / 1000) + ' s · still trying to reconnect';
+  }
+}
+let fails = 0, asleepSince = 0, powerSent = '';
+function drawFaceChart(hist, params) {
+  const cv = $('facechart'); const W = cv.width = cv.clientWidth, H = cv.height; const g = cv.getContext('2d');
+  g.clearRect(0, 0, W, H); if (!hist.length) return;
+  const x = t => W + t / 20 * W, R = 40;  // ±40° window
+  const y = v => H / 2 - Math.max(-R, Math.min(R, v)) / R * (H / 2 - 6);
+  g.fillStyle = '#20264a'; let run = null;
+  hist.forEach((h, i) => { if (h.dancing && run === null) run = h.t; if ((!h.dancing || i === hist.length - 1) && run !== null) { g.fillRect(x(run), 0, x(h.t) - x(run), H); run = null; } });
+  g.strokeStyle = '#1e2340'; for (const v of [-30, -20, -10, 0, 10, 20, 30]) { g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke(); g.fillStyle = '#556'; g.font = '10px sans-serif'; g.fillText(v + '°', 2, y(v) - 2); }
+  const mean = hist.reduce((a, h) => a + h.pitch, 0) / hist.length;
+  g.setLineDash([4, 4]); g.strokeStyle = '#ffb86b'; for (const v of [mean - params.min_amp / 2, mean + params.min_amp / 2]) { g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke(); } g.setLineDash([]);
+  for (const [key, col] of [['yaw', '#7cf5c9'], ['pitch', '#ffb86b']]) {
+    g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath(); let pen = false;
+    hist.forEach((h, i) => { const gap = i && h.t - hist[i - 1].t > 1.0; if (!pen || gap) { g.moveTo(x(h.t), y(h[key])); pen = true; } else g.lineTo(x(h.t), y(h[key])); });
+    g.stroke();
+  }
+  g.fillStyle = '#8b8fa8'; hist.forEach(h => { if (h.kind === 'body') g.fillRect(x(h.t) - 1, H - 5, 2, 3); });
 }
 loadCatalog(); loadVolume(); refresh(); setInterval(refresh, 500);
 </script>

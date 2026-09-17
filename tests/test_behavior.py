@@ -279,3 +279,15 @@ def test_visual_dancing_makes_it_groove():
     grooves = [a for a in acts if a.kind == "groove"]
     assert grooves and grooves[-1].name.endswith("|visual")
     assert any(a.name == "excited" for a in acts)
+
+
+def test_dancing_is_not_interrupted_by_reactions_or_a_lost_face():
+    b, _ = _brain()
+    face = FaceObs(1, 0.0, 0.0, 0.05, None, 0.0)
+    _run(b, lambda t: Observation(face=face), 0.0, 3.0)
+    acts = _run(b, lambda t: Observation(face=face, dance_bpm=120.0), 3.0, 20.0)
+    assert any(a.kind == "groove" for a in acts)
+    assert not any(a.kind == "gesture" and a.name in ("tilt", "nod", "wiggle") for a in acts)  # no micro-reactions mid-dance
+    # tracker blinks for 4 s while the dance lock holds: no search, no "where did they go"
+    acts = _run(b, lambda t: Observation(dance_bpm=120.0), 20.0, 24.0)
+    assert b.state == "ENGAGED" and not any(a.kind == "gesture" and a.name == "search" for a in acts)

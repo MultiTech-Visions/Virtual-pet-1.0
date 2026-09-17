@@ -355,6 +355,8 @@ class Pet:
         self.transcript: deque[tuple[float, str, list[str]]] = deque(maxlen=30)
         self.dance = DanceDetector()
         self._last_rhythm_ts = 0.0
+        self._last_seen_angles = (0.0, 0.0)
+        self.face_history: deque[tuple[float, float, float, str, bool]] = deque(maxlen=200)  # ~20 s at face rate
         self.settings_file: Path | None = None
         self._last_obs = Observation()
 
@@ -420,15 +422,19 @@ class Pet:
             obs.loud_yaw_deg = None if deaf else self.loud.update(self.audio.doa, now)
         sighting = self.p.latest_sighting()
         if sighting is not None and now - sighting.ts < 1.0:
+            seen = self._to_face_obs(sighting)
             if sighting.kind == "face":
-                obs.face = self._to_face_obs(sighting)
+                obs.face = seen
             else:
-                obs.body = self._to_face_obs(sighting)
+                obs.body = seen
             if sighting.ts != self._last_rhythm_ts:  # one rhythm sample per detection
                 self._last_rhythm_ts = sighting.ts
-                self.dance.push(sighting.ts, sighting.cx, sighting.cy)
+                # World-frame angles: the camera is in the head, so image coordinates would measure our own bob.
+                self._last_seen_angles = (seen.yaw_deg, seen.pitch_deg)
+                self.dance.push(sighting.ts, seen.yaw_deg, seen.pitch_deg)
+                self.face_history.append((sighting.ts, seen.yaw_deg, seen.pitch_deg, sighting.kind, self.dance.state.dancing))
         elif self.dance.state.dancing and now - self._last_rhythm_ts > 2.0:
-            self.dance.push(now, 0.0, 0.0)  # nobody in view: let the rhythm decay
+            self.dance.push(now, *self._last_seen_angles)  # nobody in view: hold still, let the lock run out
         if self.dance.state.dancing:
             obs.dance_bpm = self.dance.state.bpm
             if not self._dance_seen:  # seen dancing: hand the tempo to the tap clock so manual groove / "1" pick it up
@@ -639,6 +645,8 @@ class Pet:
             },
             "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
+            "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
+            "dance_params": {"min_amp": self.dance._min_amp, "min_conf": self.dance._min_conf},
             "audio_history": self.audio.meter.history(),
             "recent_actions": [{"t": round(now - t, 1), "a": f"{k}:{n}"} for t, k, n in reversed(self.actions_log[-20:])],
             "memory": self.p.memory.summary(),

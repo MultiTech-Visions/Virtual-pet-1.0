@@ -28,7 +28,7 @@ is the one-time setup below.
 | Being stared at | same face very close for 14 s | goes shy: looks away, antennas fold, peeks back |
 | Empathy | the person's head tilt (eye line) | slowly mirrors the tilt; nods back 2–4 times when you nod, shakes back when you shake |
 | Mirror game | a face filling the frame (≥ 8 %) and holding for 2 s | goes quiet and copies your head pose (yaw, pitch, roll estimated from the five face landmarks), mirror-image by default (flip on the Controls tab); ends when you back away or after a minute |
-| Dancing (seen) | the tracked face/body bobbing rhythmically at 50–150 BPM for 2.5 s | dances along at the tempo it sees; no microphone needed. Once locked it keeps dancing for 4 bars (min 8 s) after the rhythm was last confirmed, so a lost track or a pause does not stop it, and nod-back is off while anyone is dancing (a bob that keeps going is a dance, not a nod). The tempo it sees is handed to the tap clock below |
+| Dancing (seen) | the tracked face/body bobbing rhythmically at 50–150 BPM for 2.5 s, measured in the world frame so the pet's own bobbing does not pollute it | dances along at the tempo it sees; no microphone needed. Once locked it keeps dancing for 8 bars (min 16 s) after the rhythm was last confirmed; mid-dance there are no micro-reactions, nod-backs or lost-face searches for that person. The tempo it sees is handed to the tap clock below. **How to dance for it:** face it, stay in frame, bob your head (or shoulders, so the head goes with them) up and down a few centimetres on a steady beat for ~4 s. Hands are invisible to it |
 | Tapped beat | the **Groove** card on the Controls tab | tap the beat (or the space bar) and tap "1" on the first beat of a bar; with *Manual groove* on it dances to that clock, ignoring what it hears or sees, accenting beat 1 and changing style only at 4-bar phrase turns. Dials for head bob, head sway, body sway and antennas shape every groove |
 | Time | – | energy drains while awake, refills asleep; lonely after 90 s alone, nods off, sleeps after 7 min; rare sneezes and hiccups |
 | Sleep | – | nests its head using the SDK's sleep pose, then **motors off** and **camera paused**. The ears stay on: its name, a loud voice after quiet, a head pet or an ear tickle wake it (motors on, head lifts) |
@@ -165,7 +165,7 @@ Polls the app twice a second. Tabs:
   listening-for-trick window), a running **thought stream** in plain language ("someone said
   my name from the left! listening for a trick for 8 s", "it's person #4 (friend, visit 3),
   greeting them"), and the last actions.
-- **Senses** – what the eyes, ears and body report right now, a live 20 s microphone chart
+- **Senses** – what the eyes, ears and body report right now (fixed rows, nothing jumps), a live 20 s chart of where the person is (world yaw/pitch, the dance amplitude floor and when it thinks they are dancing), a live 20 s microphone chart
   (loudness, head-rub energy, belly-scratch band energy, flatness, with the current floors
   drawn as dashed lines) and one-tap **Calibrate** buttons for head pets and belly scratches:
   stay quiet 3 s, touch for 3 s, and the thresholds are set from what it heard (it refuses
@@ -185,6 +185,9 @@ Polls the app twice a second. Tabs:
   All switches and sliders are remembered across restarts (`~/.local/share/festival_pet/settings.json`).
 - **Log** – the app's own log ring (last 400 lines). The daemon's per-app log is on the
   dashboard too.
+
+With ears off, every microphone card on Senses is hidden. When the robot is shut down (or the
+app stops) the page turns into a "Reachy is asleep" screen and keeps trying to reconnect.
 
 API: `GET /api/mind`, `GET /api/log?n=`, `GET /api/catalog`, `POST /api/control {cmd, value}`,
 `GET /api/people/{id}/face.jpg`, `DELETE /api/people/{id}`, `POST /api/people/merge {keep, other}`.

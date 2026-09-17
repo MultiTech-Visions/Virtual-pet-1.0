@@ -521,7 +521,9 @@ class Behavior:
                         actions.append(Action("sound", "happy" if mimic == "nod" else "curious", 2))
                         actions.append(Action("gesture", mimic, 2))
 
-                # Periodic micro-reactions while someone is around.
+                # Periodic micro-reactions while someone is around (not while we are dancing with them).
+                if obs.dance_bpm > 0:
+                    self._next_react = max(self._next_react, now + 3.0)
                 if now >= self._next_react:
                     self._next_react = now + self.rng.uniform(t.react_min, t.react_max)
                     close = face.area_frac > 0.06
@@ -557,7 +559,9 @@ class Behavior:
                 if self.mimicking and now - self._last_face_time > 1.0:
                     self.mimicking = False
                     self._think(now, "mirror game over (lost you)")
-                if self.state == "ENGAGED":
+                if self.state == "ENGAGED" and obs.dance_bpm > 0:
+                    pass  # mid-dance the tracker blinks a lot (we are moving too): keep dancing, keep the gaze
+                elif self.state == "ENGAGED":
                     if now - self._last_face_time > t.face_lost_grace:
                         engaged_for = now - self._engaged_since
                         self._face_lost_at = self._last_face_time
