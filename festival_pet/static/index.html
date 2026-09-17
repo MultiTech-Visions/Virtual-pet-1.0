@@ -201,7 +201,7 @@
   <div class="card"><h2>App log</h2><pre class="log" id="log"></pre></div>
 </section>
 
-<div id="asleep" class="hidden">
+<div id="asleep" class="hidden" onclick="peek()">
   <svg width="200" height="200" viewBox="0 0 200 200" aria-hidden="true">
     <g stroke="#111" stroke-width="3" fill="#f4f4f6" stroke-linecap="round">
       <path d="M62 178 C40 178 36 120 52 90 C66 64 134 64 148 90 C164 120 160 178 138 178 Z"/>
@@ -220,6 +220,7 @@
   <p id="asleep-why">The robot is powered off, or the pet app is not running.</p>
   <p>Power the robot on (it boots in about a minute), then touch an antenna to wake it and start the pet. This page reconnects on its own.</p>
   <p class="sub" id="asleep-since"></p>
+  <p class="sub">tap anywhere to peek at the page</p>
 </div>
 <style>.feeling{font-size:1.1em;margin:4px 0 8px}.feeling b{color:#ffb86b;text-transform:capitalize}.act.big{font-size:1.15em;padding:14px 22px}.act.hit{filter:brightness(1.6)}</style>
 <script>
@@ -384,13 +385,19 @@ async function refresh() {
   } catch (e) { $('conn').textContent = 'live, but the page hit an error drawing: ' + e; console.error(e); }
 }
 let fails = 0, asleepSince = 0, powerSent = '';
+function peek() { $('asleep').classList.add('hidden'); document.body.classList.remove('asleep'); asleepSince = 0; lastOk = Date.now(); }
 function online() {
-  fails = 0;
+  fails = 0; lastOk = Date.now();
   if (asleepSince) { asleepSince = 0; powerSent = ''; $('asleep').classList.add('hidden'); document.body.classList.remove('asleep'); }
 }
+let lastOk = Date.now();
 function offline(e) {
   $('conn').textContent = 'offline: ' + e;
-  if (++fails >= (powerSent ? 1 : 6) && !asleepSince) {  // ~3 s of silence, or right away after we sent shutdown/reboot
+  fails++;
+  // A busy robot drops the odd poll; that is not "off". Sleep screen only after 20 s with no answer at all,
+  // or right away once we sent shutdown/reboot from this page.
+  const silentFor = Date.now() - lastOk;
+  if ((powerSent || silentFor > 20000) && !asleepSince) {
     asleepSince = Date.now();
     $('asleep-why').textContent = powerSent === 'reboot' ? 'Rebooting. Back in a minute or so.' : powerSent === 'shutdown' ? 'Shut down from this page.' : 'The robot is powered off, or the pet app is not running.';
     $('asleep').classList.remove('hidden'); document.body.classList.add('asleep'); window.scrollTo(0, 0);
