@@ -10,3 +10,4 @@ memory.json
 dist/
 build/
 *.spec
+festival_pet/_build.py

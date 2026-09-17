@@ -23,6 +23,8 @@ def test_tarball_normalizes_crlf_and_keeps_layout(tmp_path):
     names = tar.getnames()
     assert "scripts/setup_offline.sh" in names and "festival_pet/main.py" in names
     assert "dashboard/reachy_dashboard/static/css/app.css" in names
+    stamp = tar.extractfile("festival_pet/_build.py").read().decode()
+    assert "BUILT = '" in stamp and "COMMIT = " in stamp
     assert not any("__pycache__" in n for n in names)
     sh = tar.extractfile("scripts/setup_offline.sh").read()
     assert b"\r" not in sh and sh.endswith(b"pipefail\n")

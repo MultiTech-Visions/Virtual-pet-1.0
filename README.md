@@ -218,6 +218,14 @@ the robot boots asleep and **touching an antenna wakes it and launches the pet**
 - Set `PLAY_LIBRARY_SOUNDS = True` in `main.py` to hear Pollen's sidecar sounds with the
   library moves instead of the pet's own beeps.
 
+## Which version is on the robot?
+
+The Mind page header shows `vX.Y.Z · <commit> · uploaded <time>`; the same line is the first
+thing the app logs. The version is `pyproject.toml`'s and is bumped with every change that is
+pushed; the commit and upload time come from a stamp the installer writes at upload time, so
+two uploads of the same version are still told apart. The installer's own steps print the
+version it is sending and `v<before> → v<after>` after installing.
+
 ## Development
 
 ```bash

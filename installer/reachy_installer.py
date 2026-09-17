@@ -79,10 +79,29 @@ def _add_file(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
     tar.addfile(info, io.BytesIO(data))
 
 
+def git_commit(root: Path) -> str | None:
+    """Short commit of the checkout, if this is one and git is around."""
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def build_stamp(root: Path) -> bytes:
+    """festival_pet/_build.py: what exactly got uploaded, shown on the Mind page and in the app log."""
+    built = time.strftime("%Y-%m-%d %H:%M")
+    return f'"""Written by the installer at upload time."""\n\nCOMMIT = {git_commit(root)!r}\nBUILT = {built!r}\n'.encode()
+
+
 def make_tarball(root: Path) -> bytes:
-    """Tar the shippable parts of the app into memory."""
+    """Tar the shippable parts of the app into memory, plus a build stamp."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        stamp = build_stamp(root)
+        info = tarfile.TarInfo("festival_pet/_build.py")
+        info.size, info.mtime, info.mode = len(stamp), int(time.time()), 0o644
+        tar.addfile(info, io.BytesIO(stamp))
         for name in SHIP:
             path = root / name
             if not path.exists():
@@ -90,7 +109,7 @@ def make_tarball(root: Path) -> bytes:
             files = [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file())
             for f in files:
                 rel = f.relative_to(root).as_posix()
-                if "__pycache__" in rel or rel.endswith(".pyc"):
+                if "__pycache__" in rel or rel.endswith(".pyc") or rel == "festival_pet/_build.py":
                     continue
                 _add_file(tar, f, rel)
     return buf.getvalue()
@@ -252,7 +271,8 @@ class Steps:
         assert self.source is not None
         tar = make_tarball(self.source)
         self.robot.upload(tar)
-        return f"{len(tar) // 1024} KB sent"
+        commit = git_commit(self.source)
+        return f"v{source_version(self.source)}" + (f" ({commit})" if commit else "") + f", {len(tar) // 1024} KB sent"
 
     def run_setup(self) -> str:
         before = self.robot.installed_version()
@@ -260,7 +280,7 @@ class Steps:
         after = self.robot.installed_version()
         if after is None:
             raise RuntimeError("setup finished but the app is not installed in the apps venv")
-        return f"v{before or '—'} → v{after}"
+        return f"v{before or '—'} → v{after}" + (" (same version number: the Mind page header shows the upload time)" if before == after else "")
 
     def restore_dashboard(self) -> str:
         self.robot.restore_dashboard()

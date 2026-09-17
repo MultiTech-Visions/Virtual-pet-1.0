@@ -33,7 +33,7 @@ import platformdirs
 from pydantic import BaseModel
 from scipy.spatial.transform import Rotation as R
 
-from festival_pet import sounds
+from festival_pet import build_info, sounds
 from festival_pet.audio_features import BeatTracker, LevelMeter, RubDetector, ScratchDetector, _tune
 from festival_pet.behavior import Action, Behavior, FaceObs, Observation
 from festival_pet.memory import FaceMemory
@@ -626,6 +626,7 @@ class Pet:
         return {
             "mind": self.p.behavior.mind(now),
             "feeling": self._feeling(now),
+            "build": build_info(),
             "asleep": self.asleep,
             "transcript": [{"t": round(now - t, 1), "text": txt.split("|")[0], "intents": ints} for t, txt, ints in reversed(self.transcript)],
             "senses": {
@@ -1020,6 +1021,7 @@ class FestivalPetApp(ReachyMiniApp):  # type: ignore[misc]
     def run(self, reachy_mini: "ReachyMini", stop_event: threading.Event) -> None:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
         logging.getLogger().addHandler(LOG_RING)
+        logger.info("festival_pet %s", build_info())
         os.environ["HF_HUB_OFFLINE"] = "1"  # never touch the network on the festival ground
         pet, vision, io = build_real_pet(reachy_mini)
         self._install_status_routes(pet)
