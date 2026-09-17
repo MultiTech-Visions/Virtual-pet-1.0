@@ -72,6 +72,7 @@ def test_mind_log_catalog_and_controls():
     assert c.post("/api/control", json={"cmd": "move", "value": "dance1"}).status_code == 200
     assert c.post("/api/control", json={"cmd": "sleep"}).status_code == 200
     assert c.get("/api/mind").json()["mind"]["state"] == "SLEEPING"
+    assert pet.p.io.slept and pet.asleep  # the page's sleep runs the real routine (centre, nest, motors off)
     assert c.post("/api/control", json={"cmd": "wake"}).status_code == 200
     assert c.post("/api/control", json={"cmd": "mute", "value": True}).json() == {"ok": True}
     assert c.post("/api/control", json={"cmd": "scratch_onset_ratio", "value": 4.5}).status_code == 200

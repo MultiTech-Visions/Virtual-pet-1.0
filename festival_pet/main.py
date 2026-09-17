@@ -829,6 +829,7 @@ class Pet:
         elif cmd == "sleep":
             beh.state, beh._state_since = "SLEEPING", now
             beh._think(now, "told to sleep from the control page")
+            self._dispatch(Action("sleep", "control", 5), now)  # the same routine the brain uses: centre, nest, motors off
         elif cmd == "wake":
             beh.state, beh._state_since = "WAKING", now
             self._dispatch(Action("wake", "control", 5), now)
@@ -1043,7 +1044,9 @@ class ReachyIO:
         from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
 
         # Centre the body first: the daemon's sleep only moves the head, and a turned body leaves it nesting sideways.
-        self._r.goto_target(head=INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=1.2, body_yaw=0.0)
+        # goto_target blocks for its duration; give a far-turned body time to come round (45 deg/s, at least 1.2 s).
+        body_deg = abs(math.degrees(float(self._r.get_current_joint_positions()[0][0])))
+        self._r.goto_target(head=INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=max(1.2, body_deg / 45.0), body_yaw=0.0)
         self._daemon_move("goto_sleep", timeout=15.0)  # the dashboard's sleep: nest, then motors limp
         mode = self.motor_mode()
         if mode != "disabled":
