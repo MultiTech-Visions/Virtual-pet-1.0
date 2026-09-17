@@ -32,6 +32,7 @@
   .card { position:relative; }
   .who { position:absolute; top:10px; right:10px; width:64px; height:64px; border-radius:10px; object-fit:cover; border:2px solid var(--warm); }
   #asleep { position:fixed; inset:0; background:var(--bg); z-index:50; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:24px; }
+  body.asleep { overflow:hidden; height:100vh; } body.asleep > :not(#asleep) { display:none; }  /* nothing to scroll to behind the sleep screen */
   #asleep h2 { font-size:22px; color:var(--fg); text-transform:none; letter-spacing:0; margin:16px 0 6px; }
   #asleep p { color:var(--dim); max-width:420px; margin:4px 0; }
   button.danger { background:#3a2030; color:#ffb3b3; }
@@ -385,14 +386,14 @@ async function refresh() {
 let fails = 0, asleepSince = 0, powerSent = '';
 function online() {
   fails = 0;
-  if (asleepSince) { asleepSince = 0; powerSent = ''; $('asleep').classList.add('hidden'); }
+  if (asleepSince) { asleepSince = 0; powerSent = ''; $('asleep').classList.add('hidden'); document.body.classList.remove('asleep'); }
 }
 function offline(e) {
   $('conn').textContent = 'offline: ' + e;
   if (++fails >= (powerSent ? 1 : 6) && !asleepSince) {  // ~3 s of silence, or right away after we sent shutdown/reboot
     asleepSince = Date.now();
     $('asleep-why').textContent = powerSent === 'reboot' ? 'Rebooting. Back in a minute or so.' : powerSent === 'shutdown' ? 'Shut down from this page.' : 'The robot is powered off, or the pet app is not running.';
-    $('asleep').classList.remove('hidden');
+    $('asleep').classList.remove('hidden'); document.body.classList.add('asleep'); window.scrollTo(0, 0);
   }
   if (asleepSince) $('asleep-since').textContent = 'asleep for ' + Math.round((Date.now() - asleepSince) / 1000) + ' s · still trying to reconnect';
 }
