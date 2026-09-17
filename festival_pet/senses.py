@@ -6,8 +6,10 @@ Pure Python so the thresholds can be unit-tested with synthetic streams.
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Callable
 
 G = 9.81
 
@@ -72,6 +74,38 @@ class PickupDetector:
         elif self.held and now - self._last_motion > self.settle_s:
             self.held = False
         return self.held, shaken
+
+
+class PoseHistory:
+    """Measured head poses over the last couple of seconds, so a camera frame can be paired with the
+    pose from when it was *exposed* rather than when it was read.
+
+    The camera pipeline delivers frames ~100-200 ms late. While the pet bobs, the pose read at
+    detection time is a beat ahead of the image, and the world-frame correction leaves a residual at
+    exactly the tempo the dance detector hunts for: it would hear its own bob. ``lag_s`` is the
+    pipeline latency to compensate; tune it until a still face draws a flat trace while the pet grooves.
+    """
+
+    def __init__(self, live: Callable[[], np.ndarray], lag_s: float = 0.12, keep_s: float = 2.0) -> None:
+        self._live = live
+        self.lag_s = lag_s
+        self._keep = keep_s
+        self._hist: deque[tuple[float, np.ndarray]] = deque()
+
+    def record(self, now: float, pose: np.ndarray) -> None:
+        self._hist.append((now, pose))
+        while self._hist and now - self._hist[0][0] > self._keep:
+            self._hist.popleft()
+
+    def at(self, t: float) -> np.ndarray:
+        """The recorded pose closest to ``t``; the live pose only before anything was recorded."""
+        if not self._hist:
+            return self._live()
+        return min(self._hist, key=lambda e: abs(e[0] - t))[1]
+
+    def lagged(self) -> np.ndarray:
+        """What the vision thread calls: the pose ``lag_s`` ago."""
+        return self.at(time.time() - self.lag_s)
 
 
 class SelfMotionGate:

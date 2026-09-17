@@ -90,6 +90,8 @@
     <h2>Where the person is (last 20 s, world frame)</h2>
     <div class="sub">Green = yaw (left/right), orange = pitch (up/down), in degrees from where the pet's body points; the pet's own head motion is already taken out. Dashed lines = the dance detector's amplitude floor (± half of <span id="dance-amp"></span>°). Shaded = it thinks they are dancing. Bob so the orange trace swings past the dashed lines at a steady rate for ~4 s.</div>
     <canvas id="facechart" height="160" style="width:100%; background:#0b0e1a; border-radius:10px; margin-top:8px"></canvas>
+    <label>Camera latency compensation: <span id="lag-v"></span> ms <span class="sub">(stand still while it grooves; adjust until the orange trace stops copying its bob)</span></label>
+    <input type="range" min="0" max="400" step="10" id="lag" oninput="setVal('camera_lag_ms', this.value, 'lag-v')">
   </div>
   <div class="card mic" style="grid-column:1/-1">
     <h2>Microphone levels (last 20 s)</h2>
@@ -392,6 +394,7 @@ async function refresh() {
       if (d.controls.body_finder !== null) { bodyf = d.controls.body_finder; $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
       ears = d.controls.ears; $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off');
       mgroove = d.controls.manual_groove; $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off');
+      if (d.controls.camera_lag_ms !== null) { $('lag').value = d.controls.camera_lag_ms; $('lag-v').textContent = d.controls.camera_lag_ms; } else { $('lag').disabled = true; $('lag-v').textContent = 'n/a'; }
       btStatus();
       for (const k of ['bob', 'sway', 'body', 'ears']) { $('g-' + k).value = d.controls['groove_' + k]; $('g-' + k + '-v').textContent = d.controls['groove_' + k]; }
       mflip = d.controls.mimic_flip; $('mflip').textContent = 'Mirror game: ' + (mflip ? 'mirror-image' : 'same direction'); }

@@ -39,7 +39,7 @@ from festival_pet.behavior import Action, Behavior, FaceObs, Observation
 from festival_pet.keypad import KeyMap, KeypadListener
 from festival_pet.memory import FaceMemory
 from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose
-from festival_pet.senses import LoudSoundDetector, PickupDetector, SelfMotionGate, TouchDetector
+from festival_pet.senses import LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
 from festival_pet.tap_tempo import TapTempo
 from festival_pet.visual_rhythm import DanceDetector
@@ -349,6 +349,7 @@ class Pet:
         self.tap = TapTempo()  # hand-tapped beat from the control page or a paired keypad
         self.keypad = KeypadListener()
         self.keymap = KeyMap()
+        self.pose_history: PoseHistory | None = None  # set on the real robot; fed every tick for the vision thread
         self.manual_groove = False  # groove to the tapped beat instead of what it hears/sees
         self._dance_seen = False  # edge: seed the tap clock once per dance
         self.pickup_enabled = False  # IMU is in the head; off by default until tuned on the real robot
@@ -401,6 +402,8 @@ class Pet:
         obs = Observation()
         # The IMU is in the head: ignore it while we are the ones moving the head.
         self_moving = self.self_motion.update(self.last_pose, now)
+        if self.pose_history is not None:
+            self.pose_history.record(now, io.head_pose())  # measured pose, timestamped, for pairing with camera frames
         imu = io.imu()
         if imu is not None:
             held, shaken = self.pickup.update(imu["accelerometer"], imu["gyroscope"], now, self_moving)
@@ -692,7 +695,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
             "dance_params": {"min_amp": self.dance._min_amp, "min_conf": self.dance._min_conf},
@@ -740,6 +743,10 @@ class Pet:
             self.keymap.set(key, press, hold)
         elif cmd == "key":  # fire a key action as if pressed (testing from the page)
             self.key_action(str(value), now, now)
+        elif cmd == "camera_lag_ms":
+            if self.pose_history is None:
+                raise KeyError("no camera on this pet")
+            self.pose_history.lag_s = float(value) / 1000.0
         elif cmd == "bpm":
             if float(value) == 0.0:
                 self.tap.clear()
@@ -776,7 +783,7 @@ class Pet:
         return {"ok": True}
 
     # ------------------------------------------------------------------ settings persistence
-    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
         c = self.mind()["controls"]
@@ -799,6 +806,8 @@ class Pet:
             if k not in self._SETTING_KEYS:
                 continue
             if k == "body_finder" and getattr(self, "vision", None) is None:
+                continue
+            if k == "camera_lag_ms" and self.pose_history is None:
                 continue
             if k == "keymap":
                 self.keymap.keys.clear()
@@ -942,7 +951,8 @@ def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool 
     io = ReachyIO(reachy)
     memory = FaceMemory(memory_file)
     library = RecordedMoves(DEFAULT_EMOTIONS_DATASET)
-    vision = Vision(YUNET_MODEL, SFACE_MODEL, memory, reachy.media.get_frame, reachy.get_current_head_pose,
+    poses = PoseHistory(reachy.get_current_head_pose)
+    vision = Vision(YUNET_MODEL, SFACE_MODEL, memory, reachy.media.get_frame, poses.lagged,
                     person_model=PERSON_MODEL if PERSON_MODEL.exists() else None)
     if not PERSON_MODEL.exists():
         logger.warning("person model missing (%s): body-finding disabled; rerun the installer", PERSON_MODEL)
@@ -955,6 +965,7 @@ def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool 
     pet = Pet(parts)
     pet.set_vision_active = vision.set_active
     pet.vision = vision
+    pet.pose_history = poses
     pet.settings_file = SETTINGS_FILE
     pet.load_settings()
     return pet, vision, io

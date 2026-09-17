@@ -220,3 +220,21 @@ def test_sneeze_is_a_full_bit_and_silences_the_rest():
         m.sample(i * 0.02, 0.02)
     assert m._groove_level < 0.5  # groove faded out under the sneeze
     assert abs(m._mimic_pose[0]) < 1.0  # mimic never crept in
+
+
+def test_pose_history_pairs_frames_with_the_pose_at_exposure():
+    import numpy as np
+
+    from festival_pet.senses import PoseHistory
+
+    live = np.eye(4) * 9
+    h = PoseHistory(lambda: live, lag_s=0.12)
+    assert h.at(5.0) is live  # nothing recorded yet
+    for i in range(50):
+        p = np.eye(4); p[2, 3] = i  # a pose we can read the time off
+        h.record(10.0 + i * 0.02, p)
+    assert h.at(10.5)[2, 3] == 25
+    assert h.at(10.507)[2, 3] == 25 and h.at(10.513)[2, 3] == 26  # nearest, not floor
+    assert h.at(0.0)[2, 3] == 0 and h.at(99.0)[2, 3] == 49  # clamps to what it has
+    h.record(20.0, np.eye(4))  # everything older than keep_s is dropped
+    assert len(h._hist) == 1
