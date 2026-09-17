@@ -94,15 +94,22 @@ def warble(
 
 def purr(
     duration: float,
-    base: float = 55.0,
-    pulse_rate: float = 22.0,
+    base: float = 330.0,
+    pulse_rate: float = 24.0,
     sample_rate: int = SAMPLE_RATE,
 ) -> np.ndarray:
-    """Low rumbling purr: a low tone amplitude-modulated by a pulse train."""
+    """A rolling "brrr" purr: a mid tone with harmonics, amplitude-modulated by a fast pulse train.
+
+    The carrier sits above 300 Hz on purpose. A real cat purrs at 25-50 Hz with a 50-60 Hz body,
+    but the robot's speaker is tiny and reproduces nothing below ~300 Hz, so a low rumble comes out
+    as silence. The roughness of the 24 Hz pulses is what reads as a purr; the harmonics carry it.
+    """
     t = _time(duration, sample_rate)
-    carrier = np.sin(_TWO_PI * base * t) + 0.5 * np.sin(_TWO_PI * base * 2.01 * t)
-    pulses = 0.55 + 0.45 * np.sin(_TWO_PI * pulse_rate * t)
-    wave = carrier * pulses / 1.5
+    wobble = 1.0 + 0.015 * np.sin(_TWO_PI * 1.7 * t)  # a slow breath in the pitch
+    f = base * wobble
+    carrier = np.sin(_TWO_PI * f * t) + 0.6 * np.sin(_TWO_PI * 2.0 * f * t) + 0.35 * np.sin(_TWO_PI * 3.0 * f * t)
+    pulses = 0.45 + 0.55 * np.clip(np.sin(_TWO_PI * pulse_rate * t), 0.0, None) ** 0.5  # clipped: distinct "rrr" bumps
+    wave = carrier * pulses / 1.95
     return (wave * _envelope(len(t), 0.15, 0.3)).astype(np.float32)
 
 
@@ -236,7 +243,7 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
             chirp(j(600, 700), j(450, 550), j(0.2, 0.3), sr, curve=0.7),
         )
     elif emotion == "purr":
-        out = purr(j(1.2, 2.2), base=j(50, 65), pulse_rate=j(18, 26), sample_rate=sr)
+        out = purr(j(1.2, 2.2), base=j(300, 370), pulse_rate=j(20, 27), sample_rate=sr)
     elif emotion == "giggle":
         parts = []
         f = j(1000, 1300)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "festival_pet"
-version = "0.5.2"
+version = "0.5.3"
 description = "Offline, non-verbal virtual-pet behavior for Reachy Mini Wireless: beeps, boops, face memory, cuddles."
 readme = "README.md"
 requires-python = ">=3.11"

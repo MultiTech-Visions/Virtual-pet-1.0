@@ -44,7 +44,7 @@
   .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0 12px; }
   .grid-btns { display:flex; flex-wrap:wrap; gap:6px; }
   .grid-btns button { background:#243055; color:var(--fg); border:0; border-radius:8px; padding:9px 12px; font-size:14px; }
-  .grid-btns button:active { background:var(--acc); color:#08130f; }
+  .grid-btns button:active, button.act:active { background:var(--acc); color:#08130f; }
 </style>
 </head>
 <body>
@@ -412,7 +412,11 @@ async function refresh() {
     $('transcript').innerHTML = d.transcript.map(x => `<li><small>${x.t}s ago</small>“${x.text}”${x.intents.length ? ' <span class="tier">→ ' + x.intents.join(', ') + '</span>' : ''}</li>`).join('') || '<li class="sub">nothing yet</li>';
     $('state-sub').textContent += d.asleep ? ' · motors off, camera off' : '';
     const fc = s.face || {};  // fixed rows so nothing jumps when the face comes and goes
-    kv('eyes', {face: s.face ? 'yes' : 'none', track: fc.track ?? '—', yaw: s.face ? fc.yaw + '°' : '—', pitch: s.face ? fc.pitch + '°' : '—', size: fc.size ?? '—',
+    const v = s.vision;
+    const camera = !v ? 'no vision on this pet' : !v.alive ? '⚠️ vision thread died: ' + (v.last_error || 'no error recorded') : !v.active ? 'paused (asleep)'
+      : v.frame_age_s === null ? '⚠️ no frame from the camera yet' + (v.no_frame ? ` (${v.no_frame} empty reads)` : '') : v.frame_age_s > 2 ? `⚠️ last frame ${v.frame_age_s} s ago` + (v.last_error ? ' · ' + v.last_error : '')
+      : `ok · ${v.frames} frames · detect ${v.detect_ms.toFixed(0)} ms` + (v.errors ? ` · ${v.errors} errors, last: ${v.last_error}` : '');
+    kv('eyes', {camera, face: s.face ? 'yes' : 'none', track: fc.track ?? '—', yaw: s.face ? fc.yaw + '°' : '—', pitch: s.face ? fc.pitch + '°' : '—', size: fc.size ?? '—',
       person: s.face ? (fc.person === null ? 'stranger' : '#' + fc.person) : '—', similarity: fc.similarity ?? '—', tilt: s.face ? fc.tilt + '°' : '—', 'head turned / nodded': s.face ? `${fc.head_yaw}° / ${fc.head_pitch}°` : '—', smile: s.face ? fc.smile : '—',
       body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
       'dancing?': s.dance.dancing ? `yes, ${s.dance.bpm} bpm (conf ${s.dance.confidence}), holds ${s.dance.holds_for_s} s` : `no (conf ${s.dance.confidence}, amp ${s.dance.amplitude}°)`,

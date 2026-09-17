@@ -228,7 +228,14 @@ class Vision:
         self._next_track_id = 1
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self.stats = {"detect_ms": 0.0, "embed_ms": 0.0, "body_ms": 0.0, "frames": 0, "faces": 0, "bodies": 0}
+        self.stats = {"detect_ms": 0.0, "embed_ms": 0.0, "body_ms": 0.0, "frames": 0, "faces": 0, "bodies": 0,
+                      "last_frame_at": 0.0, "no_frame": 0, "errors": 0, "last_error": ""}
+
+    def status(self, now: float) -> dict:
+        """For the page: is the thread alive, is it paused, when did a frame last come, what last went wrong."""
+        t = self._thread
+        return {**self.stats, "alive": t is not None and t.is_alive(), "active": self._active.is_set(),
+                "frame_age_s": None if not self.stats["last_frame_at"] else round(now - self.stats["last_frame_at"], 1)}
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -396,14 +403,21 @@ class Vision:
                 time.sleep(min(0.02, next_at - now))
                 continue
             next_at = now + DETECT_INTERVAL
-            frame = self._get_frame()
-            if frame is None:
-                continue
-            head_pose = self._get_head_pose()
+            # Everything the camera and the daemon can throw is caught here: an uncaught error would end
+            # this thread and the pet would be blind for the rest of the session with nothing in the log.
             try:
+                frame = self._get_frame()
+                if frame is None:
+                    self.stats["no_frame"] += 1
+                    continue
+                self.stats["last_frame_at"] = time.time()
+                head_pose = self._get_head_pose()
                 sighting = self.process_frame(frame, head_pose, time.time())
-            except Exception:
+            except Exception as e:
+                self.stats["errors"] += 1
+                self.stats["last_error"] = f"{type(e).__name__}: {e}"
                 logger.exception("vision step failed")
+                next_at = now + 0.5  # do not spin on a camera that is down
                 continue
             with self._lock:
                 self._sighting = sighting

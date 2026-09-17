@@ -46,6 +46,19 @@ def test_every_sound_has_a_meaning():
     assert set(sounds.MEANINGS) == set(sounds.EMOTIONS)
 
 
+def test_every_sound_is_audible_on_a_tiny_speaker():
+    """The robot's speaker reproduces nothing below ~300 Hz: a sound living down there plays as silence (the old purr)."""
+    import numpy as np
+
+    for emotion in sounds.EMOTIONS:
+        buf = sounds.render_phrase(emotion)
+        spectrum = np.abs(np.fft.rfft(buf))
+        freqs = np.fft.rfftfreq(len(buf), 1 / sounds.SAMPLE_RATE)
+        low = float(spectrum[freqs < 280].sum() / spectrum.sum())
+        assert low < 0.3, f"{emotion}: {low:.0%} of its energy is below 280 Hz"
+        assert np.sqrt(np.mean(buf**2)) > 0.15, f"{emotion} is too quiet"
+
+
 def test_songs_compose_render_and_describe():
     from festival_pet import songs
 
