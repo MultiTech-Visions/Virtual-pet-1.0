@@ -233,3 +233,32 @@ def test_tapped_groove_drives_the_composer():
     assert not pet.tap.active
     assert c.post("/api/control", json={"cmd": "bpm", "value": 999}).status_code == 400
     pet.stop()
+
+
+def test_keypad_actions_reach_the_pet_and_the_map_persists(tmp_path):
+    from festival_pet.keypad import KeyEvent
+
+    pet = _pet()
+    pet.settings_file = tmp_path / "settings.json"
+    app = FastAPI()
+    install_routes(app, pet)
+    c = TestClient(app)
+    assert c.post("/api/control", json={"cmd": "keymap", "value": "F1:happy:sleep"}).status_code == 200
+    assert c.post("/api/control", json={"cmd": "keymap", "value": "F1:banana:none"}).status_code == 400
+    m = c.get("/api/mind").json()
+    assert m["controls"]["keymap"]["F1"] == {"press": "happy", "hold": "sleep"}
+    assert m["senses"]["keypad"]["devices"] == []
+    # a tapped beat from the keypad lands in the tap clock with the key's own timestamp
+    pet.tap.set_bpm(120)
+    pet.keypad.events.put(KeyEvent("C", True, 1000.5, "test"))
+    pet.step(1000.6)
+    assert pet.tap.downbeat_known and pet.tap.phase(1000.5) == 0.0
+    assert any(k == "key" and n == "downbeat" for _, k, n in pet.actions_log)
+    assert c.post("/api/control", json={"cmd": "key", "value": "tilt_left"}).status_code == 200
+    assert pet.p.composer._gesture.name == "tilt"
+    # persisted and restored
+    pet2 = _pet()
+    pet2.settings_file = pet.settings_file
+    pet2.load_settings()
+    assert pet2.keymap.keys["F1"] == {"press": "happy", "hold": "sleep"}
+    pet.stop(); pet2.stop()

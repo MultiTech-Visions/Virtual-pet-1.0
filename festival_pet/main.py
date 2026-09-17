@@ -36,6 +36,7 @@ from scipy.spatial.transform import Rotation as R
 from festival_pet import build_info, sounds
 from festival_pet.audio_features import BeatTracker, LevelMeter, RubDetector, ScratchDetector, _tune
 from festival_pet.behavior import Action, Behavior, FaceObs, Observation
+from festival_pet.keypad import KeyMap, KeypadListener
 from festival_pet.memory import FaceMemory
 from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose
 from festival_pet.senses import LoudSoundDetector, PickupDetector, SelfMotionGate, TouchDetector
@@ -345,7 +346,9 @@ class Pet:
         self._last = 0.0
         self.muted = False
         self.groove_scale = 1.0  # user knob on top of the brain's intensity
-        self.tap = TapTempo()  # hand-tapped beat from the control page
+        self.tap = TapTempo()  # hand-tapped beat from the control page or a paired keypad
+        self.keypad = KeypadListener()
+        self.keymap = KeyMap()
         self.manual_groove = False  # groove to the tapped beat instead of what it hears/sees
         self._dance_seen = False  # edge: seed the tap clock once per dance
         self.pickup_enabled = False  # IMU is in the head; off by default until tuned on the real robot
@@ -364,11 +367,13 @@ class Pet:
     def start(self, now: float) -> None:
         self.sound.start()
         self.audio.start()
+        self.keypad.start()
         self.p.behavior.start(now, awake=True)  # the platform wakes the robot before launching an app
         self._dispatch(Action("wake", "start", 5), now)
         self._last = now
 
     def stop(self) -> None:
+        self.keypad.stop()
         self.audio.stop()
         self.sound.stop()
         self.p.memory.save(force=True)
@@ -466,6 +471,20 @@ class Pet:
             obs.music_bpm = self.audio.beat.state.bpm
             obs.music_confidence = self.audio.beat.state.confidence
         self._last_obs = obs
+
+        # ---------------- keypad (a paired keyboard in someone's hand)
+        fired = []
+        while True:
+            try:
+                ev = self.keypad.events.get_nowait()
+            except queue.Empty:
+                break
+            hit = self.keymap.feed(ev, now)
+            if hit is not None:
+                fired.append(hit)
+        fired += self.keymap.tick(now)
+        for action, t_ev in fired:
+            self.key_action(action, t_ev, now)
 
         # ---------------- brain
         actions = beh.tick(obs, now, dt)
@@ -597,6 +616,34 @@ class Pet:
         elif act.kind == "heard":
             self.transcript.append((now, act.name, act.name.split("|")[1:]))
 
+    def key_action(self, action: str, t_ev: float, now: float) -> None:
+        """One keypad action. ``t_ev`` is the key's own timestamp: taps use it so USB/BT latency does not smear the beat."""
+        beh, comp = self.p.behavior, self.p.composer
+        beh._last_interaction = now  # someone is playing with it: not lonely
+        self.actions_log.append((now, "key", action))
+        if action == "tap":
+            self.tap.tap(t_ev)
+        elif action == "downbeat":
+            self.tap.tap(t_ev, downbeat=True)
+        elif action in ("tilt_left", "tilt_right"):
+            comp.request_gesture("tilt", now, 3, side=1.0 if action == "tilt_left" else -1.0)
+        elif action == "nod":
+            comp.request_gesture("nod", now, 3, reps=2)
+        elif action == "happy":
+            self._dispatch(Action("sound", "happy", 3), now)
+            comp.request_gesture("bounce", now, 3)
+        elif action == "manual_groove":
+            self.control("manual_groove", not self.manual_groove)
+            self._dispatch(Action("sound", "happy" if self.manual_groove else "curious", 3), now)
+        elif action in ("wake", "sleep"):
+            self.control(action, None)
+        elif action == "mute":
+            self.control("mute", not self.muted)
+        elif action == "none":
+            pass
+        else:
+            raise KeyError(f"unknown key action '{action}'")
+
     def _feeling(self, now: float) -> dict:
         """The most recent gesture/move and sound, for the top of the Mind page."""
         out: dict = {"motion": None, "sound": None}
@@ -634,6 +681,7 @@ class Pet:
                 "face": None if o.face is None else {"track": o.face.track_id, "yaw": round(o.face.yaw_deg, 1), "pitch": round(o.face.pitch_deg, 1), "size": round(o.face.area_frac, 3), "person": None if o.face.person is None else o.face.person.person_id, "similarity": round(o.face.similarity, 2), "tilt": round(o.face.roll_deg, 1)},
                 "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
+                "keypad": {"devices": list(self.keypad.devices.values()), "last_key": None if self.keypad.last_key is None else {"key": self.keypad.last_key[0], "t": round(now - self.keypad.last_key[1], 1)}, "error": self.keypad.error},
                 "tap": {"bpm": round(self.tap.bpm, 1), "beat": self.tap.beat_in_bar(now) if self.tap.active else 0, "bar": self.tap.bar_in_phrase(now) if self.tap.active else 0, "downbeat_known": self.tap.downbeat_known},
                 "dance": {"dancing": self.dance.state.dancing, "bpm": round(self.dance.state.bpm, 1), "confidence": round(self.dance.state.confidence, 2), "amplitude": round(self.dance.state.amplitude, 3), "holds_for_s": round(max(0.0, self.dance.locked_for - now), 1) if self.dance.state.dancing else 0.0},
                 "mimic": None if comp.mimic is None else {"yaw": round(comp.mimic[0], 1), "pitch": round(comp.mimic[1], 1), "roll": round(comp.mimic[2], 1)},
@@ -644,7 +692,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
             "dance_params": {"min_amp": self.dance._min_amp, "min_conf": self.dance._min_conf},
@@ -687,6 +735,11 @@ class Pet:
         elif cmd == "tap":  # value: true = this tap is the "1"
             self.tap.tap(now, downbeat=bool(value))
             self.actions_log.append((now, "tap", f"{'ONE ' if value else ''}{self.tap.bpm:.0f} bpm"))
+        elif cmd == "keymap":  # "KEY:press_action:hold_action"
+            key, press, hold = str(value).split(":")
+            self.keymap.set(key, press, hold)
+        elif cmd == "key":  # fire a key action as if pressed (testing from the page)
+            self.key_action(str(value), now, now)
         elif cmd == "bpm":
             if float(value) == 0.0:
                 self.tap.clear()
@@ -723,7 +776,7 @@ class Pet:
         return {"ok": True}
 
     # ------------------------------------------------------------------ settings persistence
-    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
         c = self.mind()["controls"]
@@ -746,6 +799,11 @@ class Pet:
             if k not in self._SETTING_KEYS:
                 continue
             if k == "body_finder" and getattr(self, "vision", None) is None:
+                continue
+            if k == "keymap":
+                self.keymap.keys.clear()
+                for key, m in v.items():
+                    self.control("keymap", f"{key}:{m['press']}:{m['hold']}")
                 continue
             self.control(names.get(k, k), v)
         logger.info("settings restored from %s: %s", self.settings_file, data)
@@ -943,6 +1001,38 @@ def install_routes(app, pet: Pet) -> None:
             return pet.control(c.cmd, c.value)
         except (KeyError, ValueError) as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    @app.get("/api/bt")
+    def bt() -> dict:
+        from festival_pet import keypad
+
+        try:
+            return keypad.bt_status()
+        except FileNotFoundError:
+            raise HTTPException(status_code=501, detail="bluetoothctl is not installed on this robot (apt install bluez while online)")
+
+    @app.post("/api/bt/scan")
+    def bt_scan() -> dict:
+        from festival_pet import keypad
+
+        return {"devices": keypad.bt_scan()}
+
+    @app.post("/api/bt/pair")
+    def bt_pair(c: Control) -> dict:
+        from festival_pet import keypad
+
+        mac, _, pin = str(c.value).partition("|")
+        try:
+            return {"detail": keypad.bt_pair(mac, pin or "1234")}
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/api/bt/forget")
+    def bt_forget(c: Control) -> dict:
+        from festival_pet import keypad
+
+        keypad.bt_forget(str(c.value))
+        return {"ok": True}
 
     @app.post("/api/forget")
     def forget() -> dict:

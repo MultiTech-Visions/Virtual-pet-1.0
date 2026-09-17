@@ -42,6 +42,12 @@ else
 fi
 grep -n "python -u" "$LAUNCHER"
 
+echo "== letting the pet read keyboards (group input) and pair Bluetooth (group bluetooth)"
+for g in input bluetooth; do
+  if getent group "$g" >/dev/null; then usermod -aG "$g" pollen && echo "pollen in $g"; else echo "no group $g on this image"; fi
+done
+command -v rfkill >/dev/null && rfkill unblock bluetooth || true
+
 if [ "${RESTART_DAEMON:-1}" = "1" ]; then
   echo "== restarting the daemon"
   systemctl restart reachy-mini-daemon

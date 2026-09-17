@@ -155,6 +155,24 @@
     <input type="range" min="0" max="100" step="5" id="vol" onchange="setVolume(this.value)">
     <div class="sub">Releasing the slider plays the daemon's test sound at the new level.</div>
   </div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Keypad</h2>
+    <div class="sub">Any paired Bluetooth (or plugged-in USB) keyboard is a hand controller. Pair once here; it reconnects on its own after that. The PCsensor MK424 sends A B C D and pairs with PIN 1234.</div>
+    <div class="kv" id="keypad" style="margin:8px 0"></div>
+    <div class="btns">
+      <button class="act" id="bt-scan" onclick="btScan()">Scan for keyboards (8 s)</button>
+      <label style="display:inline-block;margin:0">PIN <input type="text" id="bt-pin" value="1234" style="width:5em;font-size:15px"></label>
+    </div>
+    <div id="bt-list" class="sub" style="margin:6px 0"></div>
+    <div id="bt-msg" class="sub"></div>
+    <label>Key map <span class="sub">(short press / hold 0.8 s; set both to none to drop a key)</span></label>
+    <table id="keymap"></table>
+    <div class="btns" style="margin-top:6px">
+      <input type="text" id="km-key" placeholder="key (A, SPACE, F1…)" style="width:11em;font-size:15px">
+      <select id="km-press"></select><select id="km-hold"></select>
+      <button class="act" onclick="setKey($('km-key').value, $('km-press').value, $('km-hold').value)">Set</button>
+    </div>
+  </div>
   <div class="card">
     <h2>Groove</h2>
     <div class="btns">
@@ -233,6 +251,34 @@ function drawChart(hist, c) {
 function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
 let pickup = false, bodyf = true, volLoaded = false, ears = true, mflip = true, mgroove = false;
 function toggleEars() { ears = !ears; ctl('ears', ears); $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off'); }
+const ACTIONS = ['tap', 'downbeat', 'tilt_left', 'tilt_right', 'nod', 'manual_groove', 'wake', 'sleep', 'mute', 'happy', 'none'];
+for (const id of ['km-press', 'km-hold']) $(id).innerHTML = ACTIONS.map(a => `<option>${a}</option>`).join('');
+let lastKeymap = '';
+function drawKeymap(km) {
+  const key = JSON.stringify(km); if (key === lastKeymap) return; lastKeymap = key;
+  const sel = (k, which, cur) => `<select onchange="setKey('${k}', this.parentNode.parentNode.querySelector('.p').value, this.parentNode.parentNode.querySelector('.h').value)" class="${which}">${ACTIONS.map(a => `<option ${a === cur ? 'selected' : ''}>${a}</option>`).join('')}</select>`;
+  $('keymap').innerHTML = '<tr><th>key</th><th>press</th><th>hold</th><th></th></tr>' + Object.entries(km).sort().map(([k, m]) =>
+    `<tr><td><b>${k}</b></td><td>${sel(k, 'p', m.press)}</td><td>${sel(k, 'h', m.hold)}</td><td><button class="act" onclick="ctl('key', '${m.press}')">try</button></td></tr>`).join('');
+}
+function setKey(k, press, hold) { if (!k) return; ctl('keymap', `${k.toUpperCase()}:${press}:${hold}`); lastKeymap = ''; }
+async function btScan() {
+  $('bt-scan').disabled = true; $('bt-msg').textContent = 'scanning… put the keypad in pairing mode now';
+  try {
+    const r = await fetch('/api/bt/scan', {method: 'POST'}); const j = await r.json();
+    if (!r.ok) throw new Error(j.detail);
+    $('bt-list').innerHTML = j.devices.length ? j.devices.map(d => `<div>${d.name} <span class="sub">${d.mac}</span> <button class="act" onclick="btPair('${d.mac}')">pair</button></div>`).join('') : 'nothing found: is it in pairing mode and close by?';
+    $('bt-msg').textContent = '';
+  } catch (e) { $('bt-msg').textContent = 'scan failed: ' + e.message; }
+  $('bt-scan').disabled = false;
+}
+async function btPair(mac) {
+  $('bt-msg').textContent = 'pairing ' + mac + '…';
+  const r = await fetch('/api/bt/pair', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cmd: 'pair', value: mac + '|' + $('bt-pin').value})});
+  const j = await r.json(); $('bt-msg').textContent = (r.ok ? 'paired: ' : 'failed: ') + j.detail; btStatus();
+}
+async function btForget(mac) { await fetch('/api/bt/forget', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cmd: 'forget', value: mac})}); btStatus(); }
+let btInfo = null;
+async function btStatus() { try { const r = await fetch('/api/bt'); btInfo = r.ok ? await r.json() : {error: (await r.json()).detail}; } catch (e) { btInfo = {error: String(e)}; } }
 function toggleManualGroove() { mgroove = !mgroove; ctl('manual_groove', mgroove); $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off'); }
 function tapBeat(one) { ctl('tap', !!one); const b = $(one ? 'tap-one' : 'tap-beat'); b.classList.add('hit'); setTimeout(() => b.classList.remove('hit'), 120); }
 document.addEventListener('keydown', e => { if (tab !== 'controls' || e.target.tagName === 'INPUT') return; if (e.key === ' ') { e.preventDefault(); tapBeat(false); } else if (e.key === '1') tapBeat(true); });
@@ -317,6 +363,11 @@ async function refresh() {
     $('dance-amp').textContent = d.dance_params.min_amp; drawFaceChart(d.face_history, d.dance_params);
     document.querySelectorAll('.card.mic').forEach(c => c.classList.toggle('hidden', !d.controls.ears));
     if (m.engaged_person) { const src = `/api/people/${m.engaged_person}/face.jpg`; if (!$('who').src.endsWith(src)) { $('who').src = src; } $('who').classList.remove('hidden'); } else $('who').classList.add('hidden');
+    drawKeymap(d.controls.keymap);
+    const kp = s.keypad, bt = btInfo || {};
+    kv('keypad', {'keyboards seen by the app': kp.devices.length ? kp.devices.join(', ') : 'none', 'last key': kp.last_key ? `${kp.last_key.key} (${kp.last_key.t}s ago)` : '—', 'input access': kp.error || 'ok',
+      'bluetooth': bt.error ? bt.error : bt.powered === undefined ? '…' : (bt.powered ? 'on' : 'off'),
+      'paired': bt.devices ? (bt.devices.length ? bt.devices.map(x => `${x.name} ${x.connected ? '(connected)' : '(not connected)'} <button class="act" style="padding:2px 8px;min-height:0" onclick="btForget('${x.mac}')">forget</button>`).join('<br>') : 'nothing paired yet') : '—'});
     $('tap-v').textContent = d.senses.tap.bpm ? `${d.senses.tap.bpm} bpm · beat ${d.senses.tap.beat} · bar ${d.senses.tap.bar}${d.senses.tap.downbeat_known ? '' : ' (no "1" yet)'}` : 'no tempo tapped';
     if (document.activeElement !== $('bpm')) $('bpm').value = d.senses.tap.bpm || '';
     kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '° (+ = left)', 'mic array DoA': s.doa ? `${s.doa.angle_deg}° (0 = left, 90 = front), speech: ${s.doa.speech}` : '—', 'last speech': s.speech_s_ago === null ? 'never' : s.speech_s_ago + ' s ago'});
@@ -341,6 +392,7 @@ async function refresh() {
       if (d.controls.body_finder !== null) { bodyf = d.controls.body_finder; $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
       ears = d.controls.ears; $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off');
       mgroove = d.controls.manual_groove; $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off');
+      btStatus();
       for (const k of ['bob', 'sway', 'body', 'ears']) { $('g-' + k).value = d.controls['groove_' + k]; $('g-' + k + '-v').textContent = d.controls['groove_' + k]; }
       mflip = d.controls.mimic_flip; $('mflip').textContent = 'Mirror game: ' + (mflip ? 'mirror-image' : 'same direction'); }
     const t = d.memory.tiers;

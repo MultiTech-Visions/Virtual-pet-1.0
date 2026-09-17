@@ -145,6 +145,29 @@ update, logs (`/logs`) all work as before. A daemon update from the dashboard re
 `launcher.sh`, so run the script (or the installer) again afterwards. To undo: reverse the
 `-m` edit in `launcher.sh` and restart the daemon.
 
+## A keypad in someone's hand
+
+Any Bluetooth (or USB) keyboard the robot is paired with is a hand controller: the app reads
+`/dev/input` directly, so a key press reaches the pet in a millisecond with the kernel's own
+timestamp, and a tapped beat is not smeared by radio latency. The four-key PCsensor MK424 is
+the intended one (sends A B C D, PIN 1234, its "S" button is its own mode key and is ignored);
+any keyboard works for trying it out.
+
+Controls tab, **Keypad** card:
+
+- *Scan for keyboards* lists what is discoverable; *pair* pairs, trusts (auto-reconnect) and
+  connects with the PIN in the box. Paired devices are listed with a *forget* button. Needs
+  `bluetoothctl` on the robot (`apt install bluez` while online if the card says it is missing).
+- Key map: per key, a short-press action and a hold (0.8 s) action. Factory map: A tilt
+  left, D tilt right, B tap the beat, C tap "1"; hold A or D toggles manual groove; on a full
+  keyboard also Space/Enter = beat/"1", arrows = tilt/nod, M = mute, hold Up/Down = wake/sleep.
+  Actions: `tap`, `downbeat`, `tilt_left`, `tilt_right`, `nod`, `happy`, `manual_groove`,
+  `wake`, `sleep`, `mute`. The map is remembered across restarts.
+- Any key counts as interaction, so the pet does not get lonely while someone plays with it.
+
+The restore script adds the `pollen` user to the `input` and `bluetooth` groups (needed to read
+keyboards and to pair); that takes effect when the daemon restarts, which the script does.
+
 ## Wi‑Fi at the festival: let the robot be the hotspot
 
 The wireless daemon manages Wi‑Fi with NetworkManager and falls back to its **own access
