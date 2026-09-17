@@ -145,7 +145,8 @@ class Robot:
                     self.log("  " + line)
         code = chan.recv_exit_status()
         if check and code != 0:
-            raise RuntimeError(f"command failed ({code}): {cmd}")
+            tail = "".join(out).strip().splitlines()[-8:]
+            raise RuntimeError(f"command failed ({code}): {cmd}" + ("\n  " + "\n  ".join(tail) if tail else ""))
         return code, "".join(out)
 
     def daemon_status(self) -> dict:

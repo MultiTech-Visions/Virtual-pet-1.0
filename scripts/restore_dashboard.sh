@@ -21,7 +21,12 @@ if [ ! -x "$DAEMON_PY" ]; then
 fi
 
 echo "== installing reachy_dashboard into the daemon venv"
-"$DAEMON_PY" -m pip install --no-deps --upgrade "$APP_DIR/dashboard"
+# Build from a scratch copy: setuptools writes build/ and *.egg-info next to the sources, and as root
+# those would land in pollen's checkout and break the next upload's rm -rf.
+BUILD_DIR="$(mktemp -d /tmp/reachy_dashboard_build.XXXXXX)"
+trap 'rm -rf "$BUILD_DIR"' EXIT
+cp -r "$APP_DIR/dashboard/." "$BUILD_DIR/"
+"$DAEMON_PY" -m pip install --no-deps --upgrade "$BUILD_DIR"
 "$DAEMON_PY" -c "import reachy_dashboard; from importlib.metadata import version; print('reachy_dashboard', reachy_dashboard.STATIC_DIR, '/ reachy-mini', version('reachy-mini'))"
 
 # Located without importing reachy_mini (its import needs the whole robot stack).
