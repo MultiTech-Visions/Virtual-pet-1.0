@@ -233,12 +233,28 @@ def test_nods_back_when_the_person_nods():
     b, _ = _brain()
     still = FaceObs(1, 0.0, 0.0, 0.04, None, 0.0)
     _run(b, lambda t: Observation(face=still), 0.0, 3.0)
-    nodding = lambda t: Observation(face=FaceObs(1, 0.0, 6.0 * math.sin(2 * math.pi * 1.5 * t), 0.04, None, 0.0))
+    # a nod is a short burst that ends: two nods, then the head comes to rest
+    nodding = lambda t: Observation(face=FaceObs(1, 0.0, 6.0 * math.sin(2 * math.pi * 1.5 * t) if t < 4.4 else 0.0, 0.04, None, 0.0))
     acts = _run(b, nodding, 3.0, 5.5)
     assert any(a.kind == "gesture" and a.name == "nod" for a in acts)
-    shaking = lambda t: Observation(face=FaceObs(1, 8.0 * math.sin(2 * math.pi * 1.5 * t), 0.0, 0.04, None, 0.0))
+    shaking = lambda t: Observation(face=FaceObs(1, 8.0 * math.sin(2 * math.pi * 1.5 * t) if t < 13.4 else 0.0, 0.0, 0.04, None, 0.0))
     acts = _run(b, shaking, 12.0, 14.5)
     assert any(a.kind == "gesture" and a.name == "shake" for a in acts)
+
+
+def test_a_bob_that_keeps_going_is_not_a_nod():
+    import math
+
+    b, _ = _brain()
+    still = FaceObs(1, 0.0, 0.0, 0.04, None, 0.0)
+    _run(b, lambda t: Observation(face=still), 0.0, 3.0)
+    bobbing = lambda t: Observation(face=FaceObs(1, 0.0, 6.0 * math.sin(2 * math.pi * 2.0 * t), 0.04, None, 0.0))
+    acts = _run(b, bobbing, 3.0, 9.0)
+    assert not any(a.kind == "gesture" and a.name in ("nod", "shake") for a in acts)
+    # and once the dance detector has locked on, no nod-back even if they pause for a beat
+    dancing = lambda t: Observation(face=FaceObs(1, 0.0, 0.0, 0.04, None, 0.0), dance_bpm=120.0)
+    acts = _run(b, dancing, 9.0, 12.0)
+    assert not any(a.kind == "gesture" and a.name in ("nod", "shake") for a in acts)
 
 
 def test_mirror_game_starts_when_close_and_quiet_then_copies():

@@ -28,7 +28,8 @@ is the one-time setup below.
 | Being stared at | same face very close for 14 s | goes shy: looks away, antennas fold, peeks back |
 | Empathy | the person's head tilt (eye line) | slowly mirrors the tilt; nods back 2–4 times when you nod, shakes back when you shake |
 | Mirror game | a face filling the frame (≥ 8 %) and holding for 2 s | goes quiet and copies your head pose (yaw, pitch, roll estimated from the five face landmarks), mirror-image by default (flip on the Controls tab); ends when you back away or after a minute |
-| Dancing (seen) | the tracked face/body bobbing rhythmically at 50–150 BPM for 2.5 s | dances along at the tempo it sees; no microphone needed |
+| Dancing (seen) | the tracked face/body bobbing rhythmically at 50–150 BPM for 2.5 s | dances along at the tempo it sees; no microphone needed. Once locked it keeps dancing for 4 bars (min 8 s) after the rhythm was last confirmed, so a lost track or a pause does not stop it, and nod-back is off while anyone is dancing (a bob that keeps going is a dance, not a nod). The tempo it sees is handed to the tap clock below |
+| Tapped beat | the **Groove** card on the Controls tab | tap the beat (or the space bar) and tap "1" on the first beat of a bar; with *Manual groove* on it dances to that clock, ignoring what it hears or sees, accenting beat 1 and changing style only at 4-bar phrase turns. Dials for head bob, head sway, body sway and antennas shape every groove |
 | Time | – | energy drains while awake, refills asleep; lonely after 90 s alone, nods off, sleeps after 7 min; rare sneezes and hiccups |
 | Sleep | – | nests its head using the SDK's sleep pose, then **motors off** and **camera paused**. The ears stay on: its name, a loud voice after quiet, a head pet or an ear tickle wake it (motors on, head lifts) |
 
@@ -176,9 +177,12 @@ Polls the app twice a second. Tabs:
   everyone.
 - **Controls** – wake/sleep, mute, pickup on/off, body finder on/off, **ears on/off** (stops all
   microphone processing, for dead mics or CPU), mirror-game direction, groove intensity,
-  face-match strictness, speaker volume, shut down / reboot, and a puppet panel: every sound,
-  gesture and library move as a tap-to-fire button. All switches and sliders are remembered
-  across restarts (`~/.local/share/festival_pet/settings.json`).
+  face-match strictness, speaker volume, shut down / reboot, a **Groove** card (manual groove
+  on/off, *Tap beat* / *Tap "1"* buttons with a live bpm / beat / bar readout, a BPM box, and
+  head-bob / head-sway / body-sway / antenna dials), and a puppet panel: every sound, gesture
+  and library move as a tap-to-fire button. Library moves are recorded body-forward; they are
+  turned with the body's current heading when played, so they work while it faces you sideways.
+  All switches and sliders are remembered across restarts (`~/.local/share/festival_pet/settings.json`).
 - **Log** – the app's own log ring (last 400 lines). The daemon's per-app log is on the
   dashboard too.
 

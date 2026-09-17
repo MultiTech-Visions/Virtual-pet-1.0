@@ -511,7 +511,8 @@ class Behavior:
 
                 # Mirror them: nod back at a nod, shake back at a shake (tilt is mirrored continuously by the body).
                 self._face_hist.append((now, face.yaw_deg, face.pitch_deg))
-                if not self.mimicking and now - self._last_mimic > t.mimic_cooldown:
+                # Not while they (or the music) are moving to a beat: a bob that keeps going is dancing, not a nod.
+                if not self.mimicking and now - self._last_mimic > t.mimic_cooldown and obs.dance_bpm == 0 and obs.music_bpm == 0:
                     mimic = self._detect_nod_or_shake(now)
                     if mimic is not None:
                         self._last_mimic = now
@@ -619,7 +620,9 @@ class Behavior:
         return actions
 
     def _detect_nod_or_shake(self, now: float) -> str | None:
-        """Two or more up/down (nod) or left/right (shake) reversals of 3+ degrees within the last 2 s."""
+        """Two or more up/down (nod) or left/right (shake) reversals of 3+ degrees within the last 2 s,
+        and the head has come to rest in the last half second: a nod is a burst that ends, whereas a bob
+        that keeps going is dancing and belongs to the dance detector."""
         pts = [(t, y, p) for t, y, p in self._face_hist if now - t <= 2.0]
         if len(pts) < 8:
             return None
@@ -629,6 +632,9 @@ class Behavior:
             dev = [v - base for v in vals]
             if max(dev) - min(dev) < 3.0:
                 continue
+            recent = [d for (t_, _, _), d in zip(pts, dev) if now - t_ <= 0.5]
+            if len(recent) >= 2 and max(recent) - min(recent) > 1.5:
+                continue  # still moving
             # count sign reversals of the deviation, ignoring the small stuff
             signs = [1 if d > 1.0 else -1 if d < -1.0 else 0 for d in dev]
             signs = [x for x in signs if x != 0]

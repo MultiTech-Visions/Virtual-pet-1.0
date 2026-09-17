@@ -40,6 +40,18 @@ def head_pose(yaw: float, pitch: float, roll: float, z: float) -> np.ndarray:
     return pose
 
 
+def turn_pose(pose: np.ndarray, yaw_deg: float) -> np.ndarray:
+    """Rotate a head pose about the base's vertical axis.
+
+    Recorded moves are authored with the body facing forward and the SDK takes head poses in the
+    base frame, so a move played while the body is turned must be turned with it, or the head is
+    asked to twist back across the body.
+    """
+    turn = np.eye(4)
+    turn[:3, :3] = R.from_euler("z", yaw_deg, degrees=True).as_matrix()
+    return turn @ pose
+
+
 @dataclass
 class Offsets:
     yaw: float = 0.0
@@ -48,6 +60,7 @@ class Offsets:
     z: float = 0.0
     ant_r: float = 0.0  # radians, added to right antenna
     ant_l: float = 0.0
+    body: float = 0.0  # degrees, added to the body yaw (the head keeps its world heading)
 
     def __iadd__(self, other: "Offsets") -> "Offsets":
         self.yaw += other.yaw
@@ -56,6 +69,7 @@ class Offsets:
         self.z += other.z
         self.ant_r += other.ant_r
         self.ant_l += other.ant_l
+        self.body += other.body
         return self
 
 
@@ -202,7 +216,7 @@ def g_glance(u: float, side: float) -> Offsets:
 
 GESTURES: dict[str, tuple[float, str]] = {
     # name: (duration s, kind)  kind "sided" gestures get a random left/right sign
-    "nod": (0.9, "repeat"),  # duration is per repetition
+    "nod": (0.42, "repeat"),  # duration is per repetition: a quick "yes", not a slow bow
     "tilt": (1.1, "sided"),
     "wiggle": (0.8, "plain"),
     "bounce": (1.2, "plain"),
@@ -233,33 +247,51 @@ _FUNCS = {
 }
 
 
-def groove_offsets(phase: float, intensity: float, bar_phase: float, style: int) -> Offsets:
+@dataclass
+class GrooveMix:
+    """How much of each body part joins the groove (0 = none, 1 = normal, 2 = lots)."""
+
+    bob: float = 1.0  # head pitch/z on the beat
+    sway: float = 1.0  # head roll/yaw over the bar
+    body: float = 0.5  # body yaw over the bar
+    ears: float = 1.0  # antennas
+
+    def as_dict(self) -> dict[str, float]:
+        return {"bob": self.bob, "sway": self.sway, "body": self.body, "ears": self.ears}
+
+
+def groove_offsets(phase: float, intensity: float, bar_phase: float, style: int, mix: GrooveMix | None = None, accent_downbeat: bool = False) -> Offsets:
     """Music bob. ``phase`` 0..1 within the beat (0 = on the beat), ``bar_phase`` 0..1 over 4 beats.
 
     intensity 0.3 = subtle head nod you notice only if you look; 1.0 = little dance.
-    Three styles so it does not look like a metronome.
+    Three styles so it does not look like a metronome. ``mix`` scales each body part;
+    ``accent_downbeat`` (when the "1" is known) makes the first beat of the bar land harder.
     """
+    mix = mix if mix is not None else GrooveMix()
     a = 2 * math.pi * phase
     # Anticipation: the dip lands slightly *before* the beat, like a real nod.
     dip = math.cos(a + 0.35)
+    beat1 = 1.0 + 0.5 * max(0.0, math.cos(2 * math.pi * bar_phase)) ** 4 if accent_downbeat else 1.0
     off = Offsets()
-    off.pitch += 5.0 * intensity * dip
-    off.z += -0.004 * intensity * dip
+    off.pitch += 5.0 * intensity * mix.bob * dip * beat1
+    off.z += -0.004 * intensity * mix.bob * dip * beat1
     if style == 0:  # head bob + antenna sway on the half beat
-        off.ant_r += -0.35 * intensity * math.sin(a)
-        off.ant_l += -0.35 * intensity * math.sin(a)
+        off.ant_r += -0.35 * intensity * mix.ears * math.sin(a)
+        off.ant_l += -0.35 * intensity * mix.ears * math.sin(a)
     elif style == 1:  # side-to-side lean over two beats
         b = 2 * math.pi * bar_phase * 2
-        off.roll += 7.0 * intensity * math.sin(b)
-        off.yaw += 5.0 * intensity * math.sin(b)
-        off.ant_r += 0.3 * intensity * math.sin(b)
-        off.ant_l += 0.3 * intensity * math.sin(b)
+        off.roll += 7.0 * intensity * mix.sway * math.sin(b)
+        off.yaw += 5.0 * intensity * mix.sway * math.sin(b)
+        off.ant_r += 0.3 * intensity * mix.ears * math.sin(b)
+        off.ant_l += 0.3 * intensity * mix.ears * math.sin(b)
     else:  # slow yaw sway over the bar with antennas flicking on beats 2 and 4
         b = 2 * math.pi * bar_phase
-        off.yaw += 8.0 * intensity * math.sin(b)
+        off.yaw += 8.0 * intensity * mix.sway * math.sin(b)
         flick = max(0.0, math.cos(2 * math.pi * (bar_phase * 4 - 1) / 2))
-        off.ant_r += -0.5 * intensity * flick
-        off.ant_l += 0.5 * intensity * flick
+        off.ant_r += -0.5 * intensity * mix.ears * flick
+        off.ant_l += 0.5 * intensity * mix.ears * flick
+    # body sway: one slow swing per bar, the head holds its heading so it reads as the body moving under it
+    off.body += 10.0 * intensity * mix.body * math.sin(2 * math.pi * bar_phase + math.pi / 2)
     return off
 
 
@@ -286,9 +318,12 @@ class MotionComposer:
         self._gesture: _ActiveGesture | None = None
         self._sleep_blend = 0.0  # 0 awake .. 1 asleep, eased over time
         self.groove: tuple[float, float, float] | None = None  # (beat phase, bar phase, intensity) or None
+        self.groove_mix = GrooveMix()
+        self.groove_phrase: float | None = None  # 0..1 over a 16-beat phrase when the "1" is known (manual clock), else None
         self._groove_level = 0.0  # eased intensity so bobbing fades in/out
         self._groove_style = 0
         self._next_style_change = 0.0
+        self._last_phrase = 0.0
         self.mirror_roll = 0.0  # degrees, follows the person's head tilt
         self._mirror = 0.0
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
@@ -379,10 +414,15 @@ class MotionComposer:
         want = self.groove[2] if self.groove is not None else 0.0
         self._groove_level += (want - self._groove_level) * min(1.0, dt * 0.8)
         if self.groove is not None and self._groove_level > 0.02:
-            if now >= self._next_style_change:
+            if self.groove_phrase is not None:
+                # The "1" is known: like a dancer counting, change style only where a phrase turns over.
+                if self.groove_phrase < self._last_phrase:
+                    self._groove_style = (self._groove_style + self.rng.choice((1, 2))) % 3
+                self._last_phrase = self.groove_phrase
+            elif now >= self._next_style_change:
                 self._groove_style = self.rng.randrange(3)
                 self._next_style_change = now + self.rng.uniform(12.0, 30.0)
-            off += groove_offsets(self.groove[0], self._groove_level, self.groove[1], self._groove_style)
+            off += groove_offsets(self.groove[0], self._groove_level, self.groove[1], self._groove_style, self.groove_mix, self.groove_phrase is not None)
 
         # beep sway: several slow sines gated by the loudness envelope, so the head "talks" with the sound
         self._voice += (self.voice_level - self._voice) * min(1.0, dt * 25.0)
@@ -452,6 +492,7 @@ class MotionComposer:
                 step = min(abs(off_body) - BODY_DEADBAND * 0.5, BODY_RATE * dt)
                 self.body_yaw += math.copysign(step, off_body)
         self.body_yaw = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw))
+        body = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw + off.body * (1 - s)))
         # Never ask the head for more than it can do relative to the body.
-        yaw = max(self.body_yaw - HEAD_YAW_LIMIT, min(self.body_yaw + HEAD_YAW_LIMIT, yaw))
-        return head_pose(yaw, pitch, roll, z), [ant_r, ant_l], self.body_yaw
+        yaw = max(body - HEAD_YAW_LIMIT, min(body + HEAD_YAW_LIMIT, yaw))
+        return head_pose(yaw, pitch, roll, z), [ant_r, ant_l], body

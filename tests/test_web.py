@@ -211,3 +211,25 @@ def test_start_wakes_a_limp_robot_even_when_the_pet_thinks_it_is_awake():
     pet2.start(1000.0)
     assert not getattr(io2, "woke", False)
     pet2.stop()
+
+
+def test_tapped_groove_drives_the_composer():
+    pet = _pet()
+    app = FastAPI()
+    install_routes(app, pet)
+    c = TestClient(app)
+    assert c.post("/api/control", json={"cmd": "manual_groove", "value": True}).status_code == 200
+    assert c.post("/api/control", json={"cmd": "groove_body", "value": 1.5}).status_code == 200
+    assert c.post("/api/control", json={"cmd": "bpm", "value": 120}).status_code == 200  # (taps in a test all land in the same ms)
+    assert c.post("/api/control", json={"cmd": "tap", "value": True}).status_code == 200  # the "1"
+    m = c.get("/api/mind").json()
+    assert m["controls"]["manual_groove"] and m["controls"]["groove_body"] == 1.5
+    assert m["senses"]["tap"]["downbeat_known"]
+    pet.step(1001.0)
+    assert pet.p.composer.groove is not None and pet.p.composer.groove_phrase is not None
+    assert c.post("/api/control", json={"cmd": "bpm", "value": 100}).status_code == 200
+    assert c.get("/api/mind").json()["controls"]["bpm"] == 100
+    assert c.post("/api/control", json={"cmd": "bpm", "value": 0}).status_code == 200
+    assert not pet.tap.active
+    assert c.post("/api/control", json={"cmd": "bpm", "value": 999}).status_code == 400
+    pet.stop()

@@ -192,7 +192,7 @@ def test_beep_sway_only_while_talking():
 def test_repeatable_nod_varies_and_lasts_longer():
     m = MotionComposer()
     assert m.request_gesture("nod", 0.0, 5, reps=3)
-    assert m.gesture_active(2.0) and not m.gesture_active(2.8)  # 3 x 0.9 s
+    assert m.gesture_active(1.0) and not m.gesture_active(1.3)  # 3 x 0.42 s: a quick "yes", not a bow
     m2 = MotionComposer()
     m2.request_gesture("nod", 0.0, 5)
     assert 2 <= m2._gesture.reps <= 4

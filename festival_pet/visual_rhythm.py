@@ -26,11 +26,16 @@ class DanceState:
 
 
 class DanceDetector:
-    def __init__(self, window_s: float = 5.0, min_amp: float = 0.03, min_conf: float = 0.45, hold_s: float = 2.5) -> None:
+    def __init__(self, window_s: float = 5.0, min_amp: float = 0.03, min_conf: float = 0.45, hold_s: float = 2.5, release_bars: float = 4.0, min_release_s: float = 8.0) -> None:
         self._win = window_s
         self._min_amp = min_amp
         self._min_conf = min_conf
         self._hold = hold_s
+        # Once dancing, keep dancing at the last tempo for this long after the rhythm was last confirmed:
+        # a dancer does not stop because the tracker blinked, and music comes in phrases of bars anyway.
+        self._release_bars = release_bars
+        self._min_release = min_release_s
+        self._locked_until = 0.0
         self._pts: deque[tuple[float, float, float]] = deque()
         self._rhythmic_since = 0.0
         self._last_phase_anchor = 0.0
@@ -81,10 +86,25 @@ class DanceDetector:
             self._period = 60.0 / bpm
         else:
             self._rhythmic_since = 0.0
-        dancing = rhythmic and now - self._rhythmic_since >= self._hold
+        confirmed = rhythmic and now - self._rhythmic_since >= self._hold
+        if confirmed:
+            self._locked_until = now + max(self._min_release, self._release_bars * 4 * self._period)
+        held = self.state.dancing and now < self._locked_until  # sticky: ride out a lost track or a wobble
+        dancing = confirmed or held
+        if confirmed:
+            bpm_out = bpm
+        elif held:
+            bpm_out = self.state.bpm
+        else:
+            bpm_out = 0.0
         since = self.state.since if (dancing and self.state.dancing) else (now if dancing else 0.0)
-        self.state = DanceState(dancing, bpm if rhythmic else 0.0, conf, amp, since)
+        self.state = DanceState(dancing, bpm_out, conf, amp, since)
         return self.state
+
+    @property
+    def locked_for(self) -> float:
+        """Seconds of stickiness left from the last confirmation (for the status page)."""
+        return self._locked_until
 
     def phase(self, now: float) -> float:
         """0..1 within the visual beat (anchored to the detector's own clock; good enough to bob along)."""

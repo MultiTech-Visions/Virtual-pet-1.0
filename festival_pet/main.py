@@ -37,9 +37,10 @@ from festival_pet import sounds
 from festival_pet.audio_features import BeatTracker, LevelMeter, RubDetector, ScratchDetector, _tune
 from festival_pet.behavior import Action, Behavior, FaceObs, Observation
 from festival_pet.memory import FaceMemory
-from festival_pet.motion import MotionComposer
+from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose
 from festival_pet.senses import LoudSoundDetector, PickupDetector, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
+from festival_pet.tap_tempo import TapTempo
 from festival_pet.visual_rhythm import DanceDetector
 
 logger = logging.getLogger("festival_pet")
@@ -344,6 +345,9 @@ class Pet:
         self._last = 0.0
         self.muted = False
         self.groove_scale = 1.0  # user knob on top of the brain's intensity
+        self.tap = TapTempo()  # hand-tapped beat from the control page
+        self.manual_groove = False  # groove to the tapped beat instead of what it hears/sees
+        self._dance_seen = False  # edge: seed the tap clock once per dance
         self.pickup_enabled = False  # IMU is in the head; off by default until tuned on the real robot
         self.asleep = False  # motors off, camera paused; ears stay on
         self._touch_settle_left = -1.0  # seconds of ticks to wait after sleep/wake before re-zeroing the ear detector
@@ -427,6 +431,13 @@ class Pet:
             self.dance.push(now, 0.0, 0.0)  # nobody in view: let the rhythm decay
         if self.dance.state.dancing:
             obs.dance_bpm = self.dance.state.bpm
+            if not self._dance_seen:  # seen dancing: hand the tempo to the tap clock so manual groove / "1" pick it up
+                self._dance_seen = True
+                bpm = self.dance.state.bpm
+                self.tap.set_bpm(bpm, beat_at=now - self.dance.phase(now) * 60.0 / bpm)
+                self.actions_log.append((now, "tap", f"seeded {bpm:.0f} bpm from seeing them dance"))
+        else:
+            self._dance_seen = False
         for kind, value, yaw in self.audio.poll():
             if kind == "scratch":
                 obs.scratched = True
@@ -461,6 +472,12 @@ class Pet:
         comp.voice_level = self.sound.level(now)  # the body moves with every beep it makes
         for act in actions:
             self._dispatch(act, now)
+        if self.manual_groove and self.tap.active and not self.asleep and beh.state not in ("HELD", "SLEEPING", "WAKING"):
+            # Tapped-in beat wins over anything it heard or saw; 0.6 is a plain head-bob before the user's dials.
+            comp.groove = (self.tap.phase(now), self.tap.bar_phase(now), 0.6 * self.groove_scale)
+            comp.groove_phrase = self.tap.phrase_phase(now) if self.tap.downbeat_known else None
+        else:
+            comp.groove_phrase = None
 
         # ---------------- body
         if self.move is not None:
@@ -469,9 +486,12 @@ class Pet:
                 self.move = None
                 self.blend_from = (self.last_pose, list(self.last_ants), now)
             else:
-                head, ants, _ = self.move.evaluate(t)
+                head, ants, move_body = self.move.evaluate(t)
+                # Moves are recorded body-forward: turn them with the body and add the move's own body swing.
+                body = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, comp.body_yaw + math.degrees(float(move_body))))
+                head = turn_pose(head, body)
                 self.last_pose, self.last_ants = head, [float(ants[0]), float(ants[1])]
-                io.set_target(head, self.last_ants, math.radians(comp.body_yaw))
+                io.set_target(head, self.last_ants, math.radians(body))
         if self.move is None:
             head, ants, body_yaw = comp.sample(now, dt)
             if self.blend_from is not None:
@@ -513,7 +533,7 @@ class Pet:
             if self.move is None:
                 move = self.p.library(act.name)
                 head0, ants0, _ = move.evaluate(0.0)
-                self.p.io.goto(head0, [float(ants0[0]), float(ants0[1])], 0.4)
+                self.p.io.goto(turn_pose(head0, comp.body_yaw), [float(ants0[0]), float(ants0[1])], 0.4)
                 self.move, self.move_t0 = move, time.time()
                 if PLAY_LIBRARY_SOUNDS and move.sound_path is not None:
                     self.p.io.play_file(str(move.sound_path))
@@ -595,7 +615,8 @@ class Pet:
                 "face": None if o.face is None else {"track": o.face.track_id, "yaw": round(o.face.yaw_deg, 1), "pitch": round(o.face.pitch_deg, 1), "size": round(o.face.area_frac, 3), "person": None if o.face.person is None else o.face.person.person_id, "similarity": round(o.face.similarity, 2), "tilt": round(o.face.roll_deg, 1)},
                 "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
-                "dance": {"dancing": self.dance.state.dancing, "bpm": round(self.dance.state.bpm, 1), "confidence": round(self.dance.state.confidence, 2), "amplitude": round(self.dance.state.amplitude, 3)},
+                "tap": {"bpm": round(self.tap.bpm, 1), "beat": self.tap.beat_in_bar(now) if self.tap.active else 0, "bar": self.tap.bar_in_phrase(now) if self.tap.active else 0, "downbeat_known": self.tap.downbeat_known},
+                "dance": {"dancing": self.dance.state.dancing, "bpm": round(self.dance.state.bpm, 1), "confidence": round(self.dance.state.confidence, 2), "amplitude": round(self.dance.state.amplitude, 3), "holds_for_s": round(max(0.0, self.dance.locked_for - now), 1) if self.dance.state.dancing else 0.0},
                 "mimic": None if comp.mimic is None else {"yaw": round(comp.mimic[0], 1), "pitch": round(comp.mimic[1], 1), "roll": round(comp.mimic[2], 1)},
                 "listening": self.audio.stats["listening"], "voice_yaw": self.audio.last_voice_yaw,
                 "doa": None if self.audio.doa is None else {"angle_deg": round(math.degrees(self.audio.doa[0]), 0), "speech": self.audio.doa[1]},
@@ -604,7 +625,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "audio_history": self.audio.meter.history(),
             "recent_actions": [{"t": round(now - t, 1), "a": f"{k}:{n}"} for t, k, n in reversed(self.actions_log[-20:])],
@@ -640,6 +661,18 @@ class Pet:
             self.p.composer.mimic_flip = bool(value)
         elif cmd == "groove_scale":
             self.groove_scale = float(value)
+        elif cmd == "manual_groove":
+            self.manual_groove = bool(value)
+        elif cmd == "tap":  # value: true = this tap is the "1"
+            self.tap.tap(now, downbeat=bool(value))
+            self.actions_log.append((now, "tap", f"{'ONE ' if value else ''}{self.tap.bpm:.0f} bpm"))
+        elif cmd == "bpm":
+            if float(value) == 0.0:
+                self.tap.clear()
+            else:
+                self.tap.set_bpm(float(value))
+        elif cmd in ("groove_bob", "groove_sway", "groove_body", "groove_ears"):
+            setattr(self.p.composer.groove_mix, cmd[len("groove_"):], float(value))
         elif cmd == "scratch_onset_ratio":
             self.audio.scratch.onset_ratio = float(value)
         elif cmd == "scratch_floor":
@@ -669,7 +702,7 @@ class Pet:
         return {"ok": True}
 
     # ------------------------------------------------------------------ settings persistence
-    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
         c = self.mind()["controls"]

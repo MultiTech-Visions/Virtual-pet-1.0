@@ -52,3 +52,21 @@ def test_anti_correlated_peaks_do_not_crash():
         d.push(t, 0.5 + 0.1 * np.sin(2 * np.pi * 0.45 * t) + rng.normal(0, 0.01),
                0.5 + 0.06 * np.sin(2 * np.pi * 0.45 * t) + rng.normal(0, 0.01))
     assert not d.state.dancing
+
+
+def test_dancing_sticks_for_several_bars_after_the_rhythm_is_lost():
+    d = DanceDetector()
+    t = 0.0
+    while t < 8.0:  # 120 bpm bob
+        t += 0.125
+        d.push(t, 0.5, 0.5 + 0.06 * math.sin(2 * math.pi * 2.0 * t))
+    assert d.state.dancing and abs(d.state.bpm - 120) < 8
+    bpm = d.state.bpm
+    while t < 14.0:  # tracker loses them / they stand still: keeps dancing at the same tempo
+        t += 0.125
+        d.push(t, 0.5, 0.5)
+    assert d.state.dancing and d.state.bpm == bpm
+    while t < 30.0:
+        t += 0.125
+        d.push(t, 0.5, 0.5)
+    assert not d.state.dancing  # release: 4 bars at 120 bpm is 8 s, then it stops

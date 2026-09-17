@@ -132,7 +132,7 @@
       <button class="act" id="mute" onclick="toggleMute()">Mute</button>
       <button class="act" id="pickup" onclick="togglePickup()">Pickup: off</button>
       <button class="act" id="bodyf" onclick="toggleBody()">Body finder: on</button>
-      <button class="act" id="ears" onclick="toggleEars()">Ears: on</button>
+      <button class="act" id="ears-btn" onclick="toggleEars()">Ears: on</button>
       <button class="act" id="mflip" onclick="toggleFlip()">Mirror game: mirror-image</button>
     </div>
     <div class="sub">Ears off stops all microphone processing (use it if the mics are dead). Mirror game: when someone's face fills the frame for 2 s it goes quiet and copies their head pose; flip if the direction feels wrong. Settings are remembered across restarts.</div>
@@ -144,6 +144,26 @@
     <label>Speaker volume: <span id="vol-v">…</span></label>
     <input type="range" min="0" max="100" step="5" id="vol" onchange="setVolume(this.value)">
     <div class="sub">Releasing the slider plays the daemon's test sound at the new level.</div>
+  </div>
+  <div class="card">
+    <h2>Groove</h2>
+    <div class="btns">
+      <button class="act" id="mgroove" onclick="toggleManualGroove()">Manual groove: off</button>
+      <button class="act big" id="tap-beat" onclick="tapBeat(false)">Tap beat</button>
+      <button class="act big" id="tap-one" onclick="tapBeat(true)">Tap "1"</button>
+    </div>
+    <div class="sub">Tap the beat a few times (space bar works on this tab); tap "1" on the first beat of a bar (key 1) so it counts bars and phrases. Tapping along again re-aligns it. Manual groove on = it dances to this clock and ignores what it hears or sees.</div>
+    <div class="sub" id="tap-v">no tempo tapped</div>
+    <label>BPM <input type="number" id="bpm" min="40" max="220" step="0.1" style="width:6em" onchange="ctl('bpm', parseFloat(this.value) || 0)"> <span class="sub">(type a value, or 0 to clear)</span></label>
+    <label>Head bob ×<span id="g-bob-v"></span></label>
+    <input type="range" min="0" max="2" step="0.1" id="g-bob" oninput="setVal('groove_bob', this.value, 'g-bob-v')">
+    <label>Head sway ×<span id="g-sway-v"></span></label>
+    <input type="range" min="0" max="2" step="0.1" id="g-sway" oninput="setVal('groove_sway', this.value, 'g-sway-v')">
+    <label>Body sway ×<span id="g-body-v"></span></label>
+    <input type="range" min="0" max="2" step="0.1" id="g-body" oninput="setVal('groove_body', this.value, 'g-body-v')">
+    <label>Antennas ×<span id="g-ears-v"></span></label>
+    <input type="range" min="0" max="2" step="0.1" id="g-ears" oninput="setVal('groove_ears', this.value, 'g-ears-v')">
+    <div class="sub">These dials shape every groove, tapped or heard. "Groove intensity" in the Body card is the master.</div>
   </div>
   <div class="card">
     <h2>Power</h2>
@@ -167,6 +187,7 @@
   <div class="card"><h2>App log</h2><pre class="log" id="log"></pre></div>
 </section>
 
+<style>.act.big{font-size:1.15em;padding:14px 22px}.act.hit{filter:brightness(1.6)}</style>
 <script>
 const $ = id => document.getElementById(id);
 const v = id => $(id).value;
@@ -200,8 +221,11 @@ function drawChart(hist, c) {
   g.fillStyle = '#5aa0ff'; hist.forEach((h, i) => { g.fillRect(x(i) - 1, H - 4 - h.flat * (H - 14), 2, 2); });
 }
 function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
-let pickup = false, bodyf = true, volLoaded = false, ears = true, mflip = true;
-function toggleEars() { ears = !ears; ctl('ears', ears); $('ears').textContent = 'Ears: ' + (ears ? 'on' : 'off'); }
+let pickup = false, bodyf = true, volLoaded = false, ears = true, mflip = true, mgroove = false;
+function toggleEars() { ears = !ears; ctl('ears', ears); $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off'); }
+function toggleManualGroove() { mgroove = !mgroove; ctl('manual_groove', mgroove); $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off'); }
+function tapBeat(one) { ctl('tap', !!one); const b = $(one ? 'tap-one' : 'tap-beat'); b.classList.add('hit'); setTimeout(() => b.classList.remove('hit'), 120); }
+document.addEventListener('keydown', e => { if (tab !== 'controls' || e.target.tagName === 'INPUT') return; if (e.key === ' ') { e.preventDefault(); tapBeat(false); } else if (e.key === '1') tapBeat(true); });
 function toggleFlip() { mflip = !mflip; ctl('mimic_flip', mflip); $('mflip').textContent = 'Mirror game: ' + (mflip ? 'mirror-image' : 'same direction'); }
 async function setVolume(v) {
   $('vol-v').textContent = v;
@@ -269,6 +293,8 @@ async function refresh() {
     kv('eyes', Object.assign(s.face ? s.face : {face: 'none'}, {body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
       'dancing?': s.dance.dancing ? `yes, ${s.dance.bpm} bpm (conf ${s.dance.confidence})` : `no (conf ${s.dance.confidence}, amp ${s.dance.amplitude})`,
       'mirror game': s.mimic ? `copying: yaw ${s.mimic.yaw}° pitch ${s.mimic.pitch}° roll ${s.mimic.roll}°` : 'off'}));
+    $('tap-v').textContent = d.senses.tap.bpm ? `${d.senses.tap.bpm} bpm · beat ${d.senses.tap.beat} · bar ${d.senses.tap.bar}${d.senses.tap.downbeat_known ? '' : ' (no "1" yet)'}` : 'no tempo tapped';
+    if (document.activeElement !== $('bpm')) $('bpm').value = d.senses.tap.bpm || '';
     kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '° (+ = left)', 'mic array DoA': s.doa ? `${s.doa.angle_deg}° (0 = left, 90 = front), speech: ${s.doa.speech}` : '—', 'last speech': s.speech_s_ago === null ? 'never' : s.speech_s_ago + ' s ago'});
     kv('body', {held: s.held, shaken: s.shaken, 'head being petted': s.head_pet.rubbing, 'imu accel dev / gyro': s.imu.accel_dev + ' / ' + s.imu.gyro, 'imu gated (self-moving)': s.imu.gated, 'head rate rad/s': s.head_rate, 'ear deviation': s.ears.dev.join(' / '), 'ear droop baseline': s.ears.baseline.join(' / ')});
     kv('scratch', s.scratch);
@@ -289,7 +315,9 @@ async function refresh() {
       muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute';
       pickup = d.controls.pickup; $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off');
       if (d.controls.body_finder !== null) { bodyf = d.controls.body_finder; $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
-      ears = d.controls.ears; $('ears').textContent = 'Ears: ' + (ears ? 'on' : 'off');
+      ears = d.controls.ears; $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off');
+      mgroove = d.controls.manual_groove; $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off');
+      for (const k of ['bob', 'sway', 'body', 'ears']) { $('g-' + k).value = d.controls['groove_' + k]; $('g-' + k + '-v').textContent = d.controls['groove_' + k]; }
       mflip = d.controls.mimic_flip; $('mflip').textContent = 'Mirror game: ' + (mflip ? 'mirror-image' : 'same direction'); }
     const t = d.memory.tiers;
     $('people-sum').textContent = `${d.memory.people} people · ${t.bestie} besties · ${t.friend} friends`;
