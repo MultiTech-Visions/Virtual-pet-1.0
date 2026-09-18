@@ -225,6 +225,7 @@ class Vision:
         self._lock = threading.Lock()
         self._sighting: Sighting | None = None
         self._track: Track | None = None
+        self._last_body_box: tuple | None = None
         self._next_track_id = 1
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -271,10 +272,7 @@ class Vision:
         scale = DETECT_WIDTH / W
         small = cv2.resize(frame_bgr, (DETECT_WIDTH, max(2, int(round(H * scale)) // 2 * 2)), interpolation=cv2.INTER_AREA)
         sh, sw = small.shape[:2]
-        if self.preview:
-            self.last_jpeg = _jpeg(small)
-        else:
-            self.last_jpeg = None
+        self._last_body_box = None
 
         t0 = time.perf_counter()
         faces = self.detector.detect(small)
@@ -286,9 +284,12 @@ class Vision:
         if chosen is None:
             if self._track is not None and now - self._track.last_seen > FORGET_AFTER:
                 self._track = None
-            return self._body_fallback(small, scale, head_pose, now)
+            sighting = self._body_fallback(small, scale, head_pose, now)
+            self._preview(small, faces, None)
+            return sighting
 
         row, track = chosen
+        self._preview(small, faces, row)
         if self.recognizer is not None and self._embedding_due(track, row, now):
             t0 = time.perf_counter()
             self._identify(small, row, track, now)
@@ -300,6 +301,30 @@ class Vision:
         yaw_p, pitch_p, roll = head_pose_from_landmarks(row)
         return Sighting(track.track_id, float(u), float(v), track.area_frac, track.person, track.similarity, head_pose, now, roll,
                         "face", yaw_p, pitch_p, track.cx, track.cy, smile_from_landmarks(row))
+
+    def _preview(self, small: np.ndarray, faces: np.ndarray, chosen: np.ndarray | None) -> None:
+        """What it sees, with what it made of it: every face box and its five landmarks (the tracked one in
+        green with its track and person), the torso box in orange. Only drawn when the page is watching:
+        a few rectangles on a 320 px frame, nothing next to the detector itself."""
+        if not self.preview:
+            self.last_jpeg = None
+            return
+        img = small.copy()
+        for row in faces:
+            x, y, w, h = (int(v) for v in row[:4])
+            mine = chosen is not None and np.array_equal(row[:4], chosen[:4])
+            colour = (120, 245, 124) if mine else (200, 200, 200)
+            cv2.rectangle(img, (x, y), (x + w, y + h), colour, 2 if mine else 1)
+            for k in range(5):
+                cv2.circle(img, (int(row[4 + 2 * k]), int(row[5 + 2 * k])), 2, (255, 200, 80), -1)
+            if mine and self._track is not None:
+                who = "stranger" if self._track.person is None else f"#{self._track.person.person_id} {self._track.similarity:.2f}"
+                cv2.putText(img, f"t{self._track.track_id} {who}", (x, max(10, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1, cv2.LINE_AA)
+        if self._last_body_box is not None:
+            x1, y1, x2, y2, score = self._last_body_box
+            cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), (80, 170, 255), 1)
+            cv2.putText(img, f"body {score:.2f}", (int(x1), max(10, int(y1) - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (80, 170, 255), 1, cv2.LINE_AA)
+        self.last_jpeg = _jpeg(img)
 
     def _body_fallback(self, small: np.ndarray, scale: float, head_pose: np.ndarray, now: float) -> Sighting | None:
         """No face: look for a torso (cheaper rate) and report where the head should be, above it."""
@@ -314,6 +339,7 @@ class Vision:
             return None
         sh, sw = small.shape[:2]
         x1, y1, x2, y2, score = max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+        self._last_body_box = (x1, y1, x2, y2, score)
         # The head sits above the torso box: aim a bit above its top edge, clamped to the frame.
         u = (x1 + x2) / 2 / scale
         v = max(1.0, (y1 - 0.15 * (y2 - y1))) / scale

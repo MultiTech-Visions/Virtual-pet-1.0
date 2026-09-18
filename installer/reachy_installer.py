@@ -317,8 +317,8 @@ def run_gui() -> None:
 
     root = tk.Tk()
     root.title("Festival Pet installer for Reachy Mini")
-    root.geometry("640x620")
-    root.minsize(560, 520)
+    root.geometry("640x720")
+    root.minsize(560, 560)
 
     frm = ttk.Frame(root, padding=14)
     frm.pack(fill="both", expand=True)
@@ -344,11 +344,20 @@ def run_gui() -> None:
     ttk.Checkbutton(opts, text="Make it the app that starts when an antenna is touched", variable=set_startup).pack(anchor="w")
     ttk.Checkbutton(opts, text="Start the pet right after installing", variable=start_now).pack(anchor="w")
 
+    # The button bar is packed BEFORE the progress and log areas, at the bottom: whatever grows above it
+    # (the step list appears when Install is pressed) squeezes the log, never the buttons.
+    status = tk.StringVar(value="")
+    bottom = ttk.Frame(frm)
+    bottom.pack(side="bottom", fill="x")
+    ttk.Label(bottom, textvariable=status, foreground="#2a7").pack(side="left")
+    go = ttk.Button(bottom, text="Install / Update")
+    go.pack(side="right")
+
     steps_frame = ttk.LabelFrame(frm, text="Progress", padding=8)
     steps_frame.pack(fill="x", pady=(8, 4))
     step_labels: list[tk.StringVar] = []
 
-    log_box = tk.Text(frm, height=10, font=("Menlo" if sys.platform == "darwin" else "Consolas", 9), state="disabled", wrap="word")
+    log_box = tk.Text(frm, height=6, font=("Menlo" if sys.platform == "darwin" else "Consolas", 9), state="disabled", wrap="word")
     log_box.pack(fill="both", expand=True, pady=(4, 6))
     q: queue.Queue = queue.Queue()
 
@@ -373,13 +382,6 @@ def run_gui() -> None:
                 go.configure(state="normal")
                 status.set(payload)
         root.after(100, pump)
-
-    status = tk.StringVar(value="")
-    bottom = ttk.Frame(frm)
-    bottom.pack(fill="x")
-    ttk.Label(bottom, textvariable=status, foreground="#2a7").pack(side="left")
-    go = ttk.Button(bottom, text="Install / Update")
-    go.pack(side="right")
 
     def worker() -> None:
         for w in steps_frame.winfo_children():

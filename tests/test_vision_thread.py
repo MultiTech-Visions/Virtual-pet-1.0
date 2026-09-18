@@ -50,3 +50,24 @@ def test_vision_status_says_when_it_is_paused_or_dead():
     assert not st["alive"] and st["active"] and st["frame_age_s"] is None
     v.set_active(False)
     assert not v.status(time.time())["active"]
+
+
+def test_preview_draws_faces_landmarks_and_the_body_box():
+    import cv2
+    import numpy as np
+
+    v = _bare_vision(lambda: None, lambda frame, pose, now: None)
+    v.preview = True
+    v._track = None
+    v._last_body_box = (10.0, 40.0, 120.0, 170.0, 0.51)
+    small = np.zeros((180, 320, 3), dtype=np.uint8)
+    faces = np.array([[40, 30, 60, 70, 55, 50, 85, 50, 70, 65, 58, 80, 82, 80, 0.9]], dtype=np.float32)
+    v._preview(small, faces, faces[0])
+    assert v.last_jpeg is not None
+    img = cv2.imdecode(np.frombuffer(v.last_jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert img.shape == (180, 320, 3)
+    assert img[30, 70].sum() > 100  # the face box's top edge was drawn
+    assert img[40, 60].sum() > 100  # the body box's top edge too
+    v.preview = False
+    v._preview(small, faces, None)
+    assert v.last_jpeg is None

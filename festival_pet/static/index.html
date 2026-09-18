@@ -67,7 +67,6 @@
     <div class="sub" id="state-sub"></div>
     <div class="feeling" id="feeling"></div>
     <div class="sub" id="activity"></div>
-    <div class="sub hidden" id="song-line"></div>
     <label>Energy</label><div class="bar"><i id="energy"></i></div>
     <label>Social</label><div class="bar pink"><i id="social"></i></div>
     <label>Curiosity</label><div class="bar"><i id="curiosity"></i></div>
@@ -93,6 +92,12 @@
     <div class="btns" style="margin-top:8px"><button class="act" id="preview-btn" onclick="togglePreview()">Show what it sees</button></div>
     <img id="preview" class="hidden" alt="" style="width:100%; border-radius:10px; margin-top:8px; background:#0b0e1a">
   </div>
+  <div class="card"><h2>Body</h2><div class="kv" id="body"></div>
+    <label>Head-pet from the IMU: gyro jitter floor <span id="imurub-v"></span> rad/s <span class="sub">(works with ears off; rub the head and watch "imu rub fraction" climb, set the floor just under what a rub gives)</span></label>
+    <input type="range" min="0.03" max="0.6" step="0.01" id="imurub" oninput="setVal('imu_rub_gyro', this.value, 'imurub-v')">
+    <p><button class="act" onclick="ctl('calibrate','imu')">Calibrate head pets (IMU)</button> <span class="sub" id="calib-imu"></span></p>
+    <div class="sub">Tap it, keep your hands off for 3 s, then rub the head for 4 s. It reads the gyro at rest and while rubbed and sets the floor between them.</div>
+  </div>
   <div class="card mic"><h2>Ears</h2><div class="kv" id="ears"></div></div>
   <div class="card" style="grid-column:1/-1">
     <h2>Where the person is (last 20 s, world frame)</h2>
@@ -106,10 +111,6 @@
     <div class="sub">If <b>chunks</b> is not climbing, no audio is arriving at all. Green = loudness (RMS). Orange = head-rub energy with its floor as the dashed line. Pink = belly-scratch band energy with its floor. Blue dots = flatness (0–1). Rub the head or scratch the belly and watch which trace jumps.</div>
     <canvas id="chart" height="160" style="width:100%; background:#0b0e1a; border-radius:10px; margin-top:8px"></canvas>
     <div class="kv" id="levels" style="margin-top:8px"></div>
-  </div>
-  <div class="card"><h2>Body</h2><div class="kv" id="body"></div>
-    <label>Head-pet from the IMU: gyro jitter floor <span id="imurub-v"></span> rad/s <span class="sub">(works with ears off; rub the head and watch "imu rub fraction" climb, set the floor just under what a rub gives)</span></label>
-    <input type="range" min="0.03" max="0.6" step="0.01" id="imurub" oninput="setVal('imu_rub_gyro', this.value, 'imurub-v')">
   </div>
   <div class="card mic"><h2>Head-pet tuning</h2>
     <div class="sub">Easiest: tap <b>Calibrate</b>, stay quiet 3 s, then rub the head for 3 s. Manual: rub energy must exceed the floor, exceed ratio × baseline, and flatness must exceed its minimum.</div>
@@ -266,7 +267,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const v = id => $(id).value;
-let tab = 'mind', muted = false, slidersInit = false;
+let tab = 'mind', muted = false, slidersInit = false, lastImuCal = null;
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   tab = b.dataset.tab;
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
@@ -408,14 +409,13 @@ async function refresh() {
     const f = d.feeling, fe = x => x ? `${FEEL[x.name.split(':')[0]] || ''} <b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
     $('feeling').innerHTML = `feeling: ${fe(f.motion)} · sounding: ${fe(f.sound)}`;
     $('energy').style.width = (m.energy * 100) + '%'; $('social').style.width = (m.social * 100) + '%';
-    const sl = $("song-line"), sg = d.song;
-    sl.classList.toggle('hidden', sg.next_in_s === null);
-    if (sg.next_in_s !== null) sl.innerHTML = sg.singing ? `🎵 singing <b>${sg.last.name}</b> (${sg.last.bpm} bpm)` : (sg.last ? `🎵 last song: <b>${sg.last.name}</b>${sg.last.saved ? ' (saved)' : ''} · ` : '🎵 ') + (sg.next_in_s > 0 ? `no song for ${sg.next_in_s}s` : 'a song when it feels like one');
+    const sg = d.song;
+    const songRows = sg.next_in_s === null ? {} : {'song': sg.singing ? `singing ${sg.last.name} (${sg.last.bpm} bpm) 🎵` : (sg.last ? `last: ${sg.last.name}${sg.last.saved ? ' (saved)' : ''}` : 'none yet'), 'next song': sg.singing ? '—' : (sg.next_in_s > 0 ? `not for ${sg.next_in_s} s` : 'when it feels like one')};
     $('curiosity').style.width = (m.drives.curiosity * 100) + '%'; $('boredom').style.width = (m.drives.boredom * 100) + '%';
     const ACT = {hangout: '🫧 hanging out', watch: '👀 watching them', look_around: '🔭 looking around', mirror: '🪞 mirror game', mime: '🎭 Simon says', sing: '🎵 singing', rest: '😪 resting', ask_attention: '🥺 wants attention'};
     const scores = Object.entries(m.scores || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace('_', ' ')} ${v.toFixed(2)}`).join(' · ');
     $('activity').innerHTML = `doing: <b>${ACT[m.activity] || m.activity}</b> for ${m.activity_for_s}s` + (m.runner_up ? ` · nearly: ${m.runner_up.replace('_', ' ')} (margin ${m.margin})` : '') + `<br><small>${scores}</small>` + (Object.keys(m.cooldowns || {}).length ? `<br><small>not again yet: ${Object.entries(m.cooldowns).map(([k, v]) => `${k} ${v}s`).join(', ')}</small>` : '');
-    kv('timers', {'alone for': m.alone_for_s + ' s', 'lonely in': m.lonely_in_s + ' s', 'sleep in': m.sleep_in_s + ' s',
+    kv('timers', {...songRows, 'alone for': m.alone_for_s + ' s', 'lonely in': m.lonely_in_s + ' s', 'sleep in': m.sleep_in_s + ' s',
       'next reaction': m.next_reaction_in_s === null ? '—' : m.next_reaction_in_s + ' s', 'next glance': m.next_glance_in_s === null ? '—' : m.next_glance_in_s + ' s',
       'listening for trick': m.listening_for_trick_s > 0 ? m.listening_for_trick_s + ' s' : 'no', 'little dance': m.little_dance_s > 0 ? m.little_dance_s + ' s' : '—', 'next sneeze': m.next_sneeze_in_s + ' s', 'rethink in': m.next_decision_in_s + ' s', 'gaze': m.gaze ? m.gaze.map(x => x.toFixed(0)).join('°, ') + '°' : 'free'});
     $('thoughts').innerHTML = m.thoughts.map(t => `<li><small>${t.t}s ago</small>${t.text}</li>`).join('') || '<li class="sub">…</li>';
@@ -455,6 +455,9 @@ async function refresh() {
     kv('rub', s.head_pet);
     kv('levels', s.levels);
     drawChart(d.audio_history, d.controls);
+    const ic = d.imu_calibration;
+    $('calib-imu').textContent = !ic ? '' : ic.phase === 'done' ? `done: still ${ic.baseline_p90}, rubbing ${ic.rub_p25} rad/s → floor ${ic.gyro_lo}` : ic.phase === 'failed' ? 'failed: ' + ic.reason : ic.phase;
+    if (ic && ic.phase === 'done' && lastImuCal !== ic.gyro_lo) { lastImuCal = ic.gyro_lo; $('imurub').value = ic.gyro_lo; $('imurub-v').textContent = ic.gyro_lo; }
     const cal = d.calibration;
     for (const k of ['rub', 'scratch']) $('calib-' + k).textContent = cal && cal.kind === k ? (cal.phase === 'done' ? `done: ratio ×${cal.set.observed_ratio.toFixed(1)} observed → thresholds set` : cal.phase === 'failed' ? 'failed: ' + cal.reason : cal.phase) : '';
     if (cal && cal.phase === 'done' && cal.kind !== lastCal) { lastCal = cal.kind; slidersInit = false; }

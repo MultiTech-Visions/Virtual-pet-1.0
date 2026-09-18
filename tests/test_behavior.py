@@ -203,15 +203,42 @@ def test_heard_speech_reacts_to_intent_and_logs_it():
     assert not any(a.kind in ("sound", "gesture") for a in acts)
 
 
+def test_a_torso_with_no_face_is_given_up_on_and_ignored():
+    b, _ = _brain()
+    body = FaceObs(-1, 40.0, -20.0, 0.2, None, 0.0)
+    _run(b, lambda t: Observation(), 0.0, 3.0)
+    acts = _run(b, lambda t: Observation(body=body), 3.0, 3.8)
+    assert b.gaze is None or b.gaze[0] != 40.0  # a flicker of torso is not believed yet
+    _run(b, lambda t: Observation(body=body), 3.8, 5.0)
+    assert b.gaze == (40.0, -20.0) and b.state == "SEARCHING"
+    _run(b, lambda t: Observation(body=body), 5.0, 12.0)
+    assert b.state == "IDLE" and any("not a person" in txt for _, txt in b.thoughts)
+    _run(b, lambda t: Observation(body=body), 12.0, 17.0)
+    assert b.gaze is None or abs(b.gaze[0] - 40.0) > 1.0  # that spot is ignored now
+    other = FaceObs(-1, -80.0, -20.0, 0.2, None, 0.0)
+    _run(b, lambda t: Observation(body=other), 17.0, 20.0)
+    assert b.gaze == (-80.0, -20.0)  # a torso somewhere else is still worth a look
+    assert sum(1 for _, txt in b.thoughts if "a body!" in txt) == 2  # one thought per torso, not per tick
+
+
+def test_a_solo_gesture_does_not_lose_the_person():
+    b, _ = _brain()
+    face = FaceObs(1, 20.0, -10.0, 0.05, None, 0.0)
+    _run(b, lambda t: Observation(face=face), 0.0, 3.0)
+    assert b.state == "ENGAGED"
+    _run(b, lambda t: Observation(busy="gesture"), 3.0, 9.5)  # a 6 s bow: the camera is everywhere but on them
+    assert b.state == "ENGAGED" and b.gaze == (20.0, -10.0)  # still theirs, still looking where they were
+
+
 def test_body_makes_it_look_up_and_search():
     b, _ = _brain()
     body = FaceObs(-1, 15.0, -20.0, 0.2, None, 0.0)
     _run(b, lambda t: Observation(), 0.0, 3.0)  # no face for a while first (bodies never override a recent face)
-    acts = _run(b, lambda t: Observation(body=body), 3.0, 4.0)
+    acts = _run(b, lambda t: Observation(body=body), 3.0, 4.5)  # a second to believe it
     assert b.state == "SEARCHING" and b.gaze == (15.0, -20.0)
     assert any(a.name == "perk" for a in acts)
-    _run(b, lambda t: Observation(body=body), 4.0, 15.0)
-    assert b.state == "SEARCHING"  # keeps looking as long as the body is there
+    _run(b, lambda t: Observation(body=body), 4.5, 9.0)
+    assert b.state == "SEARCHING"  # keeps looking as long as the body is there (until it gives up on it)
 
 
 def test_sleeping_ignores_faces_but_wakes_on_loud_or_name():

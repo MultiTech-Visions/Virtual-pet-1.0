@@ -119,6 +119,8 @@ class ImuRubDetector:
         self._last_in_band = 0.0
         self.rubbing = False
         self.stats = {"fraction": 0.0, "rubbing": False}
+        self.calibration: dict | None = None  # {"phase", ...}; see start_calibration
+        self._cal: dict = {}
 
     def update(self, gyro_mag: float, self_moving: bool, now: float) -> bool:
         """Returns True on the tick rubbing starts (an edge, for the 'petted' reaction)."""
@@ -136,6 +138,50 @@ class ImuRubDetector:
             self.rubbing = False
         self.stats = {"fraction": round(frac, 2), "rubbing": self.rubbing}
         return started
+
+    # ------------------------------------------------------------------ calibration
+    BASELINE_S = 3.0
+    ACTIVE_S = 4.0
+
+    def start_calibration(self, now: float) -> None:
+        """Measure the gyro at rest, then while the head is rubbed, and set the floor between the two."""
+        self._cal = {"until": now + self.BASELINE_S, "baseline": [], "active": [], "phase": "baseline"}
+        self.calibration = {"phase": f"keep still, hands off, for {self.BASELINE_S:.0f} s"}
+
+    def calibration_step(self, gyro_mag: float, self_moving: bool, now: float) -> bool:
+        """Feed every IMU sample while calibrating. Returns True on the tick it finishes (done or failed)."""
+        c = self._cal
+        if not c or c["phase"] in ("done", "failed"):
+            return False
+        if self_moving:
+            return False  # our own motion is not a reading of anything
+        if c["phase"] == "baseline":
+            c["baseline"].append(gyro_mag)
+            if now >= c["until"]:
+                c["phase"], c["until"] = "active", now + self.ACTIVE_S
+                self.calibration = {"phase": f"NOW rub the head for {self.ACTIVE_S:.0f} s"}
+            return False
+        c["active"].append(gyro_mag)
+        if now < c["until"]:
+            return False
+        base = sorted(c["baseline"])
+        act = sorted(c["active"])
+        if len(base) < 20 or len(act) < 20:
+            c["phase"] = "failed"
+            self.calibration = {"phase": "failed", "reason": "too few IMU samples (is the IMU reporting?)"}
+            return True
+        base_p90 = base[int(0.9 * (len(base) - 1))]
+        act_p25 = act[int(0.25 * (len(act) - 1))]
+        act_p95 = act[int(0.95 * (len(act) - 1))]
+        if act_p25 <= base_p90 * 1.3:
+            c["phase"] = "failed"
+            self.calibration = {"phase": "failed", "reason": f"the rub did not stand out: still {base_p90:.3f}, rubbing {act_p25:.3f} rad/s", "baseline_p90": round(base_p90, 3), "rub_p25": round(act_p25, 3)}
+            return True
+        self.gyro_lo = round(base_p90 + 0.35 * (act_p25 - base_p90), 3)  # just above rest, well under a rub
+        self.gyro_hi = round(max(1.0, act_p95 * 1.5), 3)  # a rub never reads as a lift
+        c["phase"] = "done"
+        self.calibration = {"phase": "done", "baseline_p90": round(base_p90, 3), "rub_p25": round(act_p25, 3), "rub_p95": round(act_p95, 3), "gyro_lo": self.gyro_lo, "gyro_hi": self.gyro_hi}
+        return True
 
 
 class SelfMotionGate:

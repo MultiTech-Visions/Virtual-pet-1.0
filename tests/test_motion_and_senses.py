@@ -336,3 +336,27 @@ def test_ear_holds_park_an_antenna_and_expire():
     m.request_gesture("nuzzle", 10.0, 3)
     head, _, _ = m.sample(11.0, 0.02)
     assert head[0, 3] > 0.01  # pushes forward into the hand
+
+
+def test_imu_rub_calibration_sets_the_floor_between_rest_and_a_rub():
+    from festival_pet.senses import ImuRubDetector
+
+    d = ImuRubDetector()
+    d.start_calibration(0.0)
+    assert "still" in d.calibration["phase"]
+    t = 0.0
+    while t < 3.1:
+        assert not d.calibration_step(0.04 + 0.01 * (int(t * 50) % 3), False, t); t += 0.02
+    assert "rub" in d.calibration["phase"]
+    done = False
+    while t < 7.2 and not done:
+        done = d.calibration_step(0.3 + 0.05 * (int(t * 50) % 4), False, t); t += 0.02
+    assert done and d.calibration["phase"] == "done"
+    assert 0.06 < d.gyro_lo < 0.3 and d.gyro_hi >= 1.0
+    # a rub that does not stand out from rest fails loudly instead of setting nonsense
+    d2 = ImuRubDetector(); d2.start_calibration(0.0); t = 0.0
+    while t < 7.5:
+        if d2.calibration_step(0.05, False, t):
+            break
+        t += 0.02
+    assert d2.calibration["phase"] == "failed" and "stand out" in d2.calibration["reason"]

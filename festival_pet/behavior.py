@@ -41,6 +41,10 @@ from festival_pet.memory import FaceMemory, Person
 State = Literal["SLEEPING", "WAKING", "IDLE", "ENGAGED", "SEARCHING", "HELD"]
 EAR_WINDOW_S = 12.0  # tickles this close together count as one bout
 EAR_TUCK_AFTER = 4  # the tickle that ends the game
+BODY_CONFIRM_S = 1.0  # a torso must be seen this long before it is worth looking up at
+BODY_GIVE_UP_S = 6.0  # looking up at a torso this long without finding a face: not a person
+BODY_IGNORE_S = 120.0  # ...and that spot is ignored for this long
+BODY_IGNORE_DEG = 25.0
 
 
 def awake_now(state: str) -> bool:
@@ -161,6 +165,8 @@ class Behavior:
     _nag_company: bool = False
     _ear_tucked: int | None = None  # which antenna is parked over the head (not in the mood)
     _ear_seq_at: float = 0.0  # when the swat finishes and the make-up nuzzle starts
+    _body_first: float = 0.0  # a torso has been in view since (0 = none)
+    _body_ignore: list = field(default_factory=list)  # (yaw, until): spots that turned out not to be people
 
     # bookkeeping
     _state_since: float = 0.0
@@ -334,6 +340,10 @@ class Behavior:
             return [Action("sound", "annoyed", 3), Action("ears", f"tuck:{i}", 3)]
         self._think(now, f"eek, my {side} ear! can't catch it")
         return [Action("sound", self.rng.choice(["giggle", "ticklish"]), 2), Action("ears", f"away:{i}", 3), Action("gesture", f"flinch:{'+' if i == 1 else '-'}", 2)]
+
+    def _body_ignored(self, yaw: float, now: float) -> bool:
+        self._body_ignore = [(y, until) for y, until in self._body_ignore if until > now]
+        return any(abs(yaw - y) < BODY_IGNORE_DEG for y, _ in self._body_ignore)
 
     def _nag(self, obs: Observation, now: float) -> list[Action]:
         """ask_attention: complain alone, beg when someone is near, every 20 s or so."""
@@ -702,31 +712,51 @@ class Behavior:
                     actions.append(Action("sound", choice, 1))
                     actions.append(Action("gesture", gesture, 1))
 
-            elif obs.body is not None and self.state != "ENGAGED" and now - self._last_face_time > 2.5 and obs.busy != "mime":
+            elif (obs.body is not None and self.state != "ENGAGED" and now - self._last_face_time > 2.5 and obs.busy != "mime"
+                  and not self._body_ignored(obs.body.yaw_deg, now)):
                 # Someone's torso is in view but not their face: look up to where the head should be.
+                # A torso has to persist before it is believed (the detector flickers on furniture), and if a
+                # minute of staring finds no face, that spot is not a person and is ignored for a while.
                 self._close_since = 0.0
-                if self._body_since == 0.0:
-                    self._body_since = now
-                    self._think(now, "a body! looking up for the face")
-                self.gaze = (obs.body.yaw_deg, obs.body.pitch_deg)
-                self._last_seen_yaw, self._last_seen_pitch = obs.body.yaw_deg, obs.body.pitch_deg
-                self._last_interaction = now
-                if self.state == "IDLE":
-                    self._enter("SEARCHING", now)
-                    actions.append(Action("gesture", "perk", 1))
-                elif self.state == "SEARCHING":
-                    self._state_since = now  # keep searching while there is a body to look at
+                if self._body_first == 0.0:
+                    self._body_first = now
+                if now - self._body_first < BODY_CONFIRM_S:
+                    pass
+                elif now - self._body_since > BODY_GIVE_UP_S and self._body_since != 0.0:
+                    self._body_ignore.append((obs.body.yaw_deg, now + BODY_IGNORE_S))
+                    self._think(now, f"no face up there after {BODY_GIVE_UP_S:.0f} s... that's not a person. ignoring it")
+                    self._body_since, self._body_first = 0.0, 0.0
+                    self.gaze = None
+                    if self.state == "SEARCHING":
+                        self._enter("IDLE", now)
+                        self._next_glance = now + 0.5
+                else:
+                    if self._body_since == 0.0:
+                        self._body_since = now
+                        self._think(now, "a body! looking up for the face")
+                    self.gaze = (obs.body.yaw_deg, obs.body.pitch_deg)
+                    self._last_seen_yaw, self._last_seen_pitch = obs.body.yaw_deg, obs.body.pitch_deg
+                    self._last_interaction = now
+                    if self.state == "IDLE":
+                        self._enter("SEARCHING", now)
+                        actions.append(Action("gesture", "perk", 1))
+                    elif self.state == "SEARCHING":
+                        self._state_since = now  # keep searching while there is a body to look at
             else:  # no face this tick
                 self._close_since = 0.0
-                self._body_since = 0.0
+                if obs.body is None:
+                    self._body_first = 0.0
+                    if self._body_since and now - self._body_since > 1.5:
+                        self._body_since = 0.0  # a torso gone for a while: a fresh one is news again
                 self._mimic_candidate_since = 0.0
                 if self.mimicking and now - self._last_face_time > 1.0:
                     self.mimicking = False
                     self._think(now, "mirror game over (lost you)")
                     actions.append(Action("sound", "mirror_end", 2))
                     self._end_activity(now, cooldown=60.0)
-                if self.state == "ENGAGED" and (obs.dance_bpm > 0 or obs.busy == "mime"):
-                    pass  # mid-dance, or showing a Simon says move, the camera is moving: keep the gaze, no search
+                if self.state == "ENGAGED" and (obs.dance_bpm > 0 or obs.busy in ("mime", "gesture")):
+                    pass  # mid-dance, a Simon says move or a solo gesture (bow, sneeze): the camera is moving, keep the gaze
+                    self._last_face_time = max(self._last_face_time, now - 0.5)  # and the face-lost clock waits too
                 elif self.state == "ENGAGED":
                     if now - self._last_face_time > t.face_lost_grace:
                         engaged_for = now - self._engaged_since

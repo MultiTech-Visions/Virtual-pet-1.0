@@ -152,7 +152,9 @@ def choose(d: Drives, s: Situation, current: str, cool: dict[str, float], now: f
 class Attention:
     """Where it has looked lately, by yaw sector, so "look around" goes somewhere new."""
 
-    seen: list[float] = field(default_factory=lambda: [-1e9] * SECTORS)
+    # Never looked anywhere: the sectors start "stale" in an order that alternates sides (far left, far right,
+    # near left, near right, ...), so a robot scanning a room from cold sweeps both ways instead of one.
+    seen: list[float] = field(default_factory=lambda: [-1e9 + (0, 4, 2, 5, 1, 3)[i] for i in range(SECTORS)])
 
     @staticmethod
     def sector(yaw_deg: float) -> int:

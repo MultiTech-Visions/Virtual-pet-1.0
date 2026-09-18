@@ -39,7 +39,7 @@ from festival_pet.behavior import Action, Behavior, FaceObs, Observation
 from festival_pet.keypad import KeyMap, KeypadListener
 from festival_pet.memory import FaceMemory
 from festival_pet.mime import MimeGame
-from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose
+from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose, SOLO_GESTURES
 from festival_pet import songs
 from festival_pet.senses import ImuRubDetector, LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
@@ -439,6 +439,9 @@ class Pet:
             self.pickup.update(imu["accelerometer"], imu["gyroscope"], now, self_moving)  # stats only; "held" is the switch below
             if self.imu_rub.update(self.pickup.stats["gyro"], self_moving, now):
                 obs.petted = True  # a hand just started rubbing the head (felt through the IMU: works with ears off)
+            if self.imu_rub.calibration is not None and self.imu_rub.calibration["phase"] not in ("done", "failed"):
+                if self.imu_rub.calibration_step(self.pickup.stats["gyro"], self_moving, now):
+                    self.save_settings()  # the floor it found is a setting
         # Antennas lag their command while animated; the detector raises its threshold then.
         busy = self.move is not None or comp.gesture_active(now)
         present_ants = io.present_antennas()
@@ -541,7 +544,8 @@ class Pet:
                 beh._think(now, "thank you, thank you")
 
         # ---------------- brain
-        obs.busy = "mime" if self.mime.active else "sing" if now < self._singing_until else None
+        solo = comp._gesture is not None and comp._gesture.name in SOLO_GESTURES and comp.gesture_active(now)
+        obs.busy = "mime" if self.mime.active else "sing" if now < self._singing_until else "gesture" if solo else None
         beh.can_sing = self.singing_enabled and not self.asleep and self.move is None
         actions = beh.tick(obs, now, dt)
         comp.energy = beh.mood.energy
@@ -838,6 +842,7 @@ class Pet:
             },
             "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
+            "imu_calibration": self.imu_rub.calibration,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
             "dance_params": {"min_amp": self.dance._min_amp, "min_conf": self.dance._min_conf},
             "audio_history": self.audio.meter.history(),
@@ -946,7 +951,10 @@ class Pet:
         elif cmd == "rub_floor":
             self.audio.rub.floor = float(value)
         elif cmd == "calibrate":
-            self.audio.start_calibration(str(value), now)
+            if str(value) == "imu":
+                self.imu_rub.start_calibration(now)
+            else:
+                self.audio.start_calibration(str(value), now)
         elif cmd == "body_finder":
             vision = getattr(self, "vision", None)
             if vision is None:
