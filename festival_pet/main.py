@@ -364,7 +364,6 @@ class Pet:
         self.songs: list[dict] = []  # the repertoire (saved songs)
         self.last_song: dict | None = None
         self._singing_until = 0.0
-        self._next_song_at = 0.0
         self.songs_file: Path | None = None
         self.pose_history: PoseHistory | None = None  # set on the real robot; fed every tick for the vision thread
         # Actions asked for from the web page / a keypad. They are run by the control loop, never on the
@@ -530,7 +529,7 @@ class Pet:
             if beh.mimicking:
                 beh.mimicking = False
 
-        # ---------------- singing (an idle activity when enabled)
+        # ---------------- singing (the brain chooses it; we perform it)
         if now < self._singing_until:
             song = self.last_song
             comp.groove = (self.tap.phase(now), self.tap.bar_phase(now), 0.7 * self.groove_scale) if song else comp.groove
@@ -538,11 +537,10 @@ class Pet:
             if now >= self._singing_until - 0.02:
                 comp.request_gesture("bow", now, 4)  # take a bow
                 beh._think(now, "thank you, thank you")
-        elif (self.singing_enabled and not self.asleep and beh.state in ("IDLE", "ENGAGED") and beh.mood.energy > 0.35
-              and now >= self._next_song_at and self.move is None and not comp.gesture_active(now) and not self.mime.active):
-            self.sing(now)
 
         # ---------------- brain
+        obs.busy = "mime" if self.mime.active else "sing" if now < self._singing_until else None
+        beh.can_sing = self.singing_enabled and not self.asleep and self.move is None
         actions = beh.tick(obs, now, dt)
         comp.energy = beh.mood.energy
         comp.mode = {"SLEEPING": "sleeping", "HELD": "held"}.get(beh.state, "awake")
@@ -631,6 +629,15 @@ class Pet:
                 self.move, self.move_t0 = move, time.time()
                 if PLAY_LIBRARY_SOUNDS and move.sound_path is not None:
                     self.p.io.play_file(str(move.sound_path))
+        elif act.kind == "activity":
+            # The brain decided what to do; the games and songs it cannot run itself start here.
+            if act.name == "sing":
+                self.sing(now)
+            elif act.name == "mime":
+                if self._last_obs.face is not None:
+                    self.mime.mirror_image = comp.mimic_flip
+                    for item in self.mime.start(now):
+                        self._mime_action(item, now)
         elif act.kind == "wake":
             # Never trust the flag alone: the daemon boots asleep (--no-wake-up-on-start) and an app can be
             # launched into that, so a limp robot is woken whatever we think our state is.
@@ -696,7 +703,6 @@ class Pet:
         self.sound.request_buffer(buf, "song:" + song["name"], 2, now)
         self.last_song = song
         self._singing_until = now + dur
-        self._next_song_at = now + rng.uniform(90.0, 240.0)
         self.tap.set_bpm(song["bpm"], beat_at=now + 0.08)  # bob along; the page shows the tempo too
         self.audio.deaf_until = max(self.audio.deaf_until, now + dur + 0.5)
         self.p.behavior._think(now, "a song! " + songs.describe(song))
@@ -796,7 +802,7 @@ class Pet:
             "mind": self.p.behavior.mind(now),
             "feeling": self._feeling(now),
             "mime": self.mime.status(now),
-            "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs], "next_in_s": round(max(0.0, self._next_song_at - now)) if self.singing_enabled else None},
+            "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs], "next_in_s": round(max(0.0, self.p.behavior._cool.get("sing", now) - now)) if self.singing_enabled else None},
             "build": build_info(),
             "asleep": self.asleep,
             "transcript": [{"t": round(now - t, 1), "text": txt.split("|")[0], "intents": ints} for t, txt, ints in reversed(self.transcript)],
@@ -881,8 +887,7 @@ class Pet:
                 for item in self.mime.stop(now):
                     self._mime_action(item, now)
         elif cmd == "singing":
-            self.singing_enabled = bool(value)
-            self._next_song_at = now + 20.0  # first song soon after switching on
+            self.singing_enabled = bool(value)  # the brain picks songs when it feels like one (drives.py)
         elif cmd == "sing":
             if self.asleep:
                 raise ValueError("asleep")

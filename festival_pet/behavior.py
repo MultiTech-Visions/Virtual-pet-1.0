@@ -19,6 +19,22 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
+from festival_pet.drives import (
+    ASK_CEILING_S,
+    ASK_MIN_INTERVAL_S,
+    BORED_NEW_ACTIVITY,
+    BORED_NEW_FACE,
+    BORED_TOUCH,
+    CURIOSITY_LOUD,
+    CURIOSITY_NEW_FACE,
+    CURIOSITY_NEW_SECTOR,
+    HESITATE_MARGIN,
+    Attention,
+    Drives,
+    Situation,
+    choose,
+    signature,
+)
 from festival_pet.hearing import intents_in
 from festival_pet.memory import FaceMemory, Person
 
@@ -67,25 +83,16 @@ class Observation:
     music_bpm: float = 0.0  # 0 when no confident beat
     music_confidence: float = 0.0
     dance_bpm: float = 0.0  # someone visibly bobbing at this tempo (0 = nobody dancing)
+    busy: str | None = None  # an activity the robot layer is running for the brain: "mime" or "sing"
 
 
 @dataclass
 class Action:
     """A request for the robot layer."""
 
-    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror", "heard", "mimic"]
+    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror", "heard", "mimic", "activity"]
     name: str
     priority: int = 1  # higher preempts lower for gestures/moves
-
-
-@dataclass
-class Mood:
-    energy: float = 0.8  # 0 exhausted .. 1 bouncy
-    social: float = 0.5  # 0 lonely .. 1 fulfilled
-
-    def clamp(self) -> None:
-        self.energy = min(1.0, max(0.0, self.energy))
-        self.social = min(1.0, max(0.0, self.social))
 
 
 @dataclass
@@ -132,7 +139,24 @@ class Behavior:
     timers: Timers = field(default_factory=Timers)
     rng: random.Random = field(default_factory=random.Random)
     state: State = "SLEEPING"
-    mood: Mood = field(default_factory=Mood)
+    mood: Drives = field(default_factory=Drives)
+
+    # the activity layer (drives.py): what it has decided to be doing, and how it got there
+    activity: str = "hangout"
+    runner_up: str | None = None
+    can_sing: bool = False  # the robot layer says whether songs are switched on
+    can_mime: bool = True
+    attention: Attention = field(default_factory=Attention)
+    _activity_since: float = 0.0
+    _activity_prev: str = ""
+    _cool: dict = field(default_factory=dict)  # activity -> earliest time it may be chosen again
+    _last_sig: tuple = ()
+    _last_ask: float = -1e9
+    _margin: float = 1.0
+    _scores: dict = field(default_factory=dict)
+    _close_hold_since: float = 0.0
+    _next_nag: float = 0.0  # ask_attention repeats
+    _nag_company: bool = False
 
     # bookkeeping
     _state_since: float = 0.0
@@ -200,6 +224,99 @@ class Behavior:
         self._last_face_time = now
         self._next_glance = now + self.rng.uniform(self.timers.idle_glance_min, self.timers.idle_glance_max)
         self._next_sneeze = now + self.rng.uniform(self.timers.sneeze_min, self.timers.sneeze_max)
+        self._activity_since = now
+
+    # ------------------------------------------------------------------ the activity layer
+    def _situation(self, obs: Observation, now: float) -> Situation:
+        face = obs.face
+        if face is not None and face.area_frac >= self.timers.mimic_min_area:
+            if self._close_hold_since == 0.0:
+                self._close_hold_since = now
+        else:
+            self._close_hold_since = 0.0
+        close = self._close_hold_since != 0.0 and now - self._close_hold_since >= self.timers.mimic_hold
+        return Situation(person=face is not None, close=close, beat=obs.music_bpm > 0 or obs.dance_bpm > 0, held=obs.held,
+                         busy=obs.busy, can_sing=self.can_sing, can_mime=self.can_mime and face is not None)
+
+    def _choose(self, obs: Observation, now: float) -> list[Action]:
+        """Re-decide what to be doing when the situation changes, when a game or song ends, or every so often."""
+        sit = self._situation(obs, now)
+        actions: list[Action] = []
+        if self.activity in ("mime", "sing") and sit.busy != self.activity and now - self._activity_since > 1.0:
+            # the robot layer finished (or refused) it: back to choosing, and not that again for a while
+            self._end_activity(now, cooldown=self.rng.uniform(90.0, 240.0))
+        if sit.busy in ("mime", "sing") and self.activity != sit.busy:
+            self._switch(sit.busy, now)  # started from the page or a keypad: that is what we are doing now
+            return actions
+        if sit.busy is not None:
+            return actions  # a game or a song runs to its end
+        sig = signature(self.mood, sit)
+        changed = sig != self._last_sig and now - self._last_ask >= ASK_MIN_INTERVAL_S
+        if not (changed or now - self._last_ask >= ASK_CEILING_S or self._last_ask == -1e9):
+            return actions
+        self._last_sig, self._last_ask = sig, now
+        choice = choose(self.mood, sit, self.activity, self._cool, now, self.rng)
+        self.runner_up, self._margin, self._scores = choice.runner_up, choice.margin, choice.scores
+        if choice.activity == self.activity:
+            return actions
+        if choice.margin < HESITATE_MARGIN and choice.runner_up is not None:
+            self._think(now, f"hmm... {choice.activity.replace('_', ' ')}? or {choice.runner_up.replace('_', ' ')}?")
+            actions.append(Action("gesture", "tilt", 1))
+        actions += self._switch(choice.activity, now)
+        return actions
+
+    def _end_activity(self, now: float, cooldown: float) -> None:
+        self._cool[self.activity] = now + cooldown
+        self._activity_prev, self.activity, self._activity_since = self.activity, "hangout", now
+        self._last_sig, self._last_ask = (), -1e9  # re-decide on the next tick
+
+    def _switch(self, new: str, now: float) -> list[Action]:
+        old = self.activity
+        if new != self._activity_prev:  # a genuinely new pastime; bouncing back to the one just left is no relief
+            self.mood.boredom -= BORED_NEW_ACTIVITY
+            self.mood.clamp()
+        if old == "mirror" and self.mimicking:
+            self.mimicking = False
+            self._cool["mirror"] = now + 60.0
+        self._activity_prev, self.activity, self._activity_since = old, new, now
+        self._last_sig = ()
+        out: list[Action] = [Action("activity", new, 0)]
+        why = f"(bored {self.mood.boredom:.1f}, curious {self.mood.curiosity:.1f}, social {self.mood.social:.1f}, energy {self.mood.energy:.1f})"
+        if new == "mirror":
+            self.mimicking, self._mimic_since = True, now
+            self._think(now, f"you're right up close... let's play mirror. I'll copy you {why}")
+            out.append(Action("sound", "mirror_start", 2))
+        elif new == "mime":
+            self._think(now, f"I want to play... mime game! {why}")
+        elif new == "sing":
+            self._think(now, f"I feel a song coming on {why}")
+        elif new == "look_around":
+            self._think(now, f"what else is around here? {why}")
+            self._next_glance = now
+        elif new == "rest":
+            self._think(now, f"so tired... resting {why}")
+            out += [Action("sound", "sleepy", 1), Action("gesture", "droop", 1)]
+        elif new == "ask_attention":
+            self._next_nag = now
+            self._think(now, f"I want some attention {why}")
+        elif new == "watch":
+            self._think(now, f"someone's here, watching them {why}")
+        elif new == "hangout":
+            self._think(now, f"just hanging out {why}")
+        return out
+
+    def _nag(self, obs: Observation, now: float) -> list[Action]:
+        """ask_attention: complain alone, beg when someone is near, every 20 s or so."""
+        company = obs.face is not None
+        if now < self._next_nag and not (company and not self._nag_company):
+            return []  # (someone turning up is worth begging at once)
+        self._next_nag, self._nag_company = now + self.rng.uniform(15.0, 25.0), company
+        if company:
+            self._think(now, "hey! over here! play with me?")
+            return [Action("sound", "excited", 2), Action("gesture", "bounce", 2)]
+        self._think(now, "anyone...? so lonely")
+        self._last_lonely = now
+        return [Action("sound", "lonely", 1), Action("gesture", "droop", 1)]
 
     # ------------------------------------------------------------------ helpers
     def _enter(self, state: State, now: float) -> None:
@@ -222,15 +339,15 @@ class Behavior:
         actions: list[Action] = []
         t = self.timers
 
-        # -- mood drift ----------------------------------------------------------------
-        if self.state == "SLEEPING":
-            self.mood.energy += dt * 0.01
-        else:
-            self.mood.energy -= dt * 0.0006
-        if self.state in ("ENGAGED", "HELD"):
-            self.mood.social += dt * 0.01
-        else:
-            self.mood.social -= dt * 0.0015
+        # -- drives drift ----------------------------------------------------------------
+        self.mood.tick(dt, self.state, self.activity, obs.face is not None)
+        if obs.touched or obs.petted or obs.scratched:
+            self.mood.boredom -= BORED_TOUCH
+        if obs.loud_yaw_deg is not None:
+            self.mood.curiosity -= CURIOSITY_LOUD
+        if obs.face is not None and obs.face.track_id != self._engaged_track:
+            self.mood.boredom -= BORED_NEW_FACE  # a new face is the most interesting thing that can happen
+            self.mood.curiosity -= CURIOSITY_NEW_FACE
         self.mood.clamp()
 
         # -- global interrupts: pickup and touch work in every awake state ---------------
@@ -398,6 +515,16 @@ class Behavior:
                 self.memory.add_hold(self._engaged_person)
             self._enter("HELD", now)
 
+        # -- what to be doing ----------------------------------------------------------------
+        if self.state in ("IDLE", "SEARCHING", "ENGAGED"):
+            actions += self._choose(obs, now)
+            if self.activity == "ask_attention":
+                actions += self._nag(obs, now)
+        elif self.activity != "hangout":
+            if self.activity == "mirror" and self.mimicking:
+                self.mimicking = False
+            self._activity_prev, self.activity, self._activity_since = self.activity, "hangout", now
+
         # -- per-state ------------------------------------------------------------------
         if self.state == "SLEEPING":
             # Camera is off while asleep: only the ears (name, a loud voice, head pets, ear tickles) wake it.
@@ -441,6 +568,7 @@ class Behavior:
                 self._last_seen_yaw, self._last_seen_pitch = face.yaw_deg, face.pitch_deg
                 if now >= self._voice_lock_until:
                     self.gaze = (face.yaw_deg, face.pitch_deg)
+                    self.attention.looked(face.yaw_deg, now)
 
                 gap = now - self._last_face_time
                 if face.track_id == self._engaged_track and t.peekaboo_min_gap < gap < t.peekaboo_max_gap and now - self._last_peekaboo > t.peekaboo_cooldown:
@@ -508,23 +636,14 @@ class Behavior:
                     self.memory.add_attention(self._engaged_person, dt)
                 self._last_interaction = now
 
-                # The mirror game: a close, steady face for a couple of seconds and it goes quiet and copies you.
-                if not self.mimicking:
-                    if face.area_frac >= t.mimic_min_area:
-                        if self._mimic_candidate_since == 0.0:
-                            self._mimic_candidate_since = now
-                        elif now - self._mimic_candidate_since >= t.mimic_hold and obs.dance_bpm == 0:
-                            self.mimicking, self._mimic_since = True, now
-                            self._think(now, "you're right up close... let's play mirror. I'll copy you")
-                            actions.append(Action("sound", "mirror_start", 2))
-                    else:
-                        self._mimic_candidate_since = 0.0
-                elif face.area_frac < t.mimic_exit_area or now - self._mimic_since > t.mimic_max_s or obs.dance_bpm > 0:
+                # The mirror game is chosen by the activity layer (a close face for a couple of seconds makes it
+                # available); it ends when they back away, after a minute, or when a dance starts.
+                if self.mimicking and (face.area_frac < t.mimic_exit_area or now - self._mimic_since > t.mimic_max_s or obs.dance_bpm > 0):
                     self.mimicking = False
-                    self._mimic_candidate_since = 0.0
                     self._think(now, "mirror game over")
                     actions.append(Action("sound", "mirror_end", 2))
                     actions.append(Action("gesture", "wiggle", 1))
+                    self._end_activity(now, cooldown=60.0)
                 if self.mimicking:
                     actions.append(Action("mimic", f"{face.head_yaw_deg:.1f},{face.head_pitch_deg:.1f},{face.roll_deg:.1f}", 0))
                     self._next_react = now + 5.0  # no micro-reactions while mirroring
@@ -580,6 +699,7 @@ class Behavior:
                     self.mimicking = False
                     self._think(now, "mirror game over (lost you)")
                     actions.append(Action("sound", "mirror_end", 2))
+                    self._end_activity(now, cooldown=60.0)
                 if self.state == "ENGAGED" and obs.dance_bpm > 0:
                     pass  # mid-dance the tracker blinks a lot (we are moving too): keep dancing, keep the gaze
                 elif self.state == "ENGAGED":
@@ -611,14 +731,21 @@ class Behavior:
                         actions.append(Action("gesture", "perk", 2))
                         actions.append(Action("sound", "curious", 1))
                         self._next_glance = now + 2.0
-                    elif now >= self._next_glance:
+                    elif now >= self._next_glance and self.activity != "rest":
                         # Look around properly: a wide gaze target, so the body turns too and it can see
                         # someone standing right beside it, off camera. (A head-only glance never turned the body.)
-                        self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
-                        side = self.rng.choice((-1.0, 1.0))
-                        self._look_at = (side * self.rng.uniform(35.0, 100.0), self.rng.uniform(-6.0, 10.0))
+                        if self.activity == "look_around":
+                            # curious: go somewhere it has not looked lately, and keep going
+                            yaw = self.attention.stalest(now, self.rng)
+                            self._next_glance = now + self.rng.uniform(2.0, 4.5)
+                        else:
+                            yaw = self.rng.choice((-1.0, 1.0)) * self.rng.uniform(35.0, 100.0)
+                            self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
+                        if self.attention.looked(yaw, now):
+                            self.mood.curiosity -= CURIOSITY_NEW_SECTOR  # a real change of scene spends curiosity
+                        self._look_at = (yaw, self.rng.uniform(-6.0, 10.0))
                         self._look_until = now + self.rng.uniform(1.8, 3.2)
-                        actions.append(Action("gesture", "glance:" + ("+" if side > 0 else "-"), 0))
+                        actions.append(Action("gesture", "glance:" + ("+" if yaw > 0 else "-"), 0))
                     if now < self._look_until:
                         self.gaze = self._look_at
                     alone_for = now - self._last_interaction
@@ -632,7 +759,7 @@ class Behavior:
                         self._think(now, "so tired... going to sleep" if self.mood.energy < 0.08 else f"nobody around for {alone_for / 60:.0f} min, dozing off")
                         self._enter("SLEEPING", now)
                         self._face_first_seen = 0.0
-                    elif alone_for > t.lonely_after and now - self._last_lonely > t.lonely_repeat:
+                    elif alone_for > t.lonely_after and now - self._last_lonely > t.lonely_repeat and self.activity != "ask_attention":
                         self._last_lonely = now
                         actions.append(Action("sound", "lonely", 1))
                         self._think(now, f"alone for {alone_for:.0f} s... lonely")
@@ -750,6 +877,9 @@ class Behavior:
             "engaged_tier": None if self._engaged_person is None else self._engaged_person.tier(),
             "gaze": self.gaze,
             "mimicking": self.mimicking,
+            "activity": self.activity,
+            "runner_up": self.runner_up,
+            "drives": self.mood.as_dict(),
         }
 
     def mind(self, now: float) -> dict:
@@ -759,6 +889,11 @@ class Behavior:
         return {
             **self.status(),
             "state_for_s": round(now - self._state_since, 1),
+            "activity_for_s": round(now - self._activity_since, 1),
+            "margin": round(self._margin, 2),
+            "scores": self._scores,
+            "cooldowns": {k: round(v - now) for k, v in self._cool.items() if v > now},
+            "next_decision_in_s": round(max(0.0, self._last_ask + ASK_CEILING_S - now)),
             "alone_for_s": round(alone, 1),
             "lonely_in_s": round(max(0.0, t.lonely_after - alone), 1),
             "sleep_in_s": round(max(0.0, t.sleep_after - alone), 1),

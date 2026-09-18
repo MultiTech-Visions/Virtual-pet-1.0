@@ -66,8 +66,11 @@
     <div class="big" id="state">…</div>
     <div class="sub" id="state-sub"></div>
     <div class="feeling" id="feeling"></div>
+    <div class="sub" id="activity"></div>
     <label>Energy</label><div class="bar"><i id="energy"></i></div>
     <label>Social</label><div class="bar pink"><i id="social"></i></div>
+    <label>Curiosity</label><div class="bar"><i id="curiosity"></i></div>
+    <label>Boredom</label><div class="bar pink"><i id="boredom"></i></div>
     <div class="kv" id="timers"></div>
   </div>
   <div class="card">
@@ -404,9 +407,13 @@ async function refresh() {
     const f = d.feeling, fe = x => x ? `${FEEL[x.name.split(':')[0]] || ''} <b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
     $('feeling').innerHTML = `feeling: ${fe(f.motion)} · sounding: ${fe(f.sound)}`;
     $('energy').style.width = (m.energy * 100) + '%'; $('social').style.width = (m.social * 100) + '%';
+    $('curiosity').style.width = (m.drives.curiosity * 100) + '%'; $('boredom').style.width = (m.drives.boredom * 100) + '%';
+    const ACT = {hangout: '🫧 hanging out', watch: '👀 watching them', look_around: '🔭 looking around', mirror: '🪞 mirror game', mime: '🎭 mime game', sing: '🎵 singing', rest: '😪 resting', ask_attention: '🥺 wants attention'};
+    const scores = Object.entries(m.scores || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace('_', ' ')} ${v.toFixed(2)}`).join(' · ');
+    $('activity').innerHTML = `doing: <b>${ACT[m.activity] || m.activity}</b> for ${m.activity_for_s}s` + (m.runner_up ? ` · nearly: ${m.runner_up.replace('_', ' ')} (margin ${m.margin})` : '') + `<br><small>${scores}</small>` + (Object.keys(m.cooldowns || {}).length ? `<br><small>not again yet: ${Object.entries(m.cooldowns).map(([k, v]) => `${k} ${v}s`).join(', ')}</small>` : '');
     kv('timers', {'alone for': m.alone_for_s + ' s', 'lonely in': m.lonely_in_s + ' s', 'sleep in': m.sleep_in_s + ' s',
       'next reaction': m.next_reaction_in_s === null ? '—' : m.next_reaction_in_s + ' s', 'next glance': m.next_glance_in_s === null ? '—' : m.next_glance_in_s + ' s',
-      'listening for trick': m.listening_for_trick_s > 0 ? m.listening_for_trick_s + ' s' : 'no', 'little dance': m.little_dance_s > 0 ? m.little_dance_s + ' s' : '—', 'next sneeze': m.next_sneeze_in_s + ' s', 'gaze': m.gaze ? m.gaze.map(x => x.toFixed(0)).join('°, ') + '°' : 'free'});
+      'listening for trick': m.listening_for_trick_s > 0 ? m.listening_for_trick_s + ' s' : 'no', 'little dance': m.little_dance_s > 0 ? m.little_dance_s + ' s' : '—', 'next sneeze': m.next_sneeze_in_s + ' s', 'rethink in': m.next_decision_in_s + ' s', 'gaze': m.gaze ? m.gaze.map(x => x.toFixed(0)).join('°, ') + '°' : 'free'});
     $('thoughts').innerHTML = m.thoughts.map(t => `<li><small>${t.t}s ago</small>${t.text}</li>`).join('') || '<li class="sub">…</li>';
     $('actions').innerHTML = d.recent_actions.map(a => `<li><small>${a.t}s ago</small>${a.a}</li>`).join('');
     $('transcript').innerHTML = d.transcript.map(x => `<li><small>${x.t}s ago</small>“${x.text}”${x.intents.length ? ' <span class="tier">→ ' + x.intents.join(', ') + '</span>' : ''}</li>`).join('') || '<li class="sub">nothing yet</li>';
