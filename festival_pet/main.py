@@ -753,6 +753,12 @@ class Pet:
             vision = getattr(self, "vision", None)
             if vision is not None:
                 vision.capture_now = True
+        elif kind == "clock":
+            if item[1] is None:
+                comp.ears_clear()
+            else:
+                i, frac = item[1], item[2]
+                comp.ear_clock(i, frac, now)
         elif kind == "think":
             self.p.behavior._think(now, item[1])
         else:

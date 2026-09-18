@@ -112,3 +112,19 @@ def test_moves_are_judged_against_the_persons_own_rest_pose():
     moved = lambda _: face(head_yaw=15.0 + yaw * 1.2, head_pitch=6.0 + pitch * 1.2, roll=-4.0 + roll * 1.2)
     acts = run(g, 5.7, 6.4, moved)
     assert "yes" in kinds(acts, "sound")
+
+
+def test_the_clock_ear_counts_the_wait_down_and_clears():
+    from festival_pet.mime import clock_ear
+
+    assert clock_ear("look left") == 1 and clock_ear("look right") == 0 and clock_ear("tilt left") == 1 and clock_ear("look up") == 0
+    g = MimeGame(random.Random(6))
+    g.start(0.0)
+    acts = run(g, 0.0, INTRO_S + DEMO_S + GAP_S + 0.3, lambda _: face())
+    assert g.state == "wait"
+    t0 = INTRO_S + DEMO_S + GAP_S + 0.3
+    early = [a for a in run(g, t0, t0 + 0.2, lambda _: face()) if a[0] == "clock"]
+    late = [a for a in run(g, t0 + 3.0, t0 + 3.2, lambda _: face()) if a[0] == "clock"]
+    assert early and late and early[0][1] == clock_ear(g.sequence[0]) and early[0][2] < 0.2 < 0.8 < late[0][2]
+    acts = run(g, t0 + 3.2, t0 + 4.5, lambda _: face())  # time runs out
+    assert ("clock", None) in acts

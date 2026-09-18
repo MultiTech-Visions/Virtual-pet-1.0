@@ -25,7 +25,7 @@ PITCH_LIMIT = 36.0  # SDK clamps at 40; squatting people are low
 BODY_YAW_LIMIT = 150.0
 BODY_DEADBAND = 12.0  # head can point this far off-body before the body starts turning
 BODY_RATE = 45.0  # deg/s, for the ordinary drift after a gaze
-BODY_RATE_FAR = 80.0  # deg/s when the gaze is beyond the head's reach: body for coarse, head for fine
+BODY_RATE_FAR = 65.0  # deg/s when the gaze is beyond the head's reach: body for coarse, head for fine
 ROLL_LIMIT = 25.0
 Z_LIMIT_M = 0.02
 
@@ -493,6 +493,14 @@ class MotionComposer:
         """Not in the mood: antenna ``i`` goes forward over the head and stays there."""
         sign = -1.0 if i == 0 else 1.0
         self.ear_hold[i], self.ear_hold_until[i] = -sign * self.EAR_TUCK, now + hold_s
+
+    EAR_CLOCK_DOWN = 1.5  # horizontal, pointing forward at the person (the hinge runs front-to-back)
+
+    def ear_clock(self, i: int, frac: float, now: float) -> None:
+        """A clock hand for a countdown: antenna ``i`` from horizontal-forward (frac 0) up to vertical (frac 1)."""
+        sign = -1.0 if i == 0 else 1.0
+        self.ear_hold[i] = -sign * self.EAR_CLOCK_DOWN * (1.0 - max(0.0, min(1.0, frac)))
+        self.ear_hold_until[i] = now + 0.3
 
     def ears_clear(self) -> None:
         self.ear_hold = [None, None]

@@ -208,7 +208,8 @@ def test_a_torso_with_no_face_is_given_up_on_and_ignored():
     body = FaceObs(-1, 40.0, -20.0, 0.2, None, 0.0)
     _run(b, lambda t: Observation(), 0.0, 3.0)
     acts = _run(b, lambda t: Observation(body=body), 3.0, 3.8)
-    assert b.gaze is None or b.gaze[0] != 40.0  # a flicker of torso is not believed yet
+    assert b.gaze == (40.0, -20.0) and b.state == "IDLE"  # paused on it, but not believed yet (no search, no thought)
+    assert not any("a body!" in txt for _, txt in b.thoughts)
     _run(b, lambda t: Observation(body=body), 3.8, 5.0)
     assert b.gaze == (40.0, -20.0) and b.state == "SEARCHING"
     _run(b, lambda t: Observation(body=body), 5.0, 12.0)
@@ -219,6 +220,20 @@ def test_a_torso_with_no_face_is_given_up_on_and_ignored():
     _run(b, lambda t: Observation(body=other), 17.0, 20.0)
     assert b.gaze == (-80.0, -20.0)  # a torso somewhere else is still worth a look
     assert sum(1 for _, txt in b.thoughts if "a body!" in txt) == 2  # one thought per torso, not per tick
+
+
+def test_a_glimpse_of_a_torso_pauses_the_sweep_and_blinks_do_not_reset_it():
+    b, _ = _brain()
+    b._last_face_time = -10.0
+    b.activity = "look_around"
+    b._look_at, b._look_until, b._next_glance = (120.0, 0.0), 5.0, 5.0
+    body = FaceObs(-1, 40.0, -20.0, 0.2, None, 0.0)
+    b.tick(Observation(body=body), 1.0, 0.05)
+    assert b.gaze == (40.0, -20.0) and b._next_glance >= 2.5  # stopped on it at once, before believing it
+    # the detector blinks for half a second: still the same torso
+    _run(b, lambda t: Observation(), 1.05, 1.5)
+    _run(b, lambda t: Observation(body=body), 1.5, 2.3)
+    assert b.state == "SEARCHING" and any("a body!" in txt for _, txt in b.thoughts)
 
 
 def test_a_solo_gesture_does_not_lose_the_person():

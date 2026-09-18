@@ -167,6 +167,7 @@ class Behavior:
     _ear_tucked: int | None = None  # which antenna is parked over the head (not in the mood)
     _ear_seq_at: float = 0.0  # when the swat finishes and the make-up nuzzle starts
     _body_first: float = 0.0  # a torso has been in view since (0 = none)
+    _body_last: float = -1e9  # a torso was last in view at
     _last_sleepy: float = -1e9  # the sleepy noise is rationed
     _body_ignore: list = field(default_factory=list)  # (yaw, until): spots that turned out not to be people
 
@@ -739,8 +740,12 @@ class Behavior:
                 self._close_since = 0.0
                 if self._body_first == 0.0:
                     self._body_first = now
+                self._body_last = now
                 if now - self._body_first < BODY_CONFIRM_S:
-                    pass
+                    # not believed yet, but worth pausing for: stop the sweep on it so it does not roll by
+                    self.gaze = (obs.body.yaw_deg, obs.body.pitch_deg)
+                    self._look_until = max(self._look_until, now + 1.5)
+                    self._next_glance = max(self._next_glance, now + 1.5)
                 elif now - self._body_since > BODY_GIVE_UP_S and self._body_since != 0.0:
                     self._body_ignore.append((obs.body.yaw_deg, now + BODY_IGNORE_S))
                     self._think(now, f"no face up there after {BODY_GIVE_UP_S:.0f} s... that's not a person. ignoring it")
@@ -763,10 +768,9 @@ class Behavior:
                         self._state_since = now  # keep searching while there is a body to look at
             else:  # no face this tick
                 self._close_since = 0.0
-                if obs.body is None:
-                    self._body_first = 0.0
-                    if self._body_since and now - self._body_since > 1.5:
-                        self._body_since = 0.0  # a torso gone for a while: a fresh one is news again
+                if obs.body is None and now - self._body_last > 1.5:
+                    self._body_first = 0.0  # a torso gone for a while (not a blink of the detector): start over
+                    self._body_since = 0.0
                 self._mimic_candidate_since = 0.0
                 if self.mimicking and now - self._last_face_time > 1.0:
                     self.mimicking = False

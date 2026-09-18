@@ -12,6 +12,10 @@ robot's neutral pose: a "look up" from a head that was already looking up at a s
 person is a further look up, and the gap between moves returns to the face, so the camera
 keeps them in view and the move reads as what it is.
 
+While the person has their turn, the antenna on the side of the shown move is a clock hand: it drops to
+horizontal and rises back to straight up over the wait, so they can see the time running out. (The
+antennas hinge front-to-back, so the clock reads from the side: the hand starts pointing at them.)
+
 Pure Python: ``tick(face, now)`` returns a list of things for the pet to do.
 """
 
@@ -39,6 +43,13 @@ PRAISE_S = 1.0  # "yes!" before the next move: the camera settles before it move
 CELEBRATE_S = 2.5
 MAX_ATTEMPTS = 3  # demos of one move before it gives up
 LOST_FACE_S = 5.0
+
+
+def clock_ear(move: str) -> int:
+    """Which antenna counts down for a move: the one on the move's side (0 right, 1 left); up/down use the right."""
+    yaw, _, roll = MOVES[move]
+    side = yaw if yaw != 0 else roll
+    return 1 if side > 0 else 0
 
 
 @dataclass
@@ -78,7 +89,7 @@ class MimeGame:
     def stop(self, now: float, outcome: str = "stopped") -> list[tuple]:
         was = self.active
         self.state, self.outcome = "done", outcome
-        return [("hold", None), ("sound", "mime_end")] if was else []
+        return [("hold", None), ("clock", None), ("sound", "mime_end")] if was else []
 
     def _demo(self, now: float) -> list[tuple]:
         yaw, pitch, roll = MOVES[self.sequence[self.step]]
@@ -114,7 +125,7 @@ class MimeGame:
                 self._intro_poses.append((face.head_yaw_deg, face.head_pitch_deg, face.roll_deg))
         elif now - self._last_face > LOST_FACE_S:
             self.state, self.outcome = "done", "lost you"
-            return [("hold", None), ("think", "Simon says: where did you go?"), ("sound", "confused"), ("gesture", "search")]
+            return [("hold", None), ("clock", None), ("think", "Simon says: where did you go?"), ("sound", "confused"), ("gesture", "search")]
 
         if self.state == "intro":
             if now >= self._until:
@@ -134,16 +145,18 @@ class MimeGame:
                 return [("hold", None)]
             return []
         if self.state == "wait":
+            # the clock hand: 0 = horizontal (just started), 1 = straight up (time is up)
+            tick_out: list[tuple] = [("clock", clock_ear(self.sequence[self.step]), 1.0 - max(0.0, self._until - now) / WAIT_S)]
             if face is not None and self._matches(face):
                 if self._match_since == 0.0:
                     self._match_since = now
                 if now - self._match_since >= MATCH_HOLD_S:
-                    return self._copied(now)
+                    return [("clock", None)] + self._copied(now)
             else:
                 self._match_since = 0.0
             if now >= self._until:
-                return self._ignored(now)
-            return []
+                return [("clock", None)] + self._ignored(now)
+            return tick_out
         if self.state == "praise":
             if now >= self._until:
                 return self._demo(now)
