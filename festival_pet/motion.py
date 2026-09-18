@@ -20,11 +20,12 @@ from scipy.spatial.transform import Rotation as R
 
 # Safe operating envelope (SDK clamps ±40° pitch/roll; we stay well inside for cuteness).
 YAW_LIMIT = 150.0  # world yaw; the body follows so the head never needs more than HEAD_YAW_LIMIT from it
-HEAD_YAW_LIMIT = 45.0  # head relative to body (SDK allows 65)
+HEAD_YAW_LIMIT = 30.0  # head relative to body: past this the head hits the body frame (SDK allows 65)
 PITCH_LIMIT = 36.0  # SDK clamps at 40; squatting people are low
 BODY_YAW_LIMIT = 150.0
 BODY_DEADBAND = 12.0  # head can point this far off-body before the body starts turning
-BODY_RATE = 45.0  # deg/s
+BODY_RATE = 45.0  # deg/s, for the ordinary drift after a gaze
+BODY_RATE_FAR = 80.0  # deg/s when the gaze is beyond the head's reach: body for coarse, head for fine
 ROLL_LIMIT = 25.0
 Z_LIMIT_M = 0.02
 
@@ -690,7 +691,8 @@ class MotionComposer:
         elif self.body_follow and s < 0.5 and not grooving:
             off_body = self._gaze[0] - self.body_yaw
             if abs(off_body) > BODY_DEADBAND:
-                step = min(abs(off_body) - BODY_DEADBAND * 0.5, BODY_RATE * dt)
+                rate = BODY_RATE_FAR if abs(off_body) > HEAD_YAW_LIMIT * 0.8 else BODY_RATE
+                step = min(abs(off_body) - BODY_DEADBAND * 0.5, rate * dt)
                 self.body_yaw += math.copysign(step, off_body)
         self.body_yaw = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw))
         body = 0.0 if self.held else max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw + off.body * (1 - s)))

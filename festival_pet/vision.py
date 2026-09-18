@@ -199,6 +199,39 @@ class FaceDetector:
         return np.asarray(faces, dtype=np.float32)
 
 
+REFINE_BELOW_PX = 90  # a face narrower than this in the 320 px frame gets a second, close-up detection
+REFINE_SIZE = 192
+
+
+def refine_landmarks(detector: "FaceDetector", small: np.ndarray, row: np.ndarray) -> np.ndarray:
+    """Re-detect the face on an upscaled crop of its box and return the row with the crop's landmarks.
+
+    At a few metres a face is 30-50 px wide in the detection frame and the five landmarks sit on
+    single pixels: the head-pose estimate built on them is mostly noise. A square crop with margin,
+    blown up to REFINE_SIZE, gives the same detector three or four times the pixels per feature.
+    The original row is returned unchanged when the crop finds no face.
+    """
+    h, w = small.shape[:2]
+    x, y, bw, bh = (float(v) for v in row[:4])
+    side = max(bw, bh) * 1.8
+    cx, cy = x + bw / 2, y + bh / 2
+    x0, y0 = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+    x1, y1 = int(min(w, cx + side / 2)), int(min(h, cy + side / 2))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return row
+    crop = small[y0:y1, x0:x1]
+    scale = REFINE_SIZE / max(crop.shape[0], crop.shape[1])
+    big = cv2.resize(crop, (max(2, int(crop.shape[1] * scale)), max(2, int(crop.shape[0] * scale))), interpolation=cv2.INTER_CUBIC)
+    faces = detector.detect(big)
+    if len(faces) == 0:
+        return row
+    centre = np.array([big.shape[1] / 2, big.shape[0] / 2])
+    best = faces[int(np.argmin(np.linalg.norm(faces[:, :2] + faces[:, 2:4] / 2 - centre, axis=1)))]
+    out = row.copy()
+    out[4:14] = best[4:14] / scale + np.tile([x0, y0], 5)
+    return out
+
+
 class Vision:
     """Background perception thread. ``latest()`` returns the current sighting or None."""
 
@@ -213,6 +246,8 @@ class Vision:
         person_model: Path | None = None,
     ) -> None:
         self.detector = FaceDetector(yunet_model)
+        self.refiner = FaceDetector(yunet_model, score_threshold=0.5)  # for the close-up crops (its own input size)
+        self.refined = False  # the last sighting's landmarks came from a close-up
         self.recognizer = FaceRecognizer(sface_model, memory) if recognise else None
         self.body = BodyFinder(person_model) if person_model is not None else None
         self.body_enabled = True
@@ -235,7 +270,7 @@ class Vision:
     def status(self, now: float) -> dict:
         """For the page: is the thread alive, is it paused, when did a frame last come, what last went wrong."""
         t = self._thread
-        return {**self.stats, "alive": t is not None and t.is_alive(), "active": self._active.is_set(),
+        return {**self.stats, "alive": t is not None and t.is_alive(), "active": self._active.is_set(), "refined": self.refined,
                 "frame_age_s": None if not self.stats["last_frame_at"] else round(now - self.stats["last_frame_at"], 1)}
 
     # ------------------------------------------------------------------ lifecycle
@@ -289,6 +324,9 @@ class Vision:
             return sighting
 
         row, track = chosen
+        self.refined = row[2] < REFINE_BELOW_PX
+        if self.refined:
+            row = refine_landmarks(self.refiner, small, row)
         self._preview(small, faces, row)
         if self.recognizer is not None and self._embedding_due(track, row, now):
             t0 = time.perf_counter()
@@ -315,8 +353,12 @@ class Vision:
             mine = chosen is not None and np.array_equal(row[:4], chosen[:4])
             colour = (120, 245, 124) if mine else (200, 200, 200)
             cv2.rectangle(img, (x, y), (x + w, y + h), colour, 2 if mine else 1)
+            pts = chosen if mine else row  # the tracked face's landmarks are the refined ones
             for k in range(5):
-                cv2.circle(img, (int(row[4 + 2 * k]), int(row[5 + 2 * k])), 2, (255, 200, 80), -1)
+                cv2.circle(img, (int(pts[4 + 2 * k]), int(pts[5 + 2 * k])), 2, (255, 200, 80), -1)
+            if mine:
+                yaw_p, pitch_p, roll_p = head_pose_from_landmarks(pts)
+                cv2.putText(img, f"yaw {yaw_p:+.0f} pitch {pitch_p:+.0f} roll {roll_p:+.0f}{' (close-up)' if self.refined else ''}", (x, min(img.shape[0] - 4, y + h + 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 200, 80), 1, cv2.LINE_AA)
             if mine and self._track is not None:
                 who = "stranger" if self._track.person is None else f"#{self._track.person.person_id} {self._track.similarity:.2f}"
                 cv2.putText(img, f"t{self._track.track_id} {who}", (x, max(10, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1, cv2.LINE_AA)

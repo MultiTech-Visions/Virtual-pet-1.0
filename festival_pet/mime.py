@@ -29,7 +29,7 @@ MOVES: dict[str, tuple[float, float, float]] = {
     "tilt left": (0.0, 0.0, 18.0),
     "tilt right": (0.0, 0.0, -18.0),
 }
-YAW_MATCH, PITCH_MATCH, ROLL_MATCH = 14.0, 10.0, 10.0  # what counts as "they did it"
+YAW_MATCH, PITCH_MATCH, ROLL_MATCH = 12.0, 8.0, 8.0  # what counts as "they did it", as a change from THEIR neutral
 MATCH_HOLD_S = 0.4  # the pose must hold this long (three or four detections)
 INTRO_S = 1.8
 DEMO_S = 1.6  # showing the move
@@ -47,6 +47,8 @@ class MimeGame:
     mirror_image: bool = True  # they copy as in a mirror: its left is their right
     state: str = "idle"  # idle | intro | demo | gap | wait | praise | celebrate | done
     center: tuple[float, float] = (0.0, 0.0)  # world yaw / pitch of the person's face; every move is shown from here
+    baseline: tuple[float, float, float] = (0.0, 0.0, 0.0)  # their head yaw / pitch / roll at rest, measured in the intro
+    _intro_poses: list = field(default_factory=list)
     outcome: str = ""  # after done: "won", "gave up", "lost you", "stopped"
     sequence: list[str] = field(default_factory=list)
     step: int = 0
@@ -70,6 +72,7 @@ class MimeGame:
                 seq.append(m)
         self.sequence, self.step, self.attempt, self._gain = seq, 0, 0, 1.0
         self.state, self._until, self._last_face, self.outcome = "intro", now + INTRO_S, now, ""
+        self._intro_poses, self.baseline = [], (0.0, 0.0, 0.0)
         return [("think", f"Simon says! {n} moves: {', '.join(seq)}"), ("sound", "mime_start"), ("gesture", "perk")]
 
     def stop(self, now: float, outcome: str = "stopped") -> list[tuple]:
@@ -91,7 +94,8 @@ class MimeGame:
 
     def _matches(self, face) -> bool:
         ey, ep, er = self._expected()
-        hy, hp, hr = face.head_yaw_deg, face.head_pitch_deg, face.roll_deg
+        by, bp, br = self.baseline  # the estimate is rough and offset per person: a move is a change from their rest
+        hy, hp, hr = face.head_yaw_deg - by, face.head_pitch_deg - bp, face.roll_deg - br
         if ey != 0:
             return hy * ey > 0 and abs(hy) >= YAW_MATCH and abs(hp) < PITCH_MATCH
         if ep != 0:
@@ -106,12 +110,17 @@ class MimeGame:
             self._last_face = now
             if self.state in ("intro", "wait", "praise", "celebrate"):
                 self.center = (face.yaw_deg, face.pitch_deg)  # only while the head is aimed at them, not mid-move
+            if self.state == "intro":
+                self._intro_poses.append((face.head_yaw_deg, face.head_pitch_deg, face.roll_deg))
         elif now - self._last_face > LOST_FACE_S:
             self.state, self.outcome = "done", "lost you"
             return [("hold", None), ("think", "Simon says: where did you go?"), ("sound", "confused"), ("gesture", "search")]
 
         if self.state == "intro":
             if now >= self._until:
+                if len(self._intro_poses) >= 3:
+                    cols = list(zip(*self._intro_poses))
+                    self.baseline = tuple(sorted(c)[len(c) // 2] for c in cols)  # the median: a glance away does not skew it
                 return self._demo(now)
             return []
         if self.state == "demo":
@@ -179,4 +188,5 @@ class MimeGame:
             "step": self.step + 1 if self.active and self.step < len(self.sequence) else len(self.sequence),
             "of": len(self.sequence), "move": self.sequence[self.step] if self.active and self.step < len(self.sequence) else None,
             "attempt": self.attempt + 1, "time_left_s": round(max(0.0, self._until - now), 1) if self.state == "wait" else None,
+            "baseline": [round(v, 1) for v in self.baseline],
         }

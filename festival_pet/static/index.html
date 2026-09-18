@@ -236,6 +236,8 @@
       <button class="act big" id="mime-btn" onclick="ctl('mime', !mimeOn)">Start Simon says</button>
     </div>
     <div class="kv" id="mime"></div>
+    <div class="btns" style="margin-top:8px"><button class="act" id="preview-btn2" onclick="togglePreview()">Show what it sees</button></div>
+    <img id="preview2" class="hidden" alt="" style="width:100%; border-radius:10px; margin-top:8px; background:#0b0e1a">
   </div>
   <div class="card">
     <h2>What it sees of your head</h2>
@@ -331,10 +333,10 @@ async function btStatus() { try { const r = await fetch('/api/bt'); btInfo = r.o
 let preview = false, previewTimer = null;
 function togglePreview() {
   preview = !preview; ctl('preview', preview);
-  $('preview-btn').textContent = preview ? 'Hide what it sees' : 'Show what it sees';
-  $('preview').classList.toggle('hidden', !preview);
+  for (const b of ['preview-btn', 'preview-btn2']) $(b).textContent = preview ? 'Hide what it sees' : 'Show what it sees';
+  for (const i of ['preview', 'preview2']) $(i).classList.toggle('hidden', !preview);
   clearInterval(previewTimer);
-  if (preview) previewTimer = setInterval(() => { if (tab === 'senses') $('preview').src = '/api/camera.jpg?t=' + Date.now(); }, 250);
+  if (preview) previewTimer = setInterval(() => { const img = tab === 'senses' ? $('preview') : tab === 'play' ? $('preview2') : null; if (img) img.src = '/api/camera.jpg?t=' + Date.now(); }, 250);
 }
 function toggleManualGroove() { mgroove = !mgroove; ctl('manual_groove', mgroove); $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off'); }
 function tapBeat(one) { ctl('tap', !!one); const b = $(one ? 'tap-one' : 'tap-beat'); b.classList.add('hit'); setTimeout(() => b.classList.remove('hit'), 120); }
@@ -427,7 +429,7 @@ async function refresh() {
     const v = s.vision;
     const camera = !v ? 'no vision on this pet' : !v.alive ? '⚠️ vision thread died: ' + (v.last_error || 'no error recorded') : !v.active ? 'paused (asleep)'
       : v.frame_age_s === null ? '⚠️ no frame from the camera yet' + (v.no_frame ? ` (${v.no_frame} empty reads)` : '') : v.frame_age_s > 2 ? `⚠️ last frame ${v.frame_age_s} s ago` + (v.last_error ? ' · ' + v.last_error : '')
-      : `ok · ${v.frames} frames · detect ${v.detect_ms.toFixed(0)} ms` + (v.errors ? ` · ${v.errors} errors, last: ${v.last_error}` : '');
+      : `ok · ${v.frames} frames · detect ${v.detect_ms.toFixed(0)} ms` + (v.refined ? ' · landmarks from a close-up' : '') + (v.errors ? ` · ${v.errors} errors, last: ${v.last_error}` : '');
     kv('eyes', {camera, face: s.face ? 'yes' : 'none', track: fc.track ?? '—', yaw: s.face ? fc.yaw + '°' : '—', pitch: s.face ? fc.pitch + '°' : '—', size: fc.size ?? '—',
       person: s.face ? (fc.person === null ? 'stranger' : '#' + fc.person) : '—', similarity: fc.similarity ?? '—', tilt: s.face ? fc.tilt + '°' : '—', 'head turned / nodded': s.face ? `${fc.head_yaw}° / ${fc.head_pitch}°` : '—', smile: s.face ? fc.smile : '—',
       body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
@@ -441,7 +443,8 @@ async function refresh() {
     kv('song', {now: sg.singing ? 'singing 🎵' : 'quiet', 'last song': sg.last ? `${sg.last.name} · ${sg.last.bpm} bpm · ${sg.last.bars.join(' ')}${sg.last.saved ? ' (saved)' : ''}` : '—', repertoire: sg.repertoire.length ? sg.repertoire.join(', ') : 'nothing saved yet', 'next song in': sg.next_in_s === null ? 'singing is off' : sg.next_in_s + ' s'});
     const mg = d.mime; mimeOn = mg.active;
     $('mime-btn').textContent = mimeOn ? 'Stop Simon says' : 'Start Simon says';
-    kv('mime', {state: mimeOn ? mg.state : (mg.outcome ? 'over: ' + mg.outcome : 'not playing'), move: mg.move || '—', step: mg.of ? `${mg.step} of ${mg.of}` : '—', attempt: mimeOn ? mg.attempt : '—', 'time to copy': mg.time_left_s === null ? '—' : mg.time_left_s + ' s'});
+    kv('mime', {state: mimeOn ? mg.state : (mg.outcome ? 'over: ' + mg.outcome : 'not playing'), move: mg.move || '—', step: mg.of ? `${mg.step} of ${mg.of}` : '—', attempt: mimeOn ? mg.attempt : '—', 'time to copy': mg.time_left_s === null ? '—' : mg.time_left_s + ' s',
+      'your rest pose (yaw/pitch/roll)': mg.baseline ? mg.baseline.map(x => x.toFixed(0) + '°').join(' / ') : '—', 'your head now': s.face ? `${s.face.head_yaw}° / ${s.face.head_pitch}° / ${s.face.tilt}°` : '—'});
     kv('yourhead', {'turned (yaw)': s.face ? s.face.head_yaw + '°' : '—', 'nodded (pitch)': s.face ? s.face.head_pitch + '°' : '—', 'tilted (roll)': s.face ? s.face.tilt + '°' : '—', 'smile': s.face ? s.face.smile + (s.face.smile >= 0.8 ? ' 😀' : '') : '—'});
     $('heard-card').classList.toggle('hidden', !d.controls.ears);
     const kp = s.keypad, bt = btInfo || {};

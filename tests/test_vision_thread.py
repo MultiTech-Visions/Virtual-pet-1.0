@@ -17,6 +17,7 @@ def _bare_vision(get_frame, process):
     v._active = threading.Event(); v._active.set()
     v._stop = threading.Event()
     v._thread = None
+    v.refined = False
     v.stats = {"detect_ms": 0.0, "embed_ms": 0.0, "body_ms": 0.0, "frames": 0, "faces": 0, "bodies": 0,
                "last_frame_at": 0.0, "no_frame": 0, "errors": 0, "last_error": ""}
     return v
@@ -71,3 +72,26 @@ def test_preview_draws_faces_landmarks_and_the_body_box():
     v.preview = False
     v._preview(small, faces, None)
     assert v.last_jpeg is None
+
+
+def test_refine_landmarks_maps_a_close_up_back_into_the_frame():
+    import numpy as np
+
+    from festival_pet.vision import refine_landmarks
+
+    class FakeDet:
+        def __init__(self):
+            self.seen = None
+        def detect(self, big):
+            self.seen = big.shape
+            h, w = big.shape[:2]
+            # one face in the middle of the crop, landmarks at known crop pixels
+            return np.array([[w * 0.3, h * 0.3, w * 0.4, h * 0.4, w * 0.4, h * 0.45, w * 0.6, h * 0.45, w * 0.5, h * 0.55, w * 0.42, h * 0.65, w * 0.58, h * 0.65, 0.9]], dtype=np.float32)
+    small = np.zeros((240, 320, 3), dtype=np.uint8)
+    row = np.array([100, 80, 40, 40] + [0] * 10 + [0.9], dtype=np.float32)  # a 40 px face at (100, 80)
+    det = FakeDet()
+    out = refine_landmarks(det, small, row)
+    assert det.seen[0] > 150  # the crop was blown up
+    assert np.array_equal(out[:4], row[:4])  # box untouched
+    # the crop is a 72 px square centred on the face (120, 100): crop-centre landmarks land near there
+    assert abs(out[8] - 120) < 3 and abs(out[9] - 100 - 0.05 * 72) < 3

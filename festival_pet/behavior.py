@@ -809,16 +809,19 @@ class Behavior:
                         # Look around properly: a wide gaze target, so the body turns too and it can see
                         # someone standing right beside it, off camera. (A head-only glance never turned the body.)
                         if self.activity == "look_around":
-                            # curious: go somewhere it has not looked lately, and keep going
+                            # curious: go somewhere it has not looked lately, and LINGER there: the body has to
+                            # get round (it carries the coarse turn) and the camera needs a few seconds on a
+                            # scene to find a face in it. A quick flick saw nothing.
                             yaw = self.attention.stalest(now, self.rng)
-                            self._next_glance = now + self.rng.uniform(2.0, 4.5)
+                            self._next_glance = now + self.rng.uniform(5.0, 8.0)
+                            self._look_until = self._next_glance
                         else:
                             yaw = self.rng.choice((-1.0, 1.0)) * self.rng.uniform(35.0, 100.0)
                             self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
+                            self._look_until = now + self.rng.uniform(2.5, 4.0)
                         if self.attention.looked(yaw, now):
                             self.mood.curiosity -= CURIOSITY_NEW_SECTOR  # a real change of scene spends curiosity
                         self._look_at = (yaw, self.rng.uniform(-6.0, 10.0))
-                        self._look_until = now + self.rng.uniform(1.8, 3.2)
                         actions.append(Action("gesture", "glance:" + ("+" if yaw > 0 else "-"), 0))
                     if now < self._look_until:
                         self.gaze = self._look_at

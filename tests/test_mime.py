@@ -95,3 +95,20 @@ def test_losing_the_face_ends_the_game_and_stop_works():
     acts = g.stop(11.0)
     assert not g.active and g.outcome == "stopped" and "mime_end" in kinds(acts, "sound")
     assert g.stop(12.0) == []
+
+
+def test_moves_are_judged_against_the_persons_own_rest_pose():
+    g = MimeGame(random.Random(4), mirror_image=False)
+    rest = lambda _: face(head_yaw=15.0, head_pitch=6.0, roll=-4.0)  # the estimator is offset for this person
+    acts = g.start(0.0) + run(g, 0.0, INTRO_S + 0.1, rest)
+    assert g.baseline == (15.0, 6.0, -4.0)
+    run(g, INTRO_S + 0.1, INTRO_S + DEMO_S + GAP_S + 0.3, rest)
+    assert g.state == "wait"
+    yaw, pitch, roll = MOVES[g.sequence[0]]
+    # holding their rest pose is NOT the move, even when its raw numbers exceed the thresholds...
+    acts = run(g, 5.0, 5.7, rest)
+    assert "yes" not in kinds(acts, "sound")
+    # ...the move is a change from that rest pose
+    moved = lambda _: face(head_yaw=15.0 + yaw * 1.2, head_pitch=6.0 + pitch * 1.2, roll=-4.0 + roll * 1.2)
+    acts = run(g, 5.7, 6.4, moved)
+    assert "yes" in kinds(acts, "sound")

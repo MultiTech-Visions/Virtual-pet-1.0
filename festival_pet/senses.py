@@ -6,6 +6,7 @@ Pure Python so the thresholds can be unit-tested with synthetic streams.
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -91,17 +92,24 @@ class PoseHistory:
         self.lag_s = lag_s
         self._keep = keep_s
         self._hist: deque[tuple[float, np.ndarray]] = deque()
+        self._lock = threading.Lock()  # written by the control loop, read by the vision thread
 
     def record(self, now: float, pose: np.ndarray) -> None:
-        self._hist.append((now, pose))
-        while self._hist and now - self._hist[0][0] > self._keep:
-            self._hist.popleft()
+        with self._lock:
+            self._hist.append((now, pose))
+            while self._hist and now - self._hist[0][0] > self._keep:
+                self._hist.popleft()
 
     def at(self, t: float) -> np.ndarray:
         """The recorded pose closest to ``t``; the live pose only before anything was recorded."""
-        if not self._hist:
+        with self._lock:
+            if not self._hist:
+                hist = None
+            else:
+                hist = list(self._hist)
+        if hist is None:
             return self._live()
-        return min(self._hist, key=lambda e: abs(e[0] - t))[1]
+        return min(hist, key=lambda e: abs(e[0] - t))[1]
 
     def lagged(self) -> np.ndarray:
         """What the vision thread calls: the pose ``lag_s`` ago."""

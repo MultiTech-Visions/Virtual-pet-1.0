@@ -380,3 +380,51 @@ def test_petting_folds_the_antennas_into_a_steady_x_with_a_tiny_push():
     for i in range(500, 1200):
         _, a, _ = m.sample(i * 0.02, 0.02)
     assert abs(a[0] - ANTENNA_NEUTRAL[0]) < 0.4  # the hand gone, they come back up
+
+
+def test_pose_history_survives_concurrent_reads_and_writes():
+    import threading
+    import numpy as np
+
+    from festival_pet.senses import PoseHistory
+
+    h = PoseHistory(lambda: np.eye(4), keep_s=0.05)
+    stop = threading.Event()
+    errors = []
+
+    def writer():
+        t = 0.0
+        while not stop.is_set():
+            h.record(t, np.eye(4) * t); t += 0.001
+
+    def reader():
+        while not stop.is_set():
+            try:
+                h.at(0.0)
+            except Exception as e:  # the old code raised "deque mutated during iteration" here
+                errors.append(e)
+    threads = [threading.Thread(target=writer), threading.Thread(target=reader), threading.Thread(target=reader)]
+    for th in threads:
+        th.start()
+    import time as _t
+    _t.sleep(0.4)
+    stop.set()
+    for th in threads:
+        th.join()
+    assert not errors
+
+
+def test_far_gaze_is_carried_by_the_body_and_the_head_stops_short_of_the_frame():
+    from festival_pet.motion import HEAD_YAW_LIMIT
+
+    m = MotionComposer()
+    m.set_gaze((120.0, 0.0))
+    for i in range(120):  # 2.4 s
+        head, _, body = m.sample(i * 0.02, 0.02)
+    yaw_world = math.degrees(math.atan2(head[1, 0], head[0, 0]))
+    assert abs(yaw_world - body) <= HEAD_YAW_LIMIT + 1e-6  # never twisted into the body frame
+    assert body > 60.0  # the body did the coarse work quickly
+    for i in range(120, 300):
+        head, _, body = m.sample(i * 0.02, 0.02)
+    yaw_world = math.degrees(math.atan2(head[1, 0], head[0, 0]))
+    assert abs(yaw_world - 120.0) < 3.0 and abs(body - 120.0) < 15.0  # and the head did the fine aim
