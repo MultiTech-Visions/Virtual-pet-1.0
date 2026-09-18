@@ -117,8 +117,7 @@ def test_moves_are_judged_against_the_persons_own_rest_pose():
 def test_the_clock_ear_counts_the_wait_down_and_clears():
     from festival_pet.mime import clock_ear
 
-    assert clock_ear("look left") == 1 and clock_ear("look right") == 0 and clock_ear("look up") == 0
-    assert not any("tilt" in m for m in MOVES)  # roll is not a signal the detector gives
+    assert clock_ear("look left") == 1 and clock_ear("look right") == 0 and clock_ear("look up") == 0 and clock_ear("tilt left") == 1
     g = MimeGame(random.Random(6))
     g.start(0.0)
     acts = run(g, 0.0, INTRO_S + DEMO_S + GAP_S + 0.3, lambda _: face())

@@ -199,17 +199,43 @@ class FaceDetector:
         return np.asarray(faces, dtype=np.float32)
 
 
-REFINE_BELOW_PX = 90  # a face narrower than this in the 320 px frame gets a second, close-up detection
 REFINE_SIZE = 192
+ROLL_STEP = 15.0  # the rotation search tries prev-step, prev, prev+step and fits a parabola through the scores
+ROLL_MAX = 45.0
+ROLL_MIN_SCORE = 0.5  # below this in every rotation, the close-up found nothing: keep the coarse row
 
 
-def refine_landmarks(detector: "FaceDetector", small: np.ndarray, row: np.ndarray) -> np.ndarray:
-    """Re-detect the face on an upscaled crop of its box and return the row with the crop's landmarks.
+def _detect_rotated(detector: "FaceDetector", big: np.ndarray, angle_deg: float) -> tuple[np.ndarray | None, np.ndarray]:
+    """Detect on the crop rotated by ``angle_deg`` (OpenCV's sense: + is counter-clockwise on screen).
+
+    Returns (the face nearest the crop's centre or None, the 2x3 rotation matrix used).
+    """
+    h, w = big.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle_deg, 1.0)
+    rot = cv2.warpAffine(big, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    faces = detector.detect(rot)
+    if len(faces) == 0:
+        return None, M
+    centre = np.array([w / 2, h / 2])
+    return faces[int(np.argmin(np.linalg.norm(faces[:, :2] + faces[:, 2:4] / 2 - centre, axis=1)))], M
+
+
+def refine_landmarks(detector: "FaceDetector", small: np.ndarray, row: np.ndarray, roll_prev: float = 0.0) -> tuple[np.ndarray, float, bool]:
+    """Re-detect the face on an upscaled crop of its box, searching the roll, and return
+    (the row with the close-up's landmarks, roll in degrees, whether the close-up found a face).
 
     At a few metres a face is 30-50 px wide in the detection frame and the five landmarks sit on
     single pixels: the head-pose estimate built on them is mostly noise. A square crop with margin,
     blown up to REFINE_SIZE, gives the same detector three or four times the pixels per feature.
-    The original row is returned unchanged when the crop finds no face.
+
+    Roll: YuNet's landmarks come from an upright-face prior and stay a level box when the head
+    rolls, so the eye line says nothing. But the detector's SCORE peaks when the face it sees is
+    upright, so the crop is detected at three rotations around the last roll and a parabola through
+    the scores gives the rotation that uprights the face; the roll is the negative of that. The
+    landmarks of that uprighted detection, rotated back, are the yaw / pitch input.
+
+    Sign matches the eye-line estimate: roll + = clockwise on screen (their head top toward image-right),
+    which is also OpenCV's positive rotation direction, so roll == the rotation that uprights them.
     """
     h, w = small.shape[:2]
     x, y, bw, bh = (float(v) for v in row[:4])
@@ -218,18 +244,33 @@ def refine_landmarks(detector: "FaceDetector", small: np.ndarray, row: np.ndarra
     x0, y0 = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
     x1, y1 = int(min(w, cx + side / 2)), int(min(h, cy + side / 2))
     if x1 - x0 < 8 or y1 - y0 < 8:
-        return row
+        return row, 0.0, False
     crop = small[y0:y1, x0:x1]
     scale = REFINE_SIZE / max(crop.shape[0], crop.shape[1])
     big = cv2.resize(crop, (max(2, int(crop.shape[1] * scale)), max(2, int(crop.shape[0] * scale))), interpolation=cv2.INTER_CUBIC)
-    faces = detector.detect(big)
-    if len(faces) == 0:
-        return row
-    centre = np.array([big.shape[1] / 2, big.shape[0] / 2])
-    best = faces[int(np.argmin(np.linalg.norm(faces[:, :2] + faces[:, 2:4] / 2 - centre, axis=1)))]
+
+    centre_angle = max(-ROLL_MAX, min(ROLL_MAX, roll_prev))  # the rotation that uprighted them last time
+    angles = (centre_angle - ROLL_STEP, centre_angle, centre_angle + ROLL_STEP)
+    hits = [_detect_rotated(detector, big, a) for a in angles]
+    scores = [0.0 if f is None else float(f[14]) for f, _ in hits]
+    if max(scores) < ROLL_MIN_SCORE:
+        return row, 0.0, False
+    top = max(scores)
+    k = 1 if scores[1] >= top - 1e-6 else int(np.argmax(scores))  # ties go to the centre: no drift on a flat curve
+    face, M = hits[k]
+    # a parabola through the three scores puts the peak between the samples
+    s0, s1, s2 = scores
+    denom = s0 - 2 * s1 + s2
+    offset = 0.0 if abs(denom) < 1e-6 else max(-1.0, min(1.0, 0.5 * (s0 - s2) / denom))
+    best_angle = angles[1] + offset * ROLL_STEP if k == 1 else angles[k]
+    roll = max(-ROLL_MAX, min(ROLL_MAX, best_angle))
+
+    inv = cv2.invertAffineTransform(M)
+    pts = face[4:14].reshape(5, 2)
+    pts = pts @ inv[:, :2].T + inv[:, 2]  # back into the unrotated crop
     out = row.copy()
-    out[4:14] = best[4:14] / scale + np.tile([x0, y0], 5)
-    return out
+    out[4:14] = (pts / scale + np.array([x0, y0])).reshape(-1)
+    return out, roll, True
 
 
 class Vision:
@@ -248,6 +289,7 @@ class Vision:
         self.detector = FaceDetector(yunet_model)
         self.refiner = FaceDetector(yunet_model, score_threshold=0.5)  # for the close-up crops (its own input size)
         self.refined = False  # the last sighting's landmarks came from a close-up
+        self._roll_prev = 0.0  # the rotation search starts from where the head was last frame
         self.recognizer = FaceRecognizer(sface_model, memory) if recognise else None
         self.body = BodyFinder(person_model) if person_model is not None else None
         self.body_enabled = True
@@ -319,14 +361,15 @@ class Vision:
         if chosen is None:
             if self._track is not None and now - self._track.last_seen > FORGET_AFTER:
                 self._track = None
+                self._roll_prev = 0.0
             sighting = self._body_fallback(small, scale, head_pose, now)
             self._preview(small, faces, None)
             return sighting
 
         row, track = chosen
-        self.refined = bool(row[2] < REFINE_BELOW_PX)  # a numpy bool here broke JSON for the whole page (0.6.5)
-        if self.refined:
-            row = refine_landmarks(self.refiner, small, row)
+        row, roll_search, self.refined = refine_landmarks(self.refiner, small, row, self._roll_prev)
+        self.refined = bool(self.refined)  # a numpy bool here broke JSON for the whole page (0.6.5)
+        self._roll_prev = roll_search if self.refined else 0.0
         self._preview(small, faces, row)
         if self.recognizer is not None and self._embedding_due(track, row, now):
             t0 = time.perf_counter()
@@ -337,6 +380,8 @@ class Vision:
         u = (x + w / 2) / scale
         v = (y + h * 0.45) / scale  # aim a little above bbox centre: between the eyes
         yaw_p, pitch_p, roll = head_pose_from_landmarks(row)
+        if self.refined:
+            roll = roll_search  # the landmarks' eye line cannot see roll; the rotation search can
         return Sighting(track.track_id, float(u), float(v), track.area_frac, track.person, track.similarity, head_pose, now, roll,
                         "face", yaw_p, pitch_p, track.cx, track.cy, smile_from_landmarks(row))
 
@@ -358,6 +403,8 @@ class Vision:
                 cv2.circle(img, (int(pts[4 + 2 * k]), int(pts[5 + 2 * k])), 2, (255, 200, 80), -1)
             if mine:
                 yaw_p, pitch_p, roll_p = head_pose_from_landmarks(pts)
+                if self.refined:
+                    roll_p = self._roll_prev
                 cv2.putText(img, f"yaw {yaw_p:+.0f} pitch {pitch_p:+.0f} roll {roll_p:+.0f}{' (close-up)' if self.refined else ''}", (x, min(img.shape[0] - 4, y + h + 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 200, 80), 1, cv2.LINE_AA)
             if mine and self._track is not None:
                 who = "stranger" if self._track.person is None else f"#{self._track.person.person_id} {self._track.similarity:.2f}"

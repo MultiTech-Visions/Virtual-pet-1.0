@@ -85,13 +85,53 @@ def test_refine_landmarks_maps_a_close_up_back_into_the_frame():
         def detect(self, big):
             self.seen = big.shape
             h, w = big.shape[:2]
-            # one face in the middle of the crop, landmarks at known crop pixels
+            # one face in the middle of the crop, landmarks at known crop pixels, upright already: every rotation scores the same
             return np.array([[w * 0.3, h * 0.3, w * 0.4, h * 0.4, w * 0.4, h * 0.45, w * 0.6, h * 0.45, w * 0.5, h * 0.55, w * 0.42, h * 0.65, w * 0.58, h * 0.65, 0.9]], dtype=np.float32)
     small = np.zeros((240, 320, 3), dtype=np.uint8)
     row = np.array([100, 80, 40, 40] + [0] * 10 + [0.9], dtype=np.float32)  # a 40 px face at (100, 80)
     det = FakeDet()
-    out = refine_landmarks(det, small, row)
-    assert det.seen[0] > 150  # the crop was blown up
+    out, roll, ok = refine_landmarks(det, small, row)
+    assert ok and det.seen[0] > 150  # the crop was blown up
     assert np.array_equal(out[:4], row[:4])  # box untouched
+    assert abs(roll) < 1e-6  # flat scores: the parabola sits on the centre sample, no roll
     # the crop is a 72 px square centred on the face (120, 100): crop-centre landmarks land near there
     assert abs(out[8] - 120) < 3 and abs(out[9] - 100 - 0.05 * 72) < 3
+
+
+def test_rotation_search_finds_the_roll_and_rotates_the_landmarks_back(monkeypatch):
+    import numpy as np
+
+    from festival_pet import vision
+    from festival_pet.vision import refine_landmarks
+
+    class ScoreByAngle:
+        """A detector whose score peaks when the crop has been rotated by +20 (the face was rolled -20)."""
+        def detect(self, big):
+            return np.zeros((0, 15), dtype=np.float32)
+    seen_angles = []
+
+    def fake_detect_rotated(detector, big, angle):
+        import cv2
+        seen_angles.append(angle)
+        h, w = big.shape[:2]
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+        score = max(0.0, 0.95 - 0.012 * abs(angle - 20.0))
+        # the eyes in the ROTATED crop are level; rotated back they should come out tilted
+        face = np.array([w * 0.3, h * 0.3, w * 0.4, h * 0.4, w * 0.4, h * 0.45, w * 0.6, h * 0.45, w * 0.5, h * 0.55, w * 0.42, h * 0.65, w * 0.58, h * 0.65, score], dtype=np.float32)
+        return face, M
+    monkeypatch.setattr(vision, "_detect_rotated", fake_detect_rotated)
+    small = np.zeros((240, 320, 3), dtype=np.uint8)
+    row = np.array([100, 80, 40, 40] + [0] * 10 + [0.9], dtype=np.float32)
+    out, roll, ok = refine_landmarks(ScoreByAngle(), small, row, roll_prev=0.0)
+    assert ok and seen_angles == [-15.0, 0.0, 15.0]
+    assert roll > 12.0  # peak at +15 with the parabola pulling toward +20: the head is rolled about +17 (clockwise)
+    rex, rey, lex, ley = out[4], out[5], out[6], out[7]
+    assert ley - rey > 2.0  # the eye line, rotated back, tilts the way the head does (clockwise: image-right eye lower)
+    # next frame the search is centred on the last roll and lands on the peak
+    seen_angles.clear()
+    out2, roll2, ok2 = refine_landmarks(ScoreByAngle(), small, row, roll_prev=roll)
+    assert ok2 and abs(roll2 - 20.0) < 2.0
+    # nothing found at any angle: the coarse row stands and roll is 0
+    monkeypatch.setattr(vision, "_detect_rotated", lambda d, b, a: (None, np.eye(2, 3, dtype=np.float32)))
+    out3, roll3, ok3 = refine_landmarks(ScoreByAngle(), small, row)
+    assert not ok3 and roll3 == 0.0 and np.array_equal(out3, row)

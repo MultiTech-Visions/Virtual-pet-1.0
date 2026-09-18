@@ -25,15 +25,17 @@ import random
 from dataclasses import dataclass, field
 
 # (name, robot yaw, pitch, roll) in degrees: + yaw = its left, + pitch = down, + roll = leans to its left
-# No tilt moves: YuNet's five landmarks are regressed from an upright-face prior and stay a level box when
-# the head rolls, so roll cannot be judged pass/fail (the mirror game still uses it as a soft lean).
+# Tilt is judged from the vision thread's rotation search (vision.refine_landmarks), not the landmarks'
+# eye line, which stays level when a head rolls.
 MOVES: dict[str, tuple[float, float, float]] = {
     "look left": (28.0, 0.0, 0.0),
     "look right": (-28.0, 0.0, 0.0),
     "look up": (0.0, -22.0, 0.0),
     "look down": (0.0, 20.0, 0.0),
+    "tilt left": (0.0, 0.0, 18.0),
+    "tilt right": (0.0, 0.0, -18.0),
 }
-YAW_MATCH, PITCH_MATCH, ROLL_MATCH = 12.0, 8.0, 8.0  # what counts as "they did it", as a change from THEIR neutral
+YAW_MATCH, PITCH_MATCH, ROLL_MATCH = 12.0, 8.0, 10.0  # what counts as "they did it", as a change from THEIR neutral
 MATCH_HOLD_S = 0.4  # the pose must hold this long (three or four detections)
 INTRO_S = 1.8
 DEMO_S = 1.6  # showing the move
