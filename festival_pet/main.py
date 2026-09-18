@@ -525,9 +525,11 @@ class Pet:
             for item in self.mime.tick(obs.face, now):
                 self._mime_action(item, now)
             beh._next_react = max(beh._next_react, now + 3.0)
-            beh._mimic_candidate_since = 0.0
             if beh.mimicking:
                 beh.mimicking = False
+            comp.body_follow = False  # the body stays where it is: a recentre swung the camera off their face
+        elif not comp.body_follow and not comp.held:
+            comp.body_follow = True
 
         # ---------------- singing (the brain chooses it; we perform it)
         if now < self._singing_until:
@@ -629,6 +631,16 @@ class Pet:
                 self.move, self.move_t0 = move, time.time()
                 if PLAY_LIBRARY_SOUNDS and move.sound_path is not None:
                     self.p.io.play_file(str(move.sound_path))
+        elif act.kind == "ears":
+            what, _, which = act.name.partition(":")
+            if what == "away":
+                comp.ears_away(int(which), now)
+            elif what == "tuck":
+                comp.ears_tuck(int(which), now)
+            elif what == "clear":
+                comp.ears_clear()
+            else:
+                raise KeyError(f"unknown ears action '{act.name}'")
         elif act.kind == "activity":
             # The brain decided what to do; the games and songs it cannot run itself start here.
             if act.name == "sing":
@@ -879,7 +891,7 @@ class Pet:
         elif cmd == "mime":
             if bool(value):
                 if self._last_obs.face is None:
-                    raise ValueError("nobody in view to play with")
+                    raise ValueError("nobody in view to play Simon says with")
                 self.mime.mirror_image = self.p.composer.mimic_flip
                 for item in self.mime.start(now):
                     self._mime_action(item, now)

@@ -39,6 +39,8 @@ from festival_pet.hearing import intents_in
 from festival_pet.memory import FaceMemory, Person
 
 State = Literal["SLEEPING", "WAKING", "IDLE", "ENGAGED", "SEARCHING", "HELD"]
+EAR_WINDOW_S = 12.0  # tickles this close together count as one bout
+EAR_TUCK_AFTER = 4  # the tickle that ends the game
 
 
 def awake_now(state: str) -> bool:
@@ -90,7 +92,7 @@ class Observation:
 class Action:
     """A request for the robot layer."""
 
-    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror", "heard", "mimic", "activity"]
+    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror", "heard", "mimic", "activity", "ears"]
     name: str
     priority: int = 1  # higher preempts lower for gestures/moves
 
@@ -157,6 +159,8 @@ class Behavior:
     _close_hold_since: float = 0.0
     _next_nag: float = 0.0  # ask_attention repeats
     _nag_company: bool = False
+    _ear_tucked: int | None = None  # which antenna is parked over the head (not in the mood)
+    _ear_seq_at: float = 0.0  # when the swat finishes and the make-up nuzzle starts
 
     # bookkeeping
     _state_since: float = 0.0
@@ -305,6 +309,32 @@ class Behavior:
             self._think(now, f"just hanging out {why}")
         return out
 
+    def _ear_touched(self, i: int, now: float) -> list[Action]:
+        """An antenna ("ear") was pushed, and it is not being petted.
+
+        A little game of keep-away: the touched antenna moves somewhere else and stays there, with a
+        giggle. Keep it up and it is not in the mood: the antenna goes forward over the head and stays.
+        Disturb it there and the other antenna bats at the hand with a nuh-uh-uh; then both come back
+        round, the gaze drops and the head pushes forward into the hand, asking for a pet instead.
+        """
+        side = "left" if i == 1 else "right"
+        self._ear_tickles = self._ear_tickles + 1 if now - self._last_ear_tickle < EAR_WINDOW_S else 1
+        self._last_ear_tickle = now
+        self.mood.social += 0.03
+        if self._ear_tucked is not None:
+            if self._ear_seq_at:
+                return []  # already swatting
+            other = 1 - self._ear_tucked
+            self._think(now, f"nuh-uh-uh! I said leave it (batting with my {'left' if other == 1 else 'right'} ear)")
+            self._ear_seq_at = now + 1.4
+            return [Action("sound", "no_no", 3), Action("gesture", f"swat:{'+' if other == 1 else '-'}", 3)]
+        if self._ear_tickles >= EAR_TUCK_AFTER:
+            self._ear_tucked = i
+            self._think(now, f"my {side} ear AGAIN. not in the mood. it's going over my head, leave it")
+            return [Action("sound", "annoyed", 3), Action("ears", f"tuck:{i}", 3)]
+        self._think(now, f"eek, my {side} ear! can't catch it")
+        return [Action("sound", self.rng.choice(["giggle", "ticklish"]), 2), Action("ears", f"away:{i}", 3), Action("gesture", f"flinch:{'+' if i == 1 else '-'}", 2)]
+
     def _nag(self, obs: Observation, now: float) -> list[Action]:
         """ask_attention: complain alone, beg when someone is near, every 20 s or so."""
         company = obs.face is not None
@@ -371,20 +401,15 @@ class Behavior:
                 if self._engaged_person is not None:
                     self.memory.add_pet(self._engaged_person)
             else:
-                # Ears are ticklish: pull the touched antenna away like a dog flicking its ear, and giggle.
-                self._ear_tickles = self._ear_tickles + 1 if now - self._last_ear_tickle < 6.0 else 1
-                self._last_ear_tickle = now
-                side = "left" if obs.touched_side == 1 else "right"
-                if self._ear_tickles >= 4:
-                    self._think(now, f"my {side} ear again?! okay that's enough")
-                    actions.append(Action("sound", "annoyed", 3))
-                    actions.append(Action("gesture", "shake_off", 3))
-                    self._ear_tickles = 0
-                else:
-                    self._think(now, f"eek, my {side} ear! ticklish")
-                    actions.append(Action("sound", self.rng.choice(["giggle", "ticklish"]), 2))
-                    actions.append(Action("gesture", f"flinch:{'+' if obs.touched_side == 1 else '-'}", 3))
-                self.mood.social += 0.03
+                actions += self._ear_touched(obs.touched_side, now)
+
+        if self._ear_seq_at and now >= self._ear_seq_at:
+            # after the swat: the top antenna comes back round, the touched one comes down, and it asks for a pet instead
+            self._ear_seq_at = 0.0
+            self._ear_tucked = None
+            self._ear_tickles = 0
+            self._think(now, "...okay, okay. pet me instead?")
+            actions += [Action("ears", "clear", 3), Action("gesture", "nuzzle", 3), Action("sound", "curious", 2)]
 
         if obs.petted:
             self._last_interaction = now
@@ -677,7 +702,7 @@ class Behavior:
                     actions.append(Action("sound", choice, 1))
                     actions.append(Action("gesture", gesture, 1))
 
-            elif obs.body is not None and self.state != "ENGAGED" and now - self._last_face_time > 2.5:
+            elif obs.body is not None and self.state != "ENGAGED" and now - self._last_face_time > 2.5 and obs.busy != "mime":
                 # Someone's torso is in view but not their face: look up to where the head should be.
                 self._close_since = 0.0
                 if self._body_since == 0.0:
@@ -700,8 +725,8 @@ class Behavior:
                     self._think(now, "mirror game over (lost you)")
                     actions.append(Action("sound", "mirror_end", 2))
                     self._end_activity(now, cooldown=60.0)
-                if self.state == "ENGAGED" and obs.dance_bpm > 0:
-                    pass  # mid-dance the tracker blinks a lot (we are moving too): keep dancing, keep the gaze
+                if self.state == "ENGAGED" and (obs.dance_bpm > 0 or obs.busy == "mime"):
+                    pass  # mid-dance, or showing a Simon says move, the camera is moving: keep the gaze, no search
                 elif self.state == "ENGAGED":
                     if now - self._last_face_time > t.face_lost_grace:
                         engaged_for = now - self._engaged_since

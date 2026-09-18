@@ -1,7 +1,7 @@
 import random
 
 from festival_pet.behavior import FaceObs
-from festival_pet.mime import DEMO_S, GAP_S, INTRO_S, MOVES, WAIT_S, MimeGame
+from festival_pet.mime import DEMO_S, GAP_S, INTRO_S, MOVES, PRAISE_S, WAIT_S, MimeGame
 
 
 def face(head_yaw=0.0, head_pitch=0.0, roll=0.0):
@@ -40,10 +40,11 @@ def test_copying_every_move_wins_and_captures_faces():
     for move in list(g.sequence):
         yaw, pitch, roll = MOVES[move]
         # intro/demo/gap pass with a neutral face...
-        acts = run(g, t, t + (INTRO_S if g.state == "intro" else 0) + DEMO_S + GAP_S + 0.2, lambda _: face())
+        lead = INTRO_S if g.state == "intro" else PRAISE_S
+        acts = run(g, t, t + lead + DEMO_S + GAP_S + 0.2, lambda _: face())
         everything += acts
         assert g.state == "wait", (move, g.state)
-        t += (INTRO_S if move == g.sequence[0] else 0) + DEMO_S + GAP_S + 0.2
+        t += lead + DEMO_S + GAP_S + 0.2
         # ...then they copy it, mirror-image: yaw and roll flip, pitch does not
         shown = lambda _: face(head_yaw=-yaw * 1.2, head_pitch=pitch * 1.2, roll=-roll * 1.2)
         acts = run(g, t, t + 0.6, shown)
@@ -52,10 +53,23 @@ def test_copying_every_move_wins_and_captures_faces():
         assert "yes" in kinds(acts, "sound") and ("capture",) in acts, move
     assert g.state == "celebrate" and "tada" in kinds(acts, "sound")
     holds = [h for h in kinds(everything, "hold") if h is not None]
-    for move in g.sequence:  # every move was shown, at its nominal size (no repeats were needed)
+    for move in g.sequence:  # every move was shown, at its nominal size (no repeats were needed), from the face
         assert any((h[0], h[1], h[2]) == MOVES[move] for h in holds), move
     acts = run(g, t, t + 3.0, lambda _: face())
     assert not g.active and g.outcome == "won" and "mime_end" in kinds(acts, "sound")
+
+
+def test_moves_are_shown_relative_to_the_face_and_the_gap_returns_to_it():
+    g = MimeGame(random.Random(5))
+    up = FaceObs(1, 30.0, -25.0, 0.05, None, 0.0)  # standing off to the left, above the camera
+    acts = g.start(0.0) + run(g, 0.0, INTRO_S + 0.1, lambda _: up)
+    assert g.center == (30.0, -25.0)
+    demo = [h for h in kinds(acts, "hold") if h is not None][0]
+    yaw, pitch, roll = MOVES[g.sequence[0]]
+    assert demo[:3] == (30.0 + yaw, -25.0 + pitch, roll)  # from their face, not from neutral
+    acts = run(g, INTRO_S + 0.1, INTRO_S + DEMO_S + 0.2, lambda _: None)  # face lost while the head is away: fine
+    gap = [h for h in kinds(acts, "hold") if h is not None][0]
+    assert gap[:3] == (30.0, -25.0, 0.0) and g.active
 
 
 def test_ignoring_it_escalates_then_it_gives_up():

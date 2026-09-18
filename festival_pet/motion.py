@@ -40,9 +40,12 @@ def head_pose(yaw: float, pitch: float, roll: float, z: float, x: float = 0.0) -
     """
     pose = np.eye(4)
     pose[:3, :3] = R.from_euler("xyz", [roll, pitch, yaw], degrees=True).as_matrix()
+    # Base frame is x forward, y left, z up (the SDK's sleep pose nests the head at x = -0.021: backwards).
+    # An earlier "+y is forward" reading was made with the body turned toward the person, which is exactly
+    # the mistake this rotation fixes.
     heading = math.radians(yaw)
-    pose[0, 3] = -x * math.sin(heading)  # forward is +y on this base (x was observed to slide the head to its right)
-    pose[1, 3] = x * math.cos(heading)
+    pose[0, 3] = x * math.cos(heading)
+    pose[1, 3] = x * math.sin(heading)
     pose[2, 3] = z
     return pose
 
@@ -68,6 +71,7 @@ class Offsets:
     ant_r: float = 0.0  # radians, added to right antenna
     ant_l: float = 0.0
     body: float = 0.0  # degrees, added to the body yaw (the head keeps its world heading)
+    x: float = 0.0  # metres along the head's own heading (+ forward, - back)
 
     def __iadd__(self, other: "Offsets") -> "Offsets":
         self.yaw += other.yaw
@@ -77,6 +81,7 @@ class Offsets:
         self.ant_r += other.ant_r
         self.ant_l += other.ant_l
         self.body += other.body
+        self.x += other.x
         return self
 
 
@@ -296,7 +301,29 @@ def g_bow(u: float) -> Offsets:
     arm = _pulse(min(1.0, max(0.0, (v - 0.15) / 0.7)))
     ant_r = 1.4 * arm if seg in (0, 2) else 0.0
     ant_l = -1.4 * arm if seg in (1, 2) else 0.0
-    return Offsets(yaw=yaw, pitch=30.0 * dip, z=-0.01 * dip, ant_r=ant_r, ant_l=ant_l)
+    # The head slides back as it dips: bowing from the neutral spot, the face hits the front lip of the body.
+    return Offsets(yaw=yaw, pitch=30.0 * dip, z=-0.01 * dip, x=-0.02 * dip, ant_r=ant_r, ant_l=ant_l)
+
+
+def g_swat(u: float, side: float) -> Offsets:
+    """Not in the mood: the free antenna bats at the hand, two quick sweeps, with a little turn toward it.
+
+    side = +1 -> the LEFT antenna swats, -1 -> the right one. The other antenna is left to the ear hold.
+    """
+    sweep = math.sin(2 * math.pi * 2 * min(1.0, u / 0.8)) * (1 - max(0.0, u - 0.8) / 0.2)
+    lean = _pulse(u)
+    off = Offsets(yaw=side * 8.0 * lean, roll=side * 5.0 * lean, pitch=4.0 * lean)
+    if side > 0:
+        off.ant_l = -1.1 * abs(sweep) - 0.3 * lean  # forward, over the head, and back
+    else:
+        off.ant_r = 1.1 * abs(sweep) + 0.3 * lean
+    return off
+
+
+def g_nuzzle(u: float) -> Offsets:
+    """Okay, okay: gaze lowers a little and the head pushes forward into the hand, asking for a pet instead."""
+    e = _ease(min(1.0, u / 0.3)) * (1 - _ease(min(1.0, max(0.0, (u - 0.75) / 0.25))))
+    return Offsets(pitch=12.0 * e, x=0.02 * e, z=-0.005 * e, ant_r=0.5 * e, ant_l=-0.5 * e)
 
 
 def g_glance(u: float, side: float) -> Offsets:
@@ -328,6 +355,8 @@ GESTURES: dict[str, tuple[float, str]] = {
     "shake": (0.55, "repeat"),
     "point": (2.6, "sided"),
     "bow": (BOW_S, "plain"),
+    "swat": (1.3, "sided"),
+    "nuzzle": (3.2, "plain"),
 }
 
 SOLO_GESTURES = frozenset({"sneeze", "bow"})  # the whole body is the gesture: no groove, mimic, mirror or beep sway on top
@@ -338,6 +367,7 @@ _FUNCS = {
     "shake_off": g_shake_off, "search": g_search, "glance": g_glance,
     "shy": g_shy, "nod_off": g_nod_off, "sneeze": g_sneeze, "hiccup": g_hiccup, "tada": g_tada,
     "flinch": g_flinch, "lean": g_lean, "shake": g_shake, "point": g_point, "bow": g_bow,
+    "swat": g_swat, "nuzzle": g_nuzzle,
 }
 
 
@@ -432,10 +462,37 @@ class MotionComposer:
         self._mimic_pose = np.zeros(3)
         self.voice_level = 0.0  # 0..1 loudness of the pet's own beeps; drives a little "talking" sway
         self.forward_shift_m = 0.020  # slide the head forward by up to this when looking up, so it clears the body
-        self.hold: tuple[float, float, float, float] | None = None  # (yaw, pitch, roll, until): a shown pose (mime game)
+        self.hold: tuple[float, float, float, float] | None = None  # (yaw, pitch, roll, until): a shown pose (Simon says)
+        # Ear keep-away: an antenna parked somewhere on purpose, overriding every overlay on it.
+        # [absolute radians or None] x2, and when each hold ends.
+        self.ear_hold: list[float | None] = [None, None]
+        self.ear_hold_until = [0.0, 0.0]
+        self._ear_away_k = [0, 0]  # keep-away alternates positions per antenna
         self._hold_roll = 0.0
         self._voice = 0.0
         self._voice_phases = [self.rng.uniform(0, 2 * math.pi) for _ in range(4)]
+
+    # ------------------------------------------------------------------ ears
+    # Antenna sign convention: right neutral -0.17, left +0.17; the bigger the magnitude, the further BACK
+    # (sleep is +-3.05, flat back). The opposite sign leans the antenna forward over the face.
+    EAR_AWAY = (2.3, -0.9)  # keep-away spots, alternating: far back, then forward
+    EAR_TUCK = 1.5  # over the head, out of reach
+
+    def ears_away(self, i: int, now: float, hold_s: float = 5.0) -> None:
+        """Keep-away: move antenna ``i`` (0 right, 1 left) somewhere else and keep it there a while."""
+        sign = -1.0 if i == 0 else 1.0
+        mag = self.EAR_AWAY[self._ear_away_k[i] % len(self.EAR_AWAY)]
+        self._ear_away_k[i] += 1
+        self.ear_hold[i], self.ear_hold_until[i] = sign * mag, now + hold_s
+
+    def ears_tuck(self, i: int, now: float, hold_s: float = 40.0) -> None:
+        """Not in the mood: antenna ``i`` goes forward over the head and stays there."""
+        sign = -1.0 if i == 0 else 1.0
+        self.ear_hold[i], self.ear_hold_until[i] = -sign * self.EAR_TUCK, now + hold_s
+
+    def ears_clear(self) -> None:
+        self.ear_hold = [None, None]
+        self._ear_away_k = [0, 0]
 
     # ------------------------------------------------------------------ intent
     def set_gaze(self, target: tuple[float, float] | None) -> None:
@@ -586,6 +643,15 @@ class MotionComposer:
         ant_r = ANTENNA_NEUTRAL[0] + off.ant_r
         ant_l = ANTENNA_NEUTRAL[1] + off.ant_l
 
+        for i, held in enumerate(self.ear_hold):
+            if held is not None and now < self.ear_hold_until[i]:
+                if i == 0:
+                    ant_r = held
+                else:
+                    ant_l = held
+            elif held is not None:
+                self.ear_hold[i] = None
+
         if self.mode == "held":
             # relaxed, a touch curled-in
             pitch += 5.0
@@ -621,5 +687,5 @@ class MotionComposer:
         wanted = yaw
         yaw = max(body - HEAD_YAW_LIMIT, min(body + HEAD_YAW_LIMIT, yaw))
         self.yaw_short = wanted - yaw
-        x = self.forward_shift_m * max(0.0, -pitch) / PITCH_LIMIT  # looking up: slide forward so the back of the head clears the body
+        x = self.forward_shift_m * max(0.0, -pitch) / PITCH_LIMIT + off.x  # looking up: slide forward so the back of the head clears the body
         return head_pose(yaw, pitch, roll, z, x), [ant_r, ant_l], body

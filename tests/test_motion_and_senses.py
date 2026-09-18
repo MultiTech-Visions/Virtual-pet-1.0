@@ -235,7 +235,7 @@ def test_head_slides_forward_when_looking_up_and_pose_hold_looks_there():
     m.set_gaze((0.0, -30.0))
     for i in range(200):
         head, _, _ = m.sample(i * 0.02, 0.02)
-    assert head[1, 3] > 0.008  # forward shift near the top of the range
+    assert head[0, 3] > 0.008  # forward shift near the top of the range (base x is forward)
     m.set_gaze((0.0, 20.0))
     for i in range(200, 400):
         head, _, _ = m.sample(i * 0.02, 0.02)
@@ -244,7 +244,7 @@ def test_head_slides_forward_when_looking_up_and_pose_hold_looks_there():
     m.set_gaze((0.0, -30.0))
     for i in range(400, 600):
         head, _, _ = m.sample(i * 0.02, 0.02)
-    assert head[1, 3] == 0.0
+    assert head[0, 3] == 0.0
     # a held pose overrides the gaze, with roll
     m.hold = (25.0, 0.0, 15.0, 12.0 + 3.0)
     for i in range(600, 700):
@@ -313,3 +313,26 @@ def test_point_gesture_points_with_that_antenna():
     right = g_point(0.7, -1.0)
     assert right.ant_r > 0.8 and right.ant_l > 0 and right.yaw < -10
     assert g_point(0.1, 1.0).z > 0.005  # bounces first
+
+
+def test_ear_holds_park_an_antenna_and_expire():
+    from festival_pet.motion import ANTENNA_NEUTRAL
+
+    m = MotionComposer()
+    m.ears_away(0, 1.0, hold_s=2.0)
+    _, ants, _ = m.sample(1.1, 0.02)
+    assert ants[0] == -m.EAR_AWAY[0] and abs(ants[1] - ANTENNA_NEUTRAL[1]) < 0.3  # right parked far back, left free
+    m.ears_away(0, 1.5, hold_s=2.0)
+    _, ants, _ = m.sample(1.6, 0.02)
+    assert ants[0] == -m.EAR_AWAY[1]  # keep-away alternates: now forward
+    m.ears_tuck(1, 2.0, hold_s=5.0)
+    _, ants, _ = m.sample(2.1, 0.02)
+    assert ants[1] == -m.EAR_TUCK  # left antenna over the head (its sign flipped: forward)
+    _, ants, _ = m.sample(8.0, 0.02)
+    assert m.ear_hold == [None, None] and abs(ants[1] - ANTENNA_NEUTRAL[1]) < 0.3  # expired
+    m.request_gesture("swat", 8.0, 3, side=1.0)
+    _, ants, _ = m.sample(8.3, 0.02)
+    assert ants[1] < ANTENNA_NEUTRAL[1] - 0.5  # the left antenna sweeps forward to bat
+    m.request_gesture("nuzzle", 10.0, 3)
+    head, _, _ = m.sample(11.0, 0.02)
+    assert head[0, 3] > 0.01  # pushes forward into the hand

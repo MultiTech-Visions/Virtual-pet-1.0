@@ -61,9 +61,10 @@ def test_turn_pose_rotates_about_base_vertical():
     assert heading[0] == pytest.approx(0.0, abs=1e-9) and heading[1] == pytest.approx(math.cos(math.radians(10)))
     assert np.allclose(turn_pose(forward, 0.0), forward)
     assert np.allclose(turn_pose(forward, 90.0), head_pose(90.0, 10.0, 0.0, 0.0))  # same as authoring it turned
-    # the forward shift turns with the heading: 90 deg round, "forward" is along base -x, not still +y
+    # the forward shift turns with the heading: facing forward it is +x, 90 deg round it is +y
+    assert head_pose(0.0, -30.0, 0.0, 0.0, 0.02)[0, 3] == pytest.approx(0.02)
     shifted = head_pose(90.0, -30.0, 0.0, 0.0, 0.02)
-    assert shifted[0, 3] == pytest.approx(-0.02) and shifted[1, 3] == pytest.approx(0.0, abs=1e-12)
+    assert shifted[1, 3] == pytest.approx(0.02) and shifted[0, 3] == pytest.approx(0.0, abs=1e-12)
     assert np.allclose(turn_pose(head_pose(0.0, -30.0, 0.0, 0.0, 0.02), 90.0), shifted)
 
 
@@ -83,7 +84,9 @@ def test_bow_covers_the_house_and_plays_from_neutral():
     for i in range(100, 160):
         head, _, _ = m.sample(i * 0.02, 0.02)
     assert m._gaze[1] > -5.0  # gaze let go of the person, so the dip reads as a bow
-    assert head[1, 3] < 0.003  # and the up-look forward shift went with it
+    assert head[0, 3] < 0.003  # and the up-look forward shift went with it
+    dip = g_bow(0.5 / 3)
+    assert dip.x < -0.015  # the head slides back as it dips, clear of the body's front lip
     assert BOW_S == 6.0
 
 

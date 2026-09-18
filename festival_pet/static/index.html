@@ -67,6 +67,7 @@
     <div class="sub" id="state-sub"></div>
     <div class="feeling" id="feeling"></div>
     <div class="sub" id="activity"></div>
+    <div class="sub hidden" id="song-line"></div>
     <label>Energy</label><div class="bar"><i id="energy"></i></div>
     <label>Social</label><div class="bar pink"><i id="social"></i></div>
     <label>Curiosity</label><div class="bar"><i id="curiosity"></i></div>
@@ -228,10 +229,10 @@
 
 <section id="tab-play" class="grid hidden">
   <div class="card">
-    <h2>Mime game: do what I do</h2>
+    <h2>Simon says: do what I do</h2>
     <div class="sub">It shows a head move, then watches your head for the same one (as in a mirror: its left is your right, unless the mirror-game direction is flipped). Copy it and it moves on; ignore it and it shows you again, gets huffy, then sulks. 3–5 random moves per game. Every copied move also stores a fresh view of your face.</div>
     <div class="btns" style="margin:8px 0">
-      <button class="act big" id="mime-btn" onclick="ctl('mime', !mimeOn)">Start mime game</button>
+      <button class="act big" id="mime-btn" onclick="ctl('mime', !mimeOn)">Start Simon says</button>
     </div>
     <div class="kv" id="mime"></div>
   </div>
@@ -403,12 +404,15 @@ async function refresh() {
     $('state').textContent = (STATE_EMOJI[m.state] || '') + ' ' + m.state + (m.dizzy ? ' 😵' : '') + (m.mimicking ? ' 🪞' : '') + (d.mime.active ? ' 🎭' : '') + (d.song.singing ? ' 🎵' : '') + (s.dance.dancing ? ' 🕺' : '');
     $('state-sub').textContent = `for ${m.state_for_s}s` + (m.engaged_person ? ` · with person #${m.engaged_person} (${m.engaged_tier})` : '') + (m.dizzy ? ' · dizzy' : '') + (m.mimicking ? ' · mirror game' : '');
     const FEEL = {nod: '👍', tilt: '🤨', wiggle: '😆', bounce: '🤩', perk: '👀', droop: '😞', startle: '😳', snuggle: '🥰', dizzy: '😵‍💫', shake_off: '😤', search: '🔍', glance: '👀', shy: '☺️', nod_off: '😴', sneeze: '🤧', hiccup: '😮', tada: '🎉', flinch: '😖', lean: '😌', shake: '🙅', point: '👉', bow: '🙇',
-      hello_new: '👋', hello_friend: '😄', hello_bestie: '🥳', curious: '🧐', happy: '😊', excited: '🤩', content: '😌', purr: '😻', giggle: '🤭', surprised: '😲', confused: '😕', sad: '😢', lonely: '🥺', sleepy: '😪', yawn: '🥱', wake: '🌅', annoyed: '😠', low_battery: '🪫', name: '❓', ticklish: '😂', sing: '🎵', mirror_start: '🪞', mirror_end: '🪞', mime_start: '🎭', mime_end: '🎭', mime_cue: '👁️', yes: '✅', huff: '😤'};
+      hello_new: '👋', hello_friend: '😄', hello_bestie: '🥳', curious: '🧐', happy: '😊', excited: '🤩', content: '😌', purr: '😻', giggle: '🤭', surprised: '😲', confused: '😕', sad: '😢', lonely: '🥺', sleepy: '😪', yawn: '🥱', wake: '🌅', annoyed: '😠', low_battery: '🪫', name: '❓', ticklish: '😂', sing: '🎵', mirror_start: '🪞', mirror_end: '🪞', mime_start: '🎭', mime_end: '🎭', mime_cue: '👁️', yes: '✅', huff: '😤', no_no: '🙅'};
     const f = d.feeling, fe = x => x ? `${FEEL[x.name.split(':')[0]] || ''} <b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
     $('feeling').innerHTML = `feeling: ${fe(f.motion)} · sounding: ${fe(f.sound)}`;
     $('energy').style.width = (m.energy * 100) + '%'; $('social').style.width = (m.social * 100) + '%';
+    const sg = d.song, sl = $('song-line');
+    sl.classList.toggle('hidden', sg.next_in_s === null);
+    if (sg.next_in_s !== null) sl.innerHTML = sg.singing ? `🎵 singing <b>${sg.last.name}</b> (${sg.last.bpm} bpm)` : (sg.last ? `🎵 last song: <b>${sg.last.name}</b>${sg.last.saved ? ' (saved)' : ''} · ` : '🎵 ') + (sg.next_in_s > 0 ? `no song for ${sg.next_in_s}s` : 'a song when it feels like one');
     $('curiosity').style.width = (m.drives.curiosity * 100) + '%'; $('boredom').style.width = (m.drives.boredom * 100) + '%';
-    const ACT = {hangout: '🫧 hanging out', watch: '👀 watching them', look_around: '🔭 looking around', mirror: '🪞 mirror game', mime: '🎭 mime game', sing: '🎵 singing', rest: '😪 resting', ask_attention: '🥺 wants attention'};
+    const ACT = {hangout: '🫧 hanging out', watch: '👀 watching them', look_around: '🔭 looking around', mirror: '🪞 mirror game', mime: '🎭 Simon says', sing: '🎵 singing', rest: '😪 resting', ask_attention: '🥺 wants attention'};
     const scores = Object.entries(m.scores || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace('_', ' ')} ${v.toFixed(2)}`).join(' · ');
     $('activity').innerHTML = `doing: <b>${ACT[m.activity] || m.activity}</b> for ${m.activity_for_s}s` + (m.runner_up ? ` · nearly: ${m.runner_up.replace('_', ' ')} (margin ${m.margin})` : '') + `<br><small>${scores}</small>` + (Object.keys(m.cooldowns || {}).length ? `<br><small>not again yet: ${Object.entries(m.cooldowns).map(([k, v]) => `${k} ${v}s`).join(', ')}</small>` : '');
     kv('timers', {'alone for': m.alone_for_s + ' s', 'lonely in': m.lonely_in_s + ' s', 'sleep in': m.sleep_in_s + ' s',
@@ -435,7 +439,7 @@ async function refresh() {
     const sg = d.song;
     kv('song', {now: sg.singing ? 'singing 🎵' : 'quiet', 'last song': sg.last ? `${sg.last.name} · ${sg.last.bpm} bpm · ${sg.last.bars.join(' ')}${sg.last.saved ? ' (saved)' : ''}` : '—', repertoire: sg.repertoire.length ? sg.repertoire.join(', ') : 'nothing saved yet', 'next song in': sg.next_in_s === null ? 'singing is off' : sg.next_in_s + ' s'});
     const mg = d.mime; mimeOn = mg.active;
-    $('mime-btn').textContent = mimeOn ? 'Stop mime game' : 'Start mime game';
+    $('mime-btn').textContent = mimeOn ? 'Stop Simon says' : 'Start Simon says';
     kv('mime', {state: mimeOn ? mg.state : (mg.outcome ? 'over: ' + mg.outcome : 'not playing'), move: mg.move || '—', step: mg.of ? `${mg.step} of ${mg.of}` : '—', attempt: mimeOn ? mg.attempt : '—', 'time to copy': mg.time_left_s === null ? '—' : mg.time_left_s + ' s'});
     kv('yourhead', {'turned (yaw)': s.face ? s.face.head_yaw + '°' : '—', 'nodded (pitch)': s.face ? s.face.head_pitch + '°' : '—', 'tilted (roll)': s.face ? s.face.tilt + '°' : '—', 'smile': s.face ? s.face.smile + (s.face.smile >= 0.8 ? ' 😀' : '') : '—'});
     $('heard-card').classList.toggle('hidden', !d.controls.ears);

@@ -169,6 +169,7 @@ EMOTIONS = (
     "mime_end",  # the fanfare, closed
     "mime_cue",  # "watch this" blip before each shown move
     "yes",  # "you did it": bright double blip
+    "no_no",  # nuh-uh-uh: not in the mood (ears)
     "huff",  # "no? like THIS": a short exasperated puff
 )
 
@@ -181,8 +182,8 @@ MEANINGS = {
     "name": "huh? me?", "ticklish": "belly scratch", "shy": "you are staring at me", "sneeze": "achoo", "hiccup": "hic",
     "sing": "singing along to the beat", "tada": "finished a trick", "purr": "being petted, content",
     "mirror_start": "let's play mirror: I'll copy you", "mirror_end": "mirror game over",
-    "mime_start": "let's play mime: do what I do", "mime_end": "mime game over", "mime_cue": "watch this move",
-    "yes": "you did it!", "huff": "no? like THIS. again",
+    "mime_start": "Simon says: do what I do", "mime_end": "Simon says is over", "mime_cue": "watch this move",
+    "yes": "you did it!", "huff": "no? like THIS. again", "no_no": "nuh-uh-uh: leave my ears alone",
 }
 
 
@@ -357,6 +358,14 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
         out = concat(tone(j(1300, 1400), 0.06, sr, harmonics=0.4), silence(0.05, sr), tone(j(1300, 1400), 0.06, sr, harmonics=0.4))
     elif emotion == "yes":
         out = concat(chirp(j(900, 1000), j(1400, 1500), 0.09, sr), silence(0.04, sr), chirp(j(1300, 1400), j(1900, 2000), 0.12, sr))
+    elif emotion == "no_no":
+        # three short falling "nuh"s, each a step lower, a small wobble on the last: a cute telling-off
+        f0 = j(760, 840)
+        out = concat(
+            chirp(f0, f0 * 0.86, 0.09, sr, release=0.4), silence(0.06, sr),
+            chirp(f0 * 0.92, f0 * 0.79, 0.09, sr, release=0.4), silence(0.06, sr),
+            warble(f0 * 0.8, 0.16, rate=14, depth=0.06, sample_rate=sr),
+        )
     elif emotion == "huff":
         out = concat(tone(j(420, 480), 0.08, sr, harmonics=0.5, attack=0.02, release=0.3), noise_burst(j(0.22, 0.28), sr))
     elif emotion == "hiccup":

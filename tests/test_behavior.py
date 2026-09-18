@@ -145,15 +145,29 @@ def test_peekaboo_and_shy():
     assert any(a.name == "shy" for a in acts)
 
 
-def test_ear_tickle_flinches_then_gets_annoyed():
+def test_ear_tickles_are_keep_away_then_not_in_the_mood_then_a_swat_and_a_nuzzle():
     b, _ = _brain()
-    acts = _run(b, lambda t: Observation(touched=(t < 0.05), touched_side=1), 0.0, 1.5)
-    flinch = [a for a in acts if a.kind == "gesture" and a.name.startswith("flinch")]
-    assert flinch and flinch[0].name == "flinch:+"
-    for k in range(3):
-        t0 = 1.5 + k * 1.5
-        acts = _run(b, lambda t, t0=t0: Observation(touched=(t < t0 + 0.05), touched_side=0), t0, t0 + 1.5)
-    assert any(a.name == "annoyed" for a in acts)
+    _run(b, lambda t: Observation(), 0.0, 1.0)
+    acts, t = [], 1.0
+    for _ in range(3):  # three tickles on the right ear: keep-away, with a giggle each time
+        acts += b.tick(Observation(touched=True, touched_side=0), t, 0.05)
+        t += 2.0
+        acts += _run(b, lambda t: Observation(), t, t + 1.0)
+        t += 1.0
+    assert [a.name for a in acts if a.kind == "ears"] == ["away:0"] * 3
+    assert sum(1 for a in acts if a.kind == "sound" and a.name in ("giggle", "ticklish")) == 3
+    assert not any(a.name == "annoyed" for a in acts)
+    # the fourth: not in the mood, the ear goes over the head
+    acts = b.tick(Observation(touched=True, touched_side=0), t, 0.05)
+    assert any(a.kind == "ears" and a.name == "tuck:0" for a in acts) and any(a.name == "annoyed" for a in acts)
+    t += 2.0
+    # disturb it there: the LEFT antenna swats, nuh-uh-uh
+    acts = b.tick(Observation(touched=True, touched_side=0), t, 0.05)
+    assert any(a.kind == "sound" and a.name == "no_no" for a in acts) and any(a.kind == "gesture" and a.name == "swat:+" for a in acts)
+    # ...then both come back round and it asks for a pet instead
+    acts = _run(b, lambda t: Observation(), t, t + 2.0)
+    assert any(a.kind == "ears" and a.name == "clear" for a in acts) and any(a.kind == "gesture" and a.name == "nuzzle" for a in acts)
+    assert b._ear_tucked is None and b._ear_tickles == 0
 
 
 def test_head_pet_leans_in_and_purrs_while_it_lasts():

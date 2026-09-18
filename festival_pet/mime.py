@@ -1,4 +1,4 @@
-"""The mime game: "do what I do", led by a robot that cannot talk.
+"""Simon says: "do what I do", led by a robot that cannot talk.
 
 It picks a fresh random sequence of head moves each game, shows one, then watches the
 person's head (yaw / pitch / roll estimated from the face landmarks) for the same move.
@@ -6,6 +6,11 @@ Copy it and it chirps and moves on; ignore it and it shows the move again, bigge
 huffy on the third try, and sulks and gives up on the fourth. Finish the set and it
 celebrates. Every copied move also asks the vision thread for a face embedding, so a
 finished game leaves the person enrolled from several angles.
+
+Every shown move is relative to where the person's face is (``center``), not to the
+robot's neutral pose: a "look up" from a head that was already looking up at a standing
+person is a further look up, and the gap between moves returns to the face, so the camera
+keeps them in view and the move reads as what it is.
 
 Pure Python: ``tick(face, now)`` returns a list of things for the pet to do.
 """
@@ -30,6 +35,7 @@ INTRO_S = 1.8
 DEMO_S = 1.6  # showing the move
 GAP_S = 0.5  # back to neutral before watching
 WAIT_S = 4.0  # how long they get to copy it
+PRAISE_S = 1.0  # "yes!" before the next move: the camera settles before it moves again
 CELEBRATE_S = 2.5
 MAX_ATTEMPTS = 3  # demos of one move before it gives up
 LOST_FACE_S = 5.0
@@ -39,7 +45,8 @@ LOST_FACE_S = 5.0
 class MimeGame:
     rng: random.Random = field(default_factory=random.Random)
     mirror_image: bool = True  # they copy as in a mirror: its left is their right
-    state: str = "idle"  # idle | intro | demo | gap | wait | celebrate | done
+    state: str = "idle"  # idle | intro | demo | gap | wait | praise | celebrate | done
+    center: tuple[float, float] = (0.0, 0.0)  # world yaw / pitch of the person's face; every move is shown from here
     outcome: str = ""  # after done: "won", "gave up", "lost you", "stopped"
     sequence: list[str] = field(default_factory=list)
     step: int = 0
@@ -63,7 +70,7 @@ class MimeGame:
                 seq.append(m)
         self.sequence, self.step, self.attempt, self._gain = seq, 0, 0, 1.0
         self.state, self._until, self._last_face, self.outcome = "intro", now + INTRO_S, now, ""
-        return [("think", f"mime game! {n} moves: {', '.join(seq)}"), ("sound", "mime_start"), ("gesture", "perk")]
+        return [("think", f"Simon says! {n} moves: {', '.join(seq)}"), ("sound", "mime_start"), ("gesture", "perk")]
 
     def stop(self, now: float, outcome: str = "stopped") -> list[tuple]:
         was = self.active
@@ -73,8 +80,9 @@ class MimeGame:
     def _demo(self, now: float) -> list[tuple]:
         yaw, pitch, roll = MOVES[self.sequence[self.step]]
         g = self._gain
+        cy, cp = self.center
         self.state, self._until = "demo", now + DEMO_S
-        return [("hold", (yaw * g, pitch * g, roll * g, DEMO_S)), ("sound", "mime_cue")]
+        return [("hold", (cy + yaw * g, cp + pitch * g, roll * g, DEMO_S)), ("sound", "mime_cue")]
 
     def _expected(self) -> tuple[float, float, float]:
         yaw, pitch, roll = MOVES[self.sequence[self.step]]
@@ -96,9 +104,11 @@ class MimeGame:
             return []
         if face is not None:
             self._last_face = now
+            if self.state in ("intro", "wait", "praise", "celebrate"):
+                self.center = (face.yaw_deg, face.pitch_deg)  # only while the head is aimed at them, not mid-move
         elif now - self._last_face > LOST_FACE_S:
             self.state, self.outcome = "done", "lost you"
-            return [("hold", None), ("think", "mime game: where did you go?"), ("sound", "confused"), ("gesture", "search")]
+            return [("hold", None), ("think", "Simon says: where did you go?"), ("sound", "confused"), ("gesture", "search")]
 
         if self.state == "intro":
             if now >= self._until:
@@ -107,7 +117,7 @@ class MimeGame:
         if self.state == "demo":
             if now >= self._until:
                 self.state, self._until, self._match_since = "gap", now + GAP_S, 0.0
-                return [("hold", (0.0, 0.0, 0.0, GAP_S))]
+                return [("hold", (self.center[0], self.center[1], 0.0, GAP_S))]  # back to their face
             return []
         if self.state == "gap":
             if now >= self._until:
@@ -125,6 +135,10 @@ class MimeGame:
             if now >= self._until:
                 return self._ignored(now)
             return []
+        if self.state == "praise":
+            if now >= self._until:
+                return self._demo(now)
+            return []
         if self.state == "celebrate":
             if now >= self._until:
                 self.state, self.outcome = "done", "won"
@@ -133,14 +147,15 @@ class MimeGame:
         return []
 
     def _copied(self, now: float) -> list[tuple]:
-        out: list[tuple] = [("think", f"yes! they did '{self.sequence[self.step]}'"), ("sound", "yes"), ("gesture", "nod"), ("capture",)]
+        # praise with the antennas, not the head: a nod here moved the camera and lost their face
+        out: list[tuple] = [("think", f"yes! they did '{self.sequence[self.step]}'"), ("sound", "yes"), ("gesture", "perk"), ("capture",)]
         self.step += 1
         self.attempt, self._gain = 0, 1.0
         if self.step >= len(self.sequence):
             self.state, self._until = "celebrate", now + CELEBRATE_S
             out += [("think", "they did the whole thing! ta-da!"), ("sound", "tada"), ("gesture", "bounce")]
             return out
-        out += self._demo(now)
+        self.state, self._until = "praise", now + PRAISE_S
         return out
 
     def _ignored(self, now: float) -> list[tuple]:
