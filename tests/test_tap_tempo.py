@@ -72,8 +72,8 @@ def test_bow_covers_the_house_and_plays_from_neutral():
     from festival_pet.motion import BOW_S, g_bow
 
     right, left, centre = g_bow(0.5 / 3), g_bow(1.5 / 3), g_bow(2.5 / 3)  # mid-dip of each bow
-    assert right.pitch > 25 and right.yaw < -19 and right.body == right.yaw and right.ant_r > 1.0 and right.ant_l == 0.0
-    assert left.pitch > 25 and left.yaw > 19 and left.body == left.yaw and left.ant_l < -1.0 and left.ant_r == 0.0
+    assert right.pitch > 25 and right.yaw < -29 and right.body == right.yaw and right.ant_r > 1.0 and right.ant_l == 0.0
+    assert left.pitch > 25 and left.yaw > 29 and left.body == left.yaw and left.ant_l < -1.0 and left.ant_r == 0.0
     assert centre.pitch > 25 and abs(centre.yaw) < 1e-9 and centre.ant_r > 1.0 and centre.ant_l < -1.0
     # the body turns and the head goes with it: head yaw relative to the body stays zero through the turn
     m0 = MotionComposer()
@@ -81,17 +81,25 @@ def test_bow_covers_the_house_and_plays_from_neutral():
     for i in range(60):
         head, _, body = m0.sample(i * 0.02, 0.02)
     yaw_world = math.degrees(math.atan2(head[1, 0], head[0, 0]))
-    assert abs(body - (-20.0)) < 3.0 and abs(yaw_world - body) < 1.0
+    assert abs(body - (-30.0)) < 3.0 and abs(yaw_world - body) < 1.0
     assert g_bow(0.0).pitch == 0.0 and g_bow(0.999).pitch < 2.0  # up at the start and the end
     m = MotionComposer()
-    m.set_gaze((0.0, -30.0))  # looking up at someone standing
-    for i in range(100):
+    m.set_gaze((60.0, -30.0))  # looking up at someone standing off to its left
+    for i in range(200):
         m.sample(i * 0.02, 0.02)
-    m.request_gesture("bow", 2.0, 4)
-    for i in range(100, 160):
-        head, _, _ = m.sample(i * 0.02, 0.02)
+    _, _, body_before = m.sample(3.99, 0.02)
+    m.request_gesture("bow", 4.0, 4)
+    for i in range(200, 260):
+        head, _, body = m.sample(i * 0.02, 0.02)
     assert m._gaze[1] > -5.0  # gaze let go of the person, so the dip reads as a bow
     assert head[0, 3] < 0.003  # and the up-look forward shift went with it
+    # ...but not of their direction: the audience is the centre of the house, the first bow is 30 to its right of them
+    assert abs(m._gaze[0] - 60.0) < 1.0 and abs(body - (body_before - 30.0)) < 4.0
+    for i in range(260, 340):
+        head, _, body = m.sample(i * 0.02, 0.02)
+    assert abs(body - (body_before + 30.0)) < 4.0  # second bow: 30 to their left
+    m.sample(10.5, 0.02)
+    assert abs(m._gaze[0] - 60.0) < 1.0  # and it is still facing them when the bow is over
     dip = g_bow(0.5 / 3)
     assert dip.x < -0.015  # the head slides back as it dips, clear of the body's front lip
     assert BOW_S == 6.0

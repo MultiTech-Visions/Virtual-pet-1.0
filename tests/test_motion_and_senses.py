@@ -227,7 +227,7 @@ def test_sneeze_is_a_full_bit_and_silences_the_rest():
         m.sample(i * 0.02, 0.02)
     assert m._groove_level < 0.5  # groove faded out under the sneeze
     assert abs(m._mimic_pose[0]) < 1.0  # mimic never crept in
-    assert abs(m._gaze[0]) < 3.0 and abs(m._gaze[1]) < 3.0  # it stopped looking at them: the bit plays from neutral
+    assert abs(m._gaze[0] - 30.0) < 1.0 and abs(m._gaze[1]) < 3.0  # it stopped looking UP at them: the bit plays level, still facing them
 
 
 def test_head_slides_forward_when_looking_up_and_pose_hold_looks_there():

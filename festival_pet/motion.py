@@ -284,7 +284,7 @@ def g_point(u: float, side: float) -> Offsets:
 
 
 BOW_S = 6.0
-BOW_YAWS = (-20.0, 20.0, 0.0)  # to its right, to its left, then the centre: the whole house
+BOW_YAWS = (-30.0, 30.0, 0.0)  # to its right, to its left, then the centre: the whole house
 
 
 def g_bow(u: float) -> Offsets:
@@ -293,8 +293,9 @@ def g_bow(u: float) -> Offsets:
     The BODY turns between bows and the head goes with it (a head turned on the body slammed the face
     into the body frame on the dip). Each bow: turn while up, dip well forward and hold, come back up.
     The right antenna sweeps across in front on the first, the left on the second, both on the last.
-    A solo gesture, so the gaze goes to neutral first and the dip is not eaten by a head already
-    looking up.
+    A solo gesture: the gaze pitch lets go of the person (so the dip is not eaten by a head already
+    looking up) but the yaw stays where it was looking, the centre of the house, so the bows are
+    30 degrees either side of whoever it was performing for, not of the robot's own front.
     """
     seg = min(2, int(u * 3))
     v = u * 3 - seg
@@ -310,11 +311,11 @@ def g_bow(u: float) -> Offsets:
 
 
 def g_swat(u: float, side: float) -> Offsets:
-    """Not in the mood: the free antenna bats at the hand, two quick sweeps, with a little turn toward it.
+    """Not in the mood: the free antenna bats at the hand, three quick taps (no-no-no), with a little turn toward it.
 
     side = +1 -> the LEFT antenna swats, -1 -> the right one. The other antenna is left to the ear hold.
     """
-    sweep = math.sin(2 * math.pi * 2 * min(1.0, u / 0.8)) * (1 - max(0.0, u - 0.8) / 0.2)
+    sweep = math.sin(2 * math.pi * 3 * min(1.0, u / 0.85)) * (1 - max(0.0, u - 0.85) / 0.15)
     lean = _pulse(u)
     off = Offsets(yaw=side * 8.0 * lean, roll=side * 5.0 * lean, pitch=4.0 * lean)
     if side > 0:
@@ -473,6 +474,7 @@ class MotionComposer:
         self.ear_hold_until = [0.0, 0.0]
         self._ear_away_k = [0, 0]  # keep-away alternates positions per antenna
         self._hold_roll = 0.0
+        self._solo_yaw = 0.0  # where it was looking when a solo gesture started: the bow's centre of the house
         self._voice = 0.0
         self._voice_phases = [self.rng.uniform(0, 2 * math.pi) for _ in range(4)]
 
@@ -489,7 +491,9 @@ class MotionComposer:
         self._ear_away_k[i] += 1
         self.ear_hold[i], self.ear_hold_until[i] = sign * mag, now + hold_s
 
-    def ears_tuck(self, i: int, now: float, hold_s: float = 40.0) -> None:
+    EAR_TUCK_S = 26.0  # how long "not in the mood" lasts, left alone
+
+    def ears_tuck(self, i: int, now: float, hold_s: float = EAR_TUCK_S) -> None:
         """Not in the mood: antenna ``i`` goes forward over the head and stays there."""
         sign = -1.0 if i == 0 else 1.0
         self.ear_hold[i], self.ear_hold_until[i] = -sign * self.EAR_TUCK, now + hold_s
@@ -527,6 +531,8 @@ class MotionComposer:
             n = reps if reps is not None else self.rng.randint(2, 4)
             duration *= n
         self._gesture = _ActiveGesture(name, now, duration, priority, side, n)
+        if name in SOLO_GESTURES:
+            self._solo_yaw = float(self._gaze[0])
         return True
 
     def gesture_active(self, now: float) -> bool:
@@ -577,7 +583,7 @@ class MotionComposer:
             target = np.array(self.hold[:2])  # showing a pose: look there, not at them
             rate = 5.0
         elif solo:
-            target = np.zeros(2)  # a solo gesture plays from neutral: it stops looking at you
+            target = np.array([self._solo_yaw, 0.0])  # a solo gesture plays level, facing where it was: it stops looking UP at you
             rate = 5.0
         elif self._gaze_target is None:
             drift_yaw = 9.0 * amp * math.sin(2 * math.pi * 0.045 * now + self._drift_phase)

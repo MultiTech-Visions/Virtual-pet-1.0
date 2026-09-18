@@ -164,10 +164,36 @@ def test_ear_tickles_are_keep_away_then_not_in_the_mood_then_a_swat_and_a_nuzzle
     # disturb it there: the LEFT antenna swats, nuh-uh-uh
     acts = b.tick(Observation(touched=True, touched_side=0), t, 0.05)
     assert any(a.kind == "sound" and a.name == "no_no" for a in acts) and any(a.kind == "gesture" and a.name == "swat:+" for a in acts)
-    # ...then both come back round and it asks for a pet instead
+    # keep at it and it keeps batting (one swat per poke once the last one's taps have landed), no make-up yet
+    acts = _run(b, lambda t: Observation(), t, t + 1.0) + b.tick(Observation(touched=True, touched_side=0), t + 1.0, 0.05)
+    assert not any(a.kind == "gesture" and a.name == "swat:+" for a in acts)  # mid-swat: covered
+    acts = _run(b, lambda t: Observation(), t + 1.0, t + 2.0) + b.tick(Observation(touched=True, touched_side=0), t + 2.0, 0.05)
+    assert any(a.kind == "gesture" and a.name == "swat:+" for a in acts) and not any(a.name == "nuzzle" for a in acts)
+    t += 2.0
+    # ...only once they stop do both come back round and it asks for a pet instead
     acts = _run(b, lambda t: Observation(), t, t + 2.0)
+    assert not any(a.name == "nuzzle" for a in acts)
+    acts = _run(b, lambda t: Observation(), t + 2.0, t + 4.0)
     assert any(a.kind == "ears" and a.name == "clear" for a in acts) and any(a.kind == "gesture" and a.name == "nuzzle" for a in acts)
     assert b._ear_tucked is None and b._ear_tickles == 0
+
+
+def test_the_sulk_wears_off_on_its_own():
+    from festival_pet.behavior import EAR_TUCK_S
+    from festival_pet.motion import MotionComposer
+
+    assert EAR_TUCK_S == MotionComposer.EAR_TUCK_S == 26.0
+    b, _ = _brain()
+    _run(b, lambda t: Observation(), 0.0, 1.0)
+    t = 1.0
+    for _ in range(4):
+        b.tick(Observation(touched=True, touched_side=1), t, 0.05)
+        t += 3.0
+    assert b._ear_tucked == 1
+    _run(b, lambda t: Observation(), t, t + EAR_TUCK_S + 1.0)
+    assert b._ear_tucked is None and b._ear_tickles == 0
+    acts = b.tick(Observation(touched=True, touched_side=1), t + EAR_TUCK_S + 1.0, 0.05)
+    assert any(a.name == "away:1" for a in acts)  # back to the game, not a swat
 
 
 def test_head_pet_leans_in_and_purrs_while_it_lasts():

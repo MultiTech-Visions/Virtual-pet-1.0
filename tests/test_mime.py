@@ -114,6 +114,31 @@ def test_moves_are_judged_against_the_persons_own_rest_pose():
     assert "yes" in kinds(acts, "sound")
 
 
+def test_up_and_down_are_left_out_when_the_face_is_steeply_above_or_below():
+    from festival_pet.mime import STEEP_PITCH
+
+    def game_with(face_pitch, seed):
+        g = MimeGame(random.Random(seed))
+        g.start(0.0, length=5)
+        f = FaceObs(1, 0.0, face_pitch, 0.05, None, 0.0)
+        acts = run(g, 0.0, INTRO_S + 0.1, lambda _: f)
+        return g, acts
+
+    seeds = range(30)
+    # looking up at a standing person: no "look up" in the set
+    ups = [game_with(-STEEP_PITCH - 8.0, s) for s in seeds]
+    assert all("look up" not in g.sequence for g, _ in ups) and any("look down" in g.sequence for g, _ in ups)
+    assert any(a[0] == "think" and "look up" in a[1] and "won't read" in a[1] for g, acts in ups for a in acts)
+    # looking down at a seated one: no "look down"
+    downs = [game_with(STEEP_PITCH + 8.0, s) for s in seeds]
+    assert all("look down" not in g.sequence for g, _ in downs) and any("look up" in g.sequence for g, _ in downs)
+    # eye level: everything stays
+    level = [game_with(0.0, s) for s in seeds]
+    assert any("look up" in g.sequence for g, _ in level) and any("look down" in g.sequence for g, _ in level)
+    for g, _ in ups + downs + level:
+        assert len(g.sequence) == 5 and all(a != b for a, b in zip(g.sequence, g.sequence[1:]))
+
+
 def test_the_clock_ear_counts_the_wait_down_and_clears():
     from festival_pet.mime import clock_ear
 

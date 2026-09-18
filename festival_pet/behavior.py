@@ -42,6 +42,9 @@ from festival_pet.memory import FaceMemory, Person
 State = Literal["SLEEPING", "WAKING", "IDLE", "ENGAGED", "SEARCHING", "HELD"]
 EAR_WINDOW_S = 12.0  # tickles this close together count as one bout
 EAR_TUCK_AFTER = 4  # the tickle that ends the game
+EAR_TUCK_S = 26.0  # how long the sulk lasts, left alone (matches MotionComposer.EAR_TUCK_S)
+EAR_SWAT_S = 1.3  # one swat (GESTURES["swat"]): pokes during it are covered by its taps
+EAR_MAKEUP_S = 3.0  # after the last poke, the nuzzle: keep poking and it keeps batting
 BODY_CONFIRM_S = 1.0  # a torso must be seen this long before it is worth looking up at
 BODY_GIVE_UP_S = 6.0  # looking up at a torso this long without finding a face: not a person
 BODY_IGNORE_S = 120.0  # ...and that spot is ignored for this long
@@ -165,7 +168,8 @@ class Behavior:
     _next_nag: float = 0.0  # ask_attention repeats
     _nag_company: bool = False
     _ear_tucked: int | None = None  # which antenna is parked over the head (not in the mood)
-    _ear_seq_at: float = 0.0  # when the swat finishes and the make-up nuzzle starts
+    _ear_seq_at: float = 0.0  # when the swatting is over and the make-up nuzzle starts (pushed back by every poke)
+    _last_swat: float = -1e9
     _body_first: float = 0.0  # a torso has been in view since (0 = none)
     _body_last: float = -1e9  # a torso was last in view at
     _last_sleepy: float = -1e9  # the sleepy noise is rationed
@@ -340,11 +344,13 @@ class Behavior:
         self._last_ear_tickle = now
         self.mood.social += 0.03
         if self._ear_tucked is not None:
-            if self._ear_seq_at:
-                return []  # already swatting
+            # Every poke while it sulks gets batted: the make-up nuzzle waits until they have stopped.
             other = 1 - self._ear_tucked
+            self._ear_seq_at = now + EAR_MAKEUP_S
+            if now - self._last_swat < EAR_SWAT_S:
+                return []  # the taps of the last swat are still landing
+            self._last_swat = now
             self._think(now, f"nuh-uh-uh! I said leave it (batting with my {'left' if other == 1 else 'right'} ear)")
-            self._ear_seq_at = now + 1.4
             return [Action("sound", "no_no", 3), Action("gesture", f"swat:{'+' if other == 1 else '-'}", 3)]
         if self._ear_tickles >= EAR_TUCK_AFTER:
             self._ear_tucked = i
@@ -426,12 +432,16 @@ class Behavior:
                 actions += self._ear_touched(obs.touched_side, now)
 
         if self._ear_seq_at and now >= self._ear_seq_at:
-            # after the swat: the top antenna comes back round, the touched one comes down, and it asks for a pet instead
+            # after the swatting, once they have stopped: the top antenna comes back round, the touched one comes down,
+            # and it asks for a pet instead
             self._ear_seq_at = 0.0
             self._ear_tucked = None
             self._ear_tickles = 0
             self._think(now, "...okay, okay. pet me instead?")
             actions += [Action("ears", "clear", 3), Action("gesture", "nuzzle", 3), Action("sound", "curious", 2)]
+        elif self._ear_tucked is not None and now - self._last_ear_tickle > EAR_TUCK_S:
+            self._ear_tucked = None  # left alone long enough: the antenna has come back down on its own (motion.ears_tuck)
+            self._ear_tickles = 0
 
         if obs.petted:
             self._last_interaction = now

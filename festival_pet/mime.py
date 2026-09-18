@@ -36,6 +36,10 @@ MOVES: dict[str, tuple[float, float, float]] = {
     "tilt right": (0.0, 0.0, -18.0),
 }
 YAW_MATCH, PITCH_MATCH, ROLL_MATCH = 12.0, 8.0, 10.0  # what counts as "they did it", as a change from THEIR neutral
+# Up and down depend on where they stand. A robot looking up at a standing person sees them already looking
+# down at it: a "look up" from there is a small change of a face seen from below, and the camera misses it.
+# Looking down at a seated person, the same for "look down". Past this much gaze pitch the move is left out.
+STEEP_PITCH = 10.0
 MATCH_HOLD_S = 0.4  # the pose must hold this long (three or four detections)
 INTRO_S = 1.8
 DEMO_S = 1.6  # showing the move
@@ -77,16 +81,32 @@ class MimeGame:
 
     def start(self, now: float, length: int | None = None) -> list[tuple]:
         n = length if length is not None else self.rng.randint(3, 5)
-        moves = list(MOVES)
+        self.sequence, self.step, self.attempt, self._gain = self._sequence(n, list(MOVES)), 0, 0, 1.0
+        self.state, self._until, self._last_face, self.outcome = "intro", now + INTRO_S, now, ""
+        self._intro_poses, self.baseline = [], (0.0, 0.0, 0.0)
+        return [("think", f"Simon says! {n} moves: {', '.join(self.sequence)}"), ("sound", "mime_start"), ("gesture", "perk")]
+
+    def _sequence(self, n: int, moves: list[str]) -> list[str]:
         seq: list[str] = []
         while len(seq) < n:  # random, never the same move twice in a row
             m = self.rng.choice(moves)
             if not seq or m != seq[-1]:
                 seq.append(m)
-        self.sequence, self.step, self.attempt, self._gain = seq, 0, 0, 1.0
-        self.state, self._until, self._last_face, self.outcome = "intro", now + INTRO_S, now, ""
-        self._intro_poses, self.baseline = [], (0.0, 0.0, 0.0)
-        return [("think", f"Simon says! {n} moves: {', '.join(seq)}"), ("sound", "mime_start"), ("gesture", "perk")]
+        return seq
+
+    def allowed_moves(self) -> list[str]:
+        """The moves that can be seen from where the person's face is (see STEEP_PITCH)."""
+        pitch = self.center[1]  # + = the robot looks down at them
+        return [m for m in MOVES if not ((m == "look up" and pitch < -STEEP_PITCH) or (m == "look down" and pitch > STEEP_PITCH))]
+
+    def _fit_sequence(self) -> str | None:
+        """After the intro, once the face's height is known: redraw the moves it cannot see from here."""
+        allowed = self.allowed_moves()
+        dropped = sorted(set(self.sequence) - set(allowed))
+        if not dropped:
+            return None
+        self.sequence = self._sequence(len(self.sequence), allowed)
+        return f"{' / '.join(dropped)} won't read from this angle, new set: {', '.join(self.sequence)}"
 
     def stop(self, now: float, outcome: str = "stopped") -> list[tuple]:
         was = self.active
@@ -134,7 +154,8 @@ class MimeGame:
                 if len(self._intro_poses) >= 3:
                     cols = list(zip(*self._intro_poses))
                     self.baseline = tuple(sorted(c)[len(c) // 2] for c in cols)  # the median: a glance away does not skew it
-                return self._demo(now)
+                note = self._fit_sequence()
+                return ([("think", note)] if note else []) + self._demo(now)
             return []
         if self.state == "demo":
             if now >= self._until:

@@ -82,6 +82,22 @@ def test_bored_and_alone_looks_somewhere_new_and_spends_curiosity():
     assert b.mood.curiosity < c0 - 0.2  # looking somewhere new costs curiosity
 
 
+def test_a_cold_look_around_works_out_from_the_centre():
+    order = []
+    for seed in range(20):
+        a, rng, now = Attention(), random.Random(seed), 100.0
+        yaws = []
+        for _ in range(6):
+            y = a.stalest(now, rng)
+            a.looked(y, now)
+            yaws.append(abs(y))
+            now += 10.0
+        order.append(yaws)
+    # the first look is a near sector (within 50 degrees) and nothing beyond 100 until the fourth: no far-extreme start
+    assert all(y[0] < 50 and y[1] < 100 and y[2] < 100 for y in order)
+    assert any(y[3] > 100 or y[4] > 100 for y in order)  # the far sectors do get their turn
+
+
 def test_singing_is_chosen_when_bored_and_enabled_and_then_cools_down():
     b = _brain(boredom=0.9, curiosity=0.1)  # bored, and it has already looked everywhere
     b.can_sing = True
