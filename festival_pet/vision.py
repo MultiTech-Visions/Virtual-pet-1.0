@@ -324,7 +324,7 @@ class Vision:
             return sighting
 
         row, track = chosen
-        self.refined = row[2] < REFINE_BELOW_PX
+        self.refined = bool(row[2] < REFINE_BELOW_PX)  # a numpy bool here broke JSON for the whole page (0.6.5)
         if self.refined:
             row = refine_landmarks(self.refiner, small, row)
         self._preview(small, faces, row)

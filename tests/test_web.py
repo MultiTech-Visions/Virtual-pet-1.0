@@ -375,3 +375,37 @@ def test_quiet_voice_drops_the_chatter_and_keeps_the_reactions():
     pet._dispatch(Action("sound", "hello_new", 5), 1000.0)
     assert len(kept) == 40 + prios.count(2)
     pet.stop()
+
+
+def test_mind_json_never_carries_numpy_scalars():
+    """0.6.5 put a numpy bool in the vision status and every poll of the page failed with a 500."""
+    import numpy as np
+
+    from festival_pet.vision import Vision
+
+    pet = _pet()
+    v = object.__new__(Vision)
+    v._thread = None
+    v._active = threading.Event()
+    v.refined = bool(np.float32(40.0) < 90)  # what the fixed code produces
+    v.stats = {"detect_ms": 1.0, "embed_ms": 0.0, "body_ms": 0.0, "frames": 3, "faces": 1, "bodies": 0, "last_frame_at": 0.0, "no_frame": 0, "errors": 0, "last_error": ""}
+    pet.vision = v
+
+    def walk(x, path="mind"):
+        if isinstance(x, dict):
+            for k, val in x.items():
+                walk(val, f"{path}.{k}")
+        elif isinstance(x, (list, tuple)):
+            for i, val in enumerate(x):
+                walk(val, f"{path}[{i}]")
+        else:
+            assert not isinstance(x, np.generic), f"{path} is {type(x).__name__}"
+    walk(pet.mind())
+    app = FastAPI(); install_routes(app, pet); c = TestClient(app)
+    assert c.get("/api/mind").status_code == 200
+    # and the unfixed value would have been caught here
+    v.refined = np.float32(40.0) < 90
+    import pytest
+    with pytest.raises(AssertionError):
+        walk(pet.mind())
+    pet.stop()
