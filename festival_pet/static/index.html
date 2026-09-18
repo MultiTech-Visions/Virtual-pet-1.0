@@ -408,7 +408,7 @@ async function refresh() {
     const f = d.feeling, fe = x => x ? `${FEEL[x.name.split(':')[0]] || ''} <b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
     $('feeling').innerHTML = `feeling: ${fe(f.motion)} · sounding: ${fe(f.sound)}`;
     $('energy').style.width = (m.energy * 100) + '%'; $('social').style.width = (m.social * 100) + '%';
-    const sg = d.song, sl = $('song-line');
+    const sl = $("song-line"), sg = d.song;
     sl.classList.toggle('hidden', sg.next_in_s === null);
     if (sg.next_in_s !== null) sl.innerHTML = sg.singing ? `🎵 singing <b>${sg.last.name}</b> (${sg.last.bpm} bpm)` : (sg.last ? `🎵 last song: <b>${sg.last.name}</b>${sg.last.saved ? ' (saved)' : ''} · ` : '🎵 ') + (sg.next_in_s > 0 ? `no song for ${sg.next_in_s}s` : 'a song when it feels like one');
     $('curiosity').style.width = (m.drives.curiosity * 100) + '%'; $('boredom').style.width = (m.drives.boredom * 100) + '%';
@@ -436,7 +436,7 @@ async function refresh() {
     document.querySelectorAll('.card.mic').forEach(c => c.classList.toggle('hidden', !d.controls.ears));
     if (m.engaged_person) { const src = `/api/people/${m.engaged_person}/face.jpg`; if (!$('who').src.endsWith(src)) { $('who').src = src; } $('who').classList.remove('hidden'); } else $('who').classList.add('hidden');
     drawKeymap(d.controls.keymap);
-    const sg = d.song;
+    // sg: the song block, declared above
     kv('song', {now: sg.singing ? 'singing 🎵' : 'quiet', 'last song': sg.last ? `${sg.last.name} · ${sg.last.bpm} bpm · ${sg.last.bars.join(' ')}${sg.last.saved ? ' (saved)' : ''}` : '—', repertoire: sg.repertoire.length ? sg.repertoire.join(', ') : 'nothing saved yet', 'next song in': sg.next_in_s === null ? 'singing is off' : sg.next_in_s + ' s'});
     const mg = d.mime; mimeOn = mg.active;
     $('mime-btn').textContent = mimeOn ? 'Stop Simon says' : 'Start Simon says';

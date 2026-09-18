@@ -335,3 +335,20 @@ def test_imu_rub_reads_as_petting_and_lowers_the_antennas():
     for i in range(300):
         _, ants, _ = m.sample(i * 0.02, 0.02)
     assert ants[0] > 0.5 and ants[1] < -0.5  # antennas eased down
+
+
+def test_the_page_script_parses():
+    """A stray redeclaration once left the page stuck on "connecting": every script block must parse."""
+    import re
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    import pytest
+
+    if shutil.which("node") is None:
+        pytest.skip("node not installed")
+    html = (Path(__file__).resolve().parents[1] / "festival_pet" / "static" / "index.html").read_text()
+    for i, script in enumerate(re.findall(r"<script>(.*?)</script>", html, re.S)):
+        r = subprocess.run(["node", "--check", "-"], input=script, capture_output=True, text=True)
+        assert r.returncode == 0, f"script block {i}: {r.stderr}"

@@ -283,15 +283,17 @@ def g_point(u: float, side: float) -> Offsets:
 
 
 BOW_S = 6.0
-BOW_YAWS = (0.0, -20.0, 20.0)  # centre, a little to its right, a little to its left: the whole house
+BOW_YAWS = (-20.0, 20.0, 0.0)  # to its right, to its left, then the centre: the whole house
 
 
 def g_bow(u: float) -> Offsets:
-    """A performer's bow, three times: to the centre, to the right, to the left.
+    """A performer's bow, three times: to the right, to the left, to the centre.
 
-    Each bow: the head turns (while up), dips well forward and holds, then comes back up. The right
-    antenna sweeps across in front on the first, the left on the second, both on the last. A solo
-    gesture, so the gaze goes to neutral first and the dip is not eaten by a head already looking up.
+    The BODY turns between bows and the head goes with it (a head turned on the body slammed the face
+    into the body frame on the dip). Each bow: turn while up, dip well forward and hold, come back up.
+    The right antenna sweeps across in front on the first, the left on the second, both on the last.
+    A solo gesture, so the gaze goes to neutral first and the dip is not eaten by a head already
+    looking up.
     """
     seg = min(2, int(u * 3))
     v = u * 3 - seg
@@ -302,7 +304,8 @@ def g_bow(u: float) -> Offsets:
     ant_r = 1.4 * arm if seg in (0, 2) else 0.0
     ant_l = -1.4 * arm if seg in (1, 2) else 0.0
     # The head slides back as it dips: bowing from the neutral spot, the face hits the front lip of the body.
-    return Offsets(yaw=yaw, pitch=30.0 * dip, z=-0.01 * dip, x=-0.02 * dip, ant_r=ant_r, ant_l=ant_l)
+    # yaw == body: the head keeps facing straight out of the body, so the dip is over the body's own front.
+    return Offsets(yaw=yaw, body=yaw, pitch=30.0 * dip, z=-0.01 * dip, x=-0.02 * dip, ant_r=ant_r, ant_l=ant_l)
 
 
 def g_swat(u: float, side: float) -> Offsets:

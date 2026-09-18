@@ -572,7 +572,8 @@ class Pet:
                 body = 0.0 if comp.held else max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, comp.body_yaw + math.degrees(float(move_body))))
                 head = turn_pose(head, body)
                 self.last_pose, self.last_ants = head, [float(ants[0]), float(ants[1])]
-                io.set_target(head, self.last_ants, math.radians(body))
+                if not self.asleep:
+                    io.set_target(head, self.last_ants, math.radians(body))
         if self.move is None:
             head, ants, body_yaw = comp.sample(now, dt)
             if self.blend_from is not None:
@@ -1073,19 +1074,33 @@ class ReachyIO:
 
         return requests.get(f"{self._r._daemon_http_url}/api/motors/status", timeout=5).json()["mode"]
 
-    def sleep_body(self):
-        from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE
+    def _ants(self) -> str:
+        _, ants = self._r.get_current_joint_positions()
+        return f"antennas R {ants[0]:+.2f} L {ants[1]:+.2f}"
 
-        # Centre the body first: the daemon's sleep only moves the head, and a turned body leaves it nesting sideways.
+    def sleep_body(self):
+        """Centre the body, nest the head, cut the torque. All of it ours, none of it the daemon's move.
+
+        The daemon's goto_sleep holds the nest for two seconds with its move guard released before it
+        disables the motors, and something in that window has been seen yanking the antennas upright at
+        full speed. Doing the nest ourselves leaves no window: the nest goto ends, we read the antennas,
+        and torque goes off on the next line. The antenna readings are logged at each step so a jump,
+        if one still happens, is pinned to a step.
+        """
+        from reachy_mini.reachy_mini import INIT_ANTENNAS_JOINT_POSITIONS, INIT_HEAD_POSE, SLEEP_ANTENNAS_JOINT_POSITIONS, SLEEP_HEAD_POSE
+
+        # Centre the body first: a turned body leaves the head nesting sideways.
         # goto_target blocks for its duration; give a far-turned body time to come round (45 deg/s, at least 1.2 s).
         body_deg = abs(math.degrees(float(self._r.get_current_joint_positions()[0][0])))
+        logger.info("sleep: centring body (%.0f deg), %s", body_deg, self._ants())
         self._r.goto_target(head=INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=max(1.2, body_deg / 45.0), body_yaw=0.0)
-        self._daemon_move("goto_sleep", timeout=15.0)  # the dashboard's sleep: nest, then motors limp
-        mode = self.motor_mode()
-        if mode != "disabled":
-            logger.warning("daemon sleep left motors '%s'; disabling them explicitly", mode)
-            self._r.disable_motors()
-        logger.info("asleep: motor mode %s", self.motor_mode())
+        logger.info("sleep: centred, %s; nesting", self._ants())
+        self._r.media.play_sound("go_sleep.wav")  # the daemon's own sigh
+        self._r.goto_target(head=SLEEP_HEAD_POSE, antennas=SLEEP_ANTENNAS_JOINT_POSITIONS, duration=2.0, body_yaw=0.0)
+        logger.info("sleep: nested, %s; torque off", self._ants())
+        self._r.disable_motors()
+        time.sleep(0.3)
+        logger.info("asleep: motor mode %s, %s", self.motor_mode(), self._ants())
 
     def wake_body(self):
         # A disabled robot ignores wake_up (reachy_mini issue #1306): torque must come back first.
