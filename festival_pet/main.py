@@ -367,6 +367,10 @@ class Pet:
         self._next_song_at = 0.0
         self.songs_file: Path | None = None
         self.pose_history: PoseHistory | None = None  # set on the real robot; fed every tick for the vision thread
+        # Actions asked for from the web page / a keypad. They are run by the control loop, never on the
+        # HTTP thread: sleep and wake block for seconds on daemon moves, and a loop still streaming the awake
+        # pose meanwhile yanks the antennas back up the moment the nest finishes.
+        self._from_page: queue.Queue[Action] = queue.Queue()
         self.manual_groove = False  # groove to the tapped beat instead of what it hears/sees
         self._dance_seen = False  # edge: seed the tap clock once per dance
         self.pickup_enabled = False  # "held in hand": the body never turns; it asks to be turned instead
@@ -416,6 +420,14 @@ class Pet:
         io, beh, comp = self.p.io, self.p.behavior, self.p.composer
         dt = max(1e-3, now - self._last)
         self._last = now
+
+        # ---------------- what the page asked for (on this thread, so nothing else moves the robot meanwhile)
+        while True:
+            try:
+                act = self._from_page.get_nowait()
+            except queue.Empty:
+                break
+            self._dispatch(act, now)
 
         # ---------------- senses
         obs = Observation()
@@ -821,19 +833,22 @@ class Pet:
         if cmd == "sound":
             if str(value) not in sounds.EMOTIONS:
                 raise KeyError(f"unknown sound '{value}'")
-            self._dispatch(Action("sound", str(value), 5), now)
+            self._from_page.put(Action("sound", str(value), 5))
         elif cmd == "gesture":
-            self.p.composer.request_gesture(str(value), now, 5)  # raises KeyError on unknown names
-            self.actions_log.append((now, "gesture", f"{value} (manual)"))
+            from festival_pet.motion import GESTURES
+
+            if str(value) not in GESTURES:
+                raise KeyError(f"Unknown gesture '{value}'")
+            self._from_page.put(Action("gesture", str(value), 5))
         elif cmd == "move":
-            self._dispatch(Action("move", str(value), 5), now)
+            self._from_page.put(Action("move", str(value), 5))
         elif cmd == "sleep":
             beh.state, beh._state_since = "SLEEPING", now
             beh._think(now, "told to sleep from the control page")
-            self._dispatch(Action("sleep", "control", 5), now)  # the same routine the brain uses: centre, nest, motors off
+            self._from_page.put(Action("sleep", "control", 5))  # the same routine the brain uses: centre, nest, motors off
         elif cmd == "wake":
             beh.state, beh._state_since = "WAKING", now
-            self._dispatch(Action("wake", "control", 5), now)
+            self._from_page.put(Action("wake", "control", 5))
         elif cmd == "mute":
             self.muted = bool(value)
         elif cmd == "pickup":  # held-in-hand mode
