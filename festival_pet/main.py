@@ -354,7 +354,7 @@ class Pet:
         self.actions_log: list[tuple[float, str, str]] = []
         self._next_doa = 0.0
         self._last = 0.0
-        self.muted = False
+        self.voice = "full"  # "full" | "quiet" (about half as chatty: no idle noises, half the small ones) | "off"
         self.groove_scale = 1.0  # user knob on top of the brain's intensity
         self.tap = TapTempo()  # hand-tapped beat from the control page or a paired keypad
         self.keypad = KeypadListener()
@@ -622,7 +622,7 @@ class Pet:
             self.actions_log.append((now, act.kind, act.name))
             del self.actions_log[:-2000]
         if act.kind == "sound":
-            if not self.muted:
+            if self.voice == "full" or (self.voice == "quiet" and (act.priority >= 3 or (act.priority == 2 and self.p.composer.rng.random() < 0.5))):
                 self.sound.request(act.name, act.priority, now)
         elif act.kind == "gesture":
             if self.move is None:
@@ -782,8 +782,8 @@ class Pet:
             self._dispatch(Action("sound", "happy" if self.manual_groove else "curious", 3), now)
         elif action in ("wake", "sleep"):
             self.control(action, None)
-        elif action == "mute":
-            self.control("mute", not self.muted)
+        elif action == "mute":  # the key cycles the voice: full -> quiet -> off -> full
+            self.control("voice", {"full": "quiet", "quiet": "off", "off": "full"}[self.voice])
         elif action == "none":
             pass
         else:
@@ -840,7 +840,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"muted": self.muted, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "imu_calibration": self.imu_rub.calibration,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
@@ -873,8 +873,12 @@ class Pet:
         elif cmd == "wake":
             beh.state, beh._state_since = "WAKING", now
             self._from_page.put(Action("wake", "control", 5))
-        elif cmd == "mute":
-            self.muted = bool(value)
+        elif cmd == "voice":
+            if str(value) not in ("full", "quiet", "off"):
+                raise ValueError(f"voice must be full, quiet or off, not '{value}'")
+            self.voice = str(value)
+        elif cmd == "mute":  # kept for old settings files and scripts: a plain on/off
+            self.voice = "off" if bool(value) else "full"
         elif cmd == "pickup":  # held-in-hand mode
             self.pickup_enabled = bool(value)
             self.p.composer.held = self.pickup_enabled
@@ -972,7 +976,7 @@ class Pet:
         return {"ok": True}
 
     # ------------------------------------------------------------------ settings persistence
-    _SETTING_KEYS = ("muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+    _SETTING_KEYS = ("voice", "muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
         c = self.mind()["controls"]
@@ -990,7 +994,7 @@ class Pet:
         if self.settings_file is None or not self.settings_file.exists():
             return
         data = json.loads(self.settings_file.read_text())
-        names = {"muted": "mute"}  # setting key -> control name where they differ
+        names = {"muted": "mute"}  # setting key -> control name where they differ ("muted" is the pre-0.6.4 file)
         for k, v in data.items():
             if k not in self._SETTING_KEYS:
                 continue

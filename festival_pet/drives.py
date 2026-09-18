@@ -45,6 +45,9 @@ CURIOSITY_LOUD = 0.08
 CURIOSITY_GAME_PER_S = 0.003
 ASK_MIN_INTERVAL_S = 1.5  # between re-decisions when the situation changed
 ASK_CEILING_S = 30.0  # re-decide anyway after this long
+# The least time to give an activity before an ordinary re-decision may replace it. A big change (someone
+# arriving, a beat, being picked up) still switches at once; drives creeping over a band edge do not.
+MIN_DWELL_S = {"rest": 60.0, "look_around": 15.0, "hangout": 10.0, "watch": 8.0, "ask_attention": 20.0}
 HESITATE_MARGIN = 0.06  # top two closer than this: a visible "hmm"
 SECTORS = 6  # the world in front of it, -150..150 deg of yaw, for "somewhere it has not looked"
 SECTOR_STALE_S = 40.0
@@ -67,9 +70,10 @@ class Drives:
             self.energy += dt * 0.01
             self.boredom = 0.0
         else:
-            self.energy -= dt * (0.0006 + (0.0015 if activity in ("mime", "mirror", "sing") else 0.0))
+            # 0.8 -> 0.3 takes about 35 min of ordinary awake time; a game or a song costs about triple
+            self.energy -= dt * (0.00025 + (0.0006 if activity in ("mime", "mirror", "sing") else 0.0))
             if activity == "rest":
-                self.energy += dt * 0.0012
+                self.energy += dt * 0.0025  # a minute of rest buys about 10 min of awake
             self.curiosity += dt * CURIOSITY_PER_S
             if activity in ("mime", "mirror"):
                 self.curiosity -= dt * CURIOSITY_GAME_PER_S
@@ -121,7 +125,7 @@ def score(d: Drives, s: Situation, current: str, cool: dict[str, float], now: fl
     out: dict[str, float] = {}
     dice = lambda: rng.uniform(-0.06, 0.06)  # noqa: E731
     ok = lambda name: cool.get(name, -1e9) <= now  # noqa: E731
-    out["rest"] = 1.6 * (1.0 - d.energy) - 0.6 + dice()
+    out["rest"] = 1.6 * (1.0 - d.energy) - 0.7 + dice()  # wins outright below ~0.2 energy, competes below ~0.35
     if s.person:
         out["watch"] = 0.5 + 0.25 * (1.0 - d.social) - 0.45 * d.boredom + dice()
         if s.close and not s.beat and ok("mirror"):

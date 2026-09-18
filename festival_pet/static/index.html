@@ -154,7 +154,7 @@
     <div class="btns">
       <button class="act" onclick="ctl('wake')">Wake</button>
       <button class="act" onclick="ctl('sleep')">Sleep</button>
-      <button class="act" id="mute" onclick="toggleMute()">Mute</button>
+      <button class="act" id="mute" onclick="cycleVoice()">Voice: full</button>
       <button class="act" id="pickup" onclick="togglePickup()">Held in hand: off</button>
       <button class="act" id="bodyf" onclick="toggleBody()">Body finder: on</button>
       <button class="act" id="ears-btn" onclick="toggleEars()">Ears: on</button>
@@ -267,7 +267,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const v = id => $(id).value;
-let tab = 'mind', muted = false, slidersInit = false, lastImuCal = null;
+let tab = 'mind', voice = 'full', slidersInit = false, lastImuCal = null;
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   tab = b.dataset.tab;
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
@@ -296,7 +296,8 @@ function drawChart(hist, c) {
   for (const [col, v] of [['#ffb86b', c.rub_floor], ['#ff8ac9', c.scratch_floor]]) { g.setLineDash([4, 4]); g.strokeStyle = col; g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke(); g.setLineDash([]); }
   g.fillStyle = '#5aa0ff'; hist.forEach((h, i) => { g.fillRect(x(i) - 1, H - 4 - h.flat * (H - 14), 2, 2); });
 }
-function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
+const VOICE_NEXT = {full: 'quiet', quiet: 'off', off: 'full'}, VOICE_LABEL = {full: 'Voice: full', quiet: 'Voice: quiet (about half)', off: 'Voice: off'};
+function cycleVoice() { voice = VOICE_NEXT[voice]; ctl('voice', voice); $('mute').textContent = VOICE_LABEL[voice]; }
 let pickup = false, bodyf = true, volLoaded = false, ears = true, mflip = true, mgroove = false;
 function toggleEars() { ears = !ears; ctl('ears', ears); $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off'); }
 const ACTIONS = ['tap', 'downbeat', 'tilt_left', 'tilt_right', 'nod', 'manual_groove', 'wake', 'sleep', 'mute', 'happy', 'none'];
@@ -469,7 +470,7 @@ async function refresh() {
       $('sfloor').value = Math.log10(d.controls.scratch_floor).toFixed(1); $('sfloor-v').textContent = $('sfloor').value + ' (' + d.controls.scratch_floor.toExponential(1) + ')';
       $('groove').value = d.controls.groove_scale; $('groove-v').textContent = d.controls.groove_scale;
       $('match').value = d.controls.match_threshold; $('match-v').textContent = d.controls.match_threshold;
-      muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute';
+      voice = d.controls.voice; $('mute').textContent = VOICE_LABEL[voice];
       pickup = d.controls.pickup; $('pickup').textContent = 'Held in hand: ' + (pickup ? 'on' : 'off');
       if (d.controls.body_finder !== null) { bodyf = d.controls.body_finder; $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
       ears = d.controls.ears; $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off');

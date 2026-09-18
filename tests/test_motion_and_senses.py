@@ -360,3 +360,23 @@ def test_imu_rub_calibration_sets_the_floor_between_rest_and_a_rub():
             break
         t += 0.02
     assert d2.calibration["phase"] == "failed" and "stand out" in d2.calibration["reason"]
+
+
+def test_petting_folds_the_antennas_into_a_steady_x_with_a_tiny_push():
+    from festival_pet.motion import ANTENNA_NEUTRAL
+
+    m = MotionComposer()
+    m.petted = True
+    m.groove = (0.0, 0.0, 1.0)  # even mid-groove...
+    m._groove_level = 1.0
+    ants = []
+    for i in range(500):
+        _, a, _ = m.sample(i * 0.02, 0.02)
+        ants.append(a)
+    late = np.array(ants[300:])
+    assert abs(late[:, 0].mean() - (ANTENNA_NEUTRAL[0] + 0.9)) < 0.03 and abs(late[:, 1].mean() - (ANTENNA_NEUTRAL[1] - 0.9)) < 0.03
+    assert 0.02 < late[:, 0].max() - late[:, 0].min() < 0.1  # ...they hold the X, with only the hair's-breadth push
+    m.petted = False
+    for i in range(500, 1200):
+        _, a, _ = m.sample(i * 0.02, 0.02)
+    assert abs(a[0] - ANTENNA_NEUTRAL[0]) < 0.4  # the hand gone, they come back up

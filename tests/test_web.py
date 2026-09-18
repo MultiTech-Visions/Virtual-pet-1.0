@@ -80,6 +80,9 @@ def test_mind_log_catalog_and_controls():
     pet.step(time.time())
     assert not pet.asleep
     assert c.post("/api/control", json={"cmd": "mute", "value": True}).json() == {"ok": True}
+    assert c.get("/api/mind").json()["controls"]["voice"] == "off"
+    assert c.post("/api/control", json={"cmd": "voice", "value": "loud"}).status_code == 400
+    assert c.post("/api/control", json={"cmd": "voice", "value": "quiet"}).status_code == 200
     assert c.post("/api/control", json={"cmd": "scratch_onset_ratio", "value": 4.5}).status_code == 200
     assert c.get("/api/mind").json()["controls"]["scratch_onset_ratio"] == 4.5
     assert c.post("/api/control", json={"cmd": "nonsense"}).status_code == 400
@@ -352,3 +355,23 @@ def test_the_page_script_parses():
     for i, script in enumerate(re.findall(r"<script>(.*?)</script>", html, re.S)):
         r = subprocess.run(["node", "--check", "-"], input=script, capture_output=True, text=True)
         assert r.returncode == 0, f"script block {i}: {r.stderr}"
+
+
+def test_quiet_voice_drops_the_chatter_and_keeps_the_reactions():
+    from festival_pet.behavior import Action
+
+    pet = _pet()
+    pet.voice = "quiet"
+    pet.p.composer.rng.seed(1)
+    kept = []
+    pet.sound.request = lambda name, prio, now: kept.append((name, prio))  # type: ignore[method-assign]
+    for _ in range(40):
+        pet._dispatch(Action("sound", "curious", 1), 1000.0)
+        pet._dispatch(Action("sound", "giggle", 2), 1000.0)
+        pet._dispatch(Action("sound", "hello_new", 3), 1000.0)
+    prios = [p for _, p in kept]
+    assert prios.count(1) == 0 and prios.count(3) == 40 and 8 < prios.count(2) < 32
+    pet.voice = "off"
+    pet._dispatch(Action("sound", "hello_new", 5), 1000.0)
+    assert len(kept) == 40 + prios.count(2)
+    pet.stop()

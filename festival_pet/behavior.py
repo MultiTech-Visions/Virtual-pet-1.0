@@ -29,6 +29,7 @@ from festival_pet.drives import (
     CURIOSITY_NEW_FACE,
     CURIOSITY_NEW_SECTOR,
     HESITATE_MARGIN,
+    MIN_DWELL_S,
     Attention,
     Drives,
     Situation,
@@ -166,6 +167,7 @@ class Behavior:
     _ear_tucked: int | None = None  # which antenna is parked over the head (not in the mood)
     _ear_seq_at: float = 0.0  # when the swat finishes and the make-up nuzzle starts
     _body_first: float = 0.0  # a torso has been in view since (0 = none)
+    _last_sleepy: float = -1e9  # the sleepy noise is rationed
     _body_ignore: list = field(default_factory=list)  # (yaw, until): spots that turned out not to be people
 
     # bookkeeping
@@ -264,6 +266,12 @@ class Behavior:
         changed = sig != self._last_sig and now - self._last_ask >= ASK_MIN_INTERVAL_S
         if not (changed or now - self._last_ask >= ASK_CEILING_S or self._last_ask == -1e9):
             return actions
+        # Give what it is doing a fair go: only the situation itself (the first five signature fields), not a
+        # drive creeping over a band edge or the 30 s clock, may cut an activity short of its dwell time.
+        big_change = sig[:5] != self._last_sig[:5] if self._last_sig else True
+        if now - self._activity_since < MIN_DWELL_S.get(self.activity, 0.0) and not big_change:
+            self._last_sig = sig
+            return actions
         self._last_sig, self._last_ask = sig, now
         choice = choose(self.mood, sit, self.activity, self._cool, now, self.rng)
         self.runner_up, self._margin, self._scores = choice.runner_up, choice.margin, choice.scores
@@ -305,7 +313,10 @@ class Behavior:
             self._next_glance = now
         elif new == "rest":
             self._think(now, f"so tired... resting {why}")
-            out += [Action("sound", "sleepy", 1), Action("gesture", "droop", 1)]
+            out.append(Action("gesture", "droop", 1))
+            if now - self._last_sleepy > 120.0:  # the yawn-and-droop noise, at most once in a couple of minutes
+                self._last_sleepy = now
+                out.append(Action("sound", "sleepy", 1))
         elif new == "ask_attention":
             self._next_nag = now
             self._think(now, f"I want some attention {why}")
@@ -707,10 +718,18 @@ class Behavior:
                     else:
                         choice = self.rng.choice(["curious", "curious", "happy", "confused"])
                         gesture = {"curious": "tilt", "happy": "nod", "confused": "tilt"}[choice]
-                    if self.mood.energy < 0.25:
-                        choice, gesture = "sleepy", "droop"
-                    actions.append(Action("sound", choice, 1))
-                    actions.append(Action("gesture", gesture, 1))
+                    if self.mood.energy < 0.25 or self.activity == "rest":
+                        if now - self._last_sleepy < 120.0:
+                            continue_quietly = True  # tired: a droop without the noise
+                        else:
+                            continue_quietly = False
+                            self._last_sleepy = now
+                        actions.append(Action("gesture", "droop", 1))
+                        if not continue_quietly:
+                            actions.append(Action("sound", "sleepy", 1))
+                    else:
+                        actions.append(Action("sound", choice, 1))
+                        actions.append(Action("gesture", gesture, 1))
 
             elif (obs.body is not None and self.state != "ENGAGED" and now - self._last_face_time > 2.5 and obs.busy != "mime"
                   and not self._body_ignored(obs.body.yaw_deg, now)):
@@ -806,8 +825,10 @@ class Behavior:
                     alone_for = now - self._last_interaction
                     if self.mood.energy < 0.3 and not self._nodding_off and alone_for > 30.0 and self.rng.random() < dt * 0.02:
                         self._nodding_off = True
-                        actions.append(Action("sound", "sleepy", 1))
                         actions.append(Action("gesture", "nod_off", 1))
+                        if now - self._last_sleepy > 120.0:
+                            self._last_sleepy = now
+                            actions.append(Action("sound", "sleepy", 1))
                     if alone_for > t.sleep_after or self.mood.energy < 0.08:
                         actions.append(Action("sound", "yawn", 3))
                         actions.append(Action("sleep", "tired", 5))

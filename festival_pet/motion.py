@@ -631,10 +631,12 @@ class MotionComposer:
             self._mirror += (0.0 - self._mirror) * min(1.0, dt * 1.5)
         off.roll += self._mirror
 
-        # being petted: antennas lower slowly, and come back up slowly when the hand goes
+        # being petted: the antennas fold back into an X over the head and STAY there, so the hand can
+        # settle on the crossing and massage them; the head lifts a little into the hand. Once it has
+        # settled in, the tiny push: the antennas close and open by a hair, like ears pressed into a palm.
         self._pet_level += ((1.0 if self.petted else 0.0) - self._pet_level) * min(1.0, dt * (0.6 if self.petted else 0.4))
-        off.ant_r += 0.9 * self._pet_level
-        off.ant_l += -0.9 * self._pet_level
+        p = self._pet_level
+        off.z += 0.006 * p
 
         # gesture overlay
         off += self._gesture_offsets(now)
@@ -645,6 +647,12 @@ class MotionComposer:
         z = off.z
         ant_r = ANTENNA_NEUTRAL[0] + off.ant_r
         ant_l = ANTENNA_NEUTRAL[1] + off.ant_l
+
+        if p > 0.02:
+            push = 0.04 * math.sin(2 * math.pi * 0.5 * now) * max(0.0, (p - 0.8) / 0.2)
+            pet_r, pet_l = ANTENNA_NEUTRAL[0] + 0.9 + push, ANTENNA_NEUTRAL[1] - 0.9 - push
+            ant_r = ant_r * (1 - p) + pet_r * p  # every other antenna overlay fades out as the hand settles
+            ant_l = ant_l * (1 - p) + pet_l * p
 
         for i, held in enumerate(self.ear_hold):
             if held is not None and now < self.ear_hold_until[i]:

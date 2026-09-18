@@ -54,6 +54,7 @@ def test_bored_with_a_person_offers_the_mime_game_and_the_robot_layer_reports_it
     acts = _run(b, lambda t: Observation(face=face), 0.0, 3.0)
     assert b.activity == "watch" and _activities(acts) == ["watch"]  # a new face: watch them first
     b.mood.boredom, b.mood.curiosity = 0.85, 0.8  # ...a couple of minutes of nothing happening later
+    b._activity_since = -20.0  # (and watching them has had its fair go)
     acts = _run(b, lambda t: Observation(face=face), 3.0, 3.5)
     assert "mime" in _activities(acts), b._scores
     assert b.activity == "mime"
@@ -131,3 +132,28 @@ def test_mind_reports_the_activity_layer():
     m = b.mind(1.0)
     assert m["activity"] in ("hangout", "look_around") and "drives" in m and set(m["drives"]) == {"energy", "social", "curiosity", "boredom"}
     assert "scores" in m and "next_decision_in_s" in m
+
+
+def test_rest_is_given_a_minute_and_the_sleepy_noise_is_rationed():
+    b = _brain(energy=0.15)
+    face = FaceObs(1, 0.0, 0.0, 0.05, None, 0.0)
+    acts = _run(b, lambda t: Observation(face=face), 0.0, 3.0)
+    assert b.activity == "rest" and any(a.kind == "sound" and a.name == "sleepy" for a in acts)
+    # curiosity and boredom drift and the 30 s clock come and go: it stays resting for a good while
+    b.mood.curiosity = 0.95
+    acts = _run(b, lambda t: Observation(face=face), 3.0, 50.0)
+    assert b.activity == "rest"
+    assert sum(1 for a in acts if a.kind == "sound" and a.name == "sleepy") == 0  # no more yawning for two minutes
+    # ...but someone leaving is a real change and may end it at once
+    _run(b, lambda t: Observation(), 50.0, 53.0)
+    assert b.activity != "watch"
+
+
+def test_energy_drains_slowly_and_rest_restores_it():
+    d = Drives(energy=0.8)
+    for _ in range(30 * 60):
+        d.tick(1.0, "IDLE", "hangout", company=False)
+    assert 0.3 < d.energy < 0.4  # half an hour awake: tired, not asleep
+    for _ in range(60):
+        d.tick(1.0, "IDLE", "rest", company=False)
+    assert d.energy > 0.45  # a minute's rest buys a good chunk back
