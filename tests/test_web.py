@@ -255,25 +255,149 @@ def test_keypad_actions_reach_the_pet_and_the_map_persists(tmp_path):
     app = FastAPI()
     install_routes(app, pet)
     c = TestClient(app)
-    assert c.post("/api/control", json={"cmd": "keymap", "value": "F1:happy:sleep"}).status_code == 200
-    assert c.post("/api/control", json={"cmd": "keymap", "value": "F1:banana:none"}).status_code == 400
+    assert c.post("/api/control", json={"cmd": "keymap", "value": "caring:0:F1"}).status_code == 200
+    assert c.post("/api/control", json={"cmd": "keymap", "value": "caring:0:BANANA"}).status_code == 400
+    assert c.post("/api/control", json={"cmd": "keymap", "value": "sleeping:0:A"}).status_code == 400
     m = c.get("/api/mind").json()
-    assert m["controls"]["keymap"]["F1"] == {"press": "happy", "hold": "sleep"}
-    assert m["senses"]["keypad"]["devices"] == []
-    # a tapped beat from the keypad lands in the tap clock with the key's own timestamp
+    assert m["controls"]["keymap"]["caring"] == ["F1", "F", "G", "H"]
+    assert m["senses"]["keypad"]["devices"] == [] and c.get("/api/catalog").json()["keypad"]["dancing"][1] == "tap"
+    # a tapped beat from the keypad lands in the tap clock with the key's own timestamp, and turns manual groove on
+    assert not pet.manual_groove
     pet.tap.set_bpm(120)
     pet.keypad.events.put(KeyEvent("C", True, 1000.5, "test"))
     pet.step(1000.6)
-    assert pet.tap.downbeat_known and pet.tap.phase(1000.5) == 0.0
+    assert pet.tap.downbeat_known and pet.tap.phase(1000.5) == 0.0 and pet.manual_groove
     assert any(k == "key" and n == "downbeat" for _, k, n in pet.actions_log)
-    assert c.post("/api/control", json={"cmd": "key", "value": "tilt_left"}).status_code == 200
-    assert pet.p.composer._gesture.name == "tilt"
-    # persisted and restored
+    assert c.post("/api/control", json={"cmd": "key", "value": "boop"}).status_code == 200
+    assert pet.p.composer._gesture.name == "boop"
+    # persisted and restored; a pre-0.7.2 press/hold map is left alone
     pet2 = _pet()
     pet2.settings_file = pet.settings_file
     pet2.load_settings()
-    assert pet2.keymap.keys["F1"] == {"press": "happy", "hold": "sleep"}
-    pet.stop(); pet2.stop()
+    assert pet2.keymap.layers["caring"] == ["F1", "F", "G", "H"]
+    pet.settings_file.write_text(json.dumps({"keymap": {"A": {"press": "tilt_left", "hold": "none"}}}))
+    pet3 = _pet()
+    pet3.settings_file = pet.settings_file
+    pet3.load_settings()
+    assert pet3.keymap.layers["dancing"] == ["A", "B", "C", "D"]
+    pet.stop(); pet2.stop(); pet3.stop()
+
+
+def test_dance_layer_nudges_lean_then_turn_and_come_back_without_a_regreeting():
+    from festival_pet.behavior import FaceObs
+    from festival_pet.main import NUDGE_TURN_BEATS, NUDGE_TURN_DEG
+
+    pet = _pet()
+    comp, beh = pet.p.composer, pet.p.behavior
+    pet.tap.set_bpm(120)
+    face = FaceObs(1, 20.0, -5.0, 0.05, None, 0.0)
+    pet.p.latest_sighting = lambda: None
+    t = 1001.0
+    # someone in front of it: engaged, greeted once (the brain is driven with a face directly: the fake IO has no camera)
+    for i in range(60):
+        beh.tick(Observation(face=face), t + i * 0.05, 0.05)
+    assert beh.state == "ENGAGED"
+    greetings = sum(1 for _, k, n in pet.actions_log if k == "sound" and n.startswith("hello"))
+    t += 3.0
+    # one tap: a lean, no turn
+    pet.key_action("groove_left", t, t)
+    assert comp.groove_lean == 1.0 and pet._turn is None and pet.manual_groove
+    # three quick taps: it turns 60 degrees to its left of where it was looking, for 8 beats
+    pet.key_action("groove_left", t + 0.4, t + 0.4)
+    pet.key_action("groove_left", t + 0.8, t + 0.8)
+    assert pet._turn is not None and abs(pet._turn[0] - (20.0 + NUDGE_TURN_DEG)) < 1e-6
+    assert abs(pet._turn[1] - (t + 0.8 + NUDGE_TURN_BEATS * 0.5)) < 1e-6
+    # while turned, the face is gone from the camera: the brain keeps its engagement (busy "turn")
+    for i in range(1, 60):
+        now = t + 0.8 + i * 0.05
+        beh.tick(Observation(busy="turn"), now, 0.05)
+        pet._last_obs = Observation()
+    assert beh.state == "ENGAGED"
+    # a step with the turn on aims the composer that way; after it ends, back at them, no new greeting
+    pet.step(t + 2.0)
+    assert comp._gaze_target is not None and abs(comp._gaze_target[0] - 80.0) < 1e-6
+    pet.step(t + 0.8 + NUDGE_TURN_BEATS * 0.5 + 0.1)
+    assert pet._turn is None
+    beh.tick(Observation(face=face), t + 6.0, 0.05)
+    assert beh.state == "ENGAGED" and sum(1 for _, k, n in pet.actions_log if k == "sound" and n.startswith("hello")) == greetings
+    # held in a hand: taps lean but never turn
+    comp.held = True
+    for k in range(3):
+        pet.key_action("groove_right", t + 10.0 + k * 0.3, t + 10.0 + k * 0.3)
+    assert pet._turn is None and comp.groove_lean == -1.0
+    pet.stop()
+
+
+def test_caring_layer_snacks_mushroom_pet_and_boops():
+    from festival_pet.main import BOOP_BOW_AT, BOOP_DANCE_AT, SNACK_ACHE_AT, SNACK_HICCUP_AT, TRIP_CRASH, TRIP_ENERGY, TRIP_S
+
+    pet = _pet()
+    comp, beh = pet.p.composer, pet.p.behavior
+    beh.mood.energy = 0.5
+    t = 1001.0
+    sounds = lambda: [n for _, k, n in pet.actions_log if k == "sound"]  # noqa: E731
+    for i in range(SNACK_HICCUP_AT - 1):
+        pet.key_action("snack", t + i, t + i)
+    assert abs(beh.mood.energy - (0.5 + 0.04 * (SNACK_HICCUP_AT - 1))) < 1e-9 and "hiccup" not in sounds()
+    pet.key_action("snack", t + 5, t + 5)
+    assert sounds()[-1] == "hiccup" and comp._gesture.name == "hiccup"
+    for i in range(SNACK_HICCUP_AT, SNACK_ACHE_AT):
+        pet.key_action("snack", t + i, t + i)
+    assert sounds()[-1] == "sad" and pet._ache_until > t + 9  # tummy ache
+    pet.key_action("snack", t + 10, t + 10)
+    assert sounds()[-1] == "huff" and comp._gesture.name == "shake"  # refused
+    # the mushroom: dizzy now, a boost for two minutes, a crash after
+    e0 = beh.mood.energy
+    pet.key_action("mushroom", t + 20, t + 20)
+    assert sounds()[-1] == "dizzy" and comp._gesture.name == "dizzy" and abs(beh.mood.energy - min(1.0, e0 + TRIP_ENERGY)) < 1e-9 and beh.mood.curiosity == 1.0
+    pet.manual_groove = True
+    pet.tap.set_bpm(120)
+    pet.step(t + 21)
+    assert comp.groove is not None and abs(comp.groove[2] - 0.6 * 1.5) < 1e-9  # grooving harder
+    pet.key_action("mushroom", t + 30, t + 30)
+    assert pet._trip_doses == 2 and pet._trip_until > t + 20 + TRIP_S
+    pet.key_action("mushroom", t + 40, t + 40)  # a third: sneezes it all out, trip over
+    assert comp._gesture.name == "sneeze" and pet._trip_until == 0.0
+    # and a trip that runs its course ends in a crash
+    pet.key_action("mushroom", t + 60, t + 60)
+    e1 = beh.mood.energy
+    n_before = len(sounds())
+    pet.step(t + 60 + TRIP_S + 1.0)
+    assert pet._trip_until == 0.0 and beh.mood.energy < e1 - TRIP_CRASH + 0.02 and "yawn" in sounds()[n_before:]
+    # pet: a virtual head pat this tick, the brain leans in
+    pet._last_obs = Observation()
+    pet.key_action("pet", t + 200, t + 200)
+    assert pet._last_obs.petted
+    # boops: a boop gesture, then the easter eggs
+    for i in range(BOOP_DANCE_AT):
+        pet.key_action("boop", t + 300 + i * 0.2, t + 300 + i * 0.2)
+    assert beh._little_dance_until > t + 300 and sounds()[-1] == "excited"
+    for i in range(BOOP_DANCE_AT, BOOP_BOW_AT):
+        pet.key_action("boop", t + 300 + i * 0.2, t + 300 + i * 0.2)
+    assert comp._gesture.name == "bow" and sounds()[-1] == "tada"
+    pet.stop()
+
+
+def test_petting_layer_reaches_the_brain_as_the_real_touches_do():
+    from festival_pet.keypad import KeyEvent
+
+    pet = _pet()
+    beh = pet.p.behavior
+    t = 1001.0
+    pet.keypad.events.put(KeyEvent("I", True, t, "test"))  # head pat
+    pet.step(t + 0.05)
+    assert "head pets" in beh.thoughts[-1][1] and any(n == "lean" for _, k, n in pet.actions_log if k == "gesture")
+    pet.keypad.events.put(KeyEvent("J", True, t + 5, "test"))  # chin scratch
+    pet.step(t + 5.05)
+    assert "chin" in beh.thoughts[-1][1] and any(n == "snuggle" for _, k, n in pet.actions_log if k == "gesture")
+    pet.keypad.events.put(KeyEvent("K", True, t + 10, "test"))  # ear rub
+    pet.step(t + 10.05)
+    assert "ear" in beh.thoughts[-1][1] and "keep going" in beh.thoughts[-1][1]
+    pet.keypad.events.put(KeyEvent("L", True, t + 15, "test"))  # belly rub
+    pet.step(t + 15.05)
+    assert "tickles" in beh.thoughts[-1][1]
+    assert not pet.manual_groove  # only the dancing layer touches the groove
+    pet.stop()
 
 
 def test_held_mode_asks_to_be_turned():

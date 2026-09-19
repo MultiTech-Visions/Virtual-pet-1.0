@@ -93,7 +93,7 @@ class Observation:
     music_bpm: float = 0.0  # 0 when no confident beat
     music_confidence: float = 0.0
     dance_bpm: float = 0.0  # someone visibly bobbing at this tempo (0 = nobody dancing)
-    busy: str | None = None  # an activity the robot layer is running for the brain: "mime" or "sing"
+    busy: str | None = None  # what the robot layer is running: "mime", "sing", "gesture" (a solo one) or "turn" (keypad groove turn)
     arms: object | None = None  # pose.Arms: the person's arms are readable this tick (the arm games need this)
 
 
@@ -788,8 +788,8 @@ class Behavior:
                     self._think(now, "mirror game over (lost you)")
                     actions.append(Action("sound", "mirror_end", 2))
                     self._end_activity(now, cooldown=60.0)
-                if self.state == "ENGAGED" and (obs.dance_bpm > 0 or obs.busy in ("mime", "gesture")):
-                    pass  # mid-dance, a Simon says move or a solo gesture (bow, sneeze): the camera is moving, keep the gaze
+                if self.state == "ENGAGED" and (obs.dance_bpm > 0 or obs.busy in ("mime", "gesture", "turn")):
+                    pass  # mid-dance, a Simon says move, a solo gesture (bow, sneeze) or a keypad turn: the camera is moving, keep the gaze
                     self._last_face_time = max(self._last_face_time, now - 0.5)  # and the face-lost clock waits too
                 elif self.state == "ENGAGED":
                     if now - self._last_face_time > t.face_lost_grace:

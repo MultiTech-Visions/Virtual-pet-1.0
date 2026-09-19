@@ -196,11 +196,22 @@ Controls tab, **Keypad** card:
 - *Scan for keyboards* lists what is discoverable; *pair* pairs, trusts (auto-reconnect) and
   connects with the PIN in the box. Paired devices are listed with a *forget* button. Needs
   `bluetoothctl` on the robot (`apt install bluez` while online if the card says it is missing).
-- Key map: per key, a short-press action and a hold (0.8 s) action. Factory map: A tilt
-  left, D tilt right, B tap the beat, C tap "1"; hold A or D toggles manual groove; on a full
-  keyboard also Space/Enter = beat/"1", arrows = tilt/nod, M = mute, hold Up/Down = wake/sleep.
-  Actions: `tap`, `downbeat`, `tilt_left`, `tilt_right`, `nod`, `happy`, `manual_groove`,
-  `wake`, `sleep`, `mute`. The map is remembered across restarts.
+- Layers: the MK424 has three layers (its LED colour shows which is on), four keys each. One
+  tap = one action (set the pad not to auto-repeat); there are no hold actions. The actions
+  are fixed per layer; type the key code each key sends (press it, read "last key").
+  1. **Dancing**: groove left · tap the beat · tap the "1" · groove right. Any key on this
+     layer turns manual groove on. Left / right are guidance, not puppet strings: one tap
+     leans the groove that way (head tilt, one antenna forward, one back, fading over a couple
+     of seconds); three taps within 2.5 s and the body turns 60° that way and dances facing
+     there for 8 beats, then comes back to whoever it was with, mid-groove, no re-greeting.
+     Never turns when held in a hand.
+  2. **Caring**: snack (a little energy; five in 15 s and it hiccups, nine and it has a tummy
+     ache and refuses snacks for a minute) · mushroom (dizzy, then two minutes of extra energy,
+     maxed curiosity and a groove half as big again; a second one adds a minute; a third
+     sneezes it all out; coming down costs some energy) · pet (a head pat) · boop (boop its
+     nose; seven in a row earns a little dance, thirteen a bow to the house).
+  3. **Petting**: head pat · chin scratch · ear rub · belly rub. Each gets the reaction the
+     real touch gets, and counts as a pet for whoever it is with.
 - Any key counts as interaction, so the pet does not get lonely while someone plays with it.
 
 The restore script adds the `pollen` user to the `input` and `bluetooth` groups (needed to read

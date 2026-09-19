@@ -45,6 +45,11 @@
   .grid-btns { display:flex; flex-wrap:wrap; gap:6px; }
   .grid-btns button { background:#243055; color:var(--fg); border:0; border-radius:8px; padding:9px 12px; font-size:14px; }
   .grid-btns button:active, button.act:active { background:var(--acc); color:#08130f; }
+  .layers { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; margin-top:6px; }
+  .layer { background:#0b0e1a; border-radius:10px; padding:10px; border-top:4px solid var(--line); }
+  .layer h3 { margin:0 0 2px; font-size:14px; } .layer .sub { margin-bottom:8px; }
+  .layer .slot { display:grid; grid-template-columns:1fr 5em auto; gap:6px; align-items:center; margin:4px 0; font-size:13px; }
+  .layer .slot input { width:100%; font-size:14px; text-transform:uppercase; } .layer .slot button { padding:4px 8px; min-height:0; font-size:12px; }
 </style>
 </head>
 <body>
@@ -214,13 +219,8 @@
     </div>
     <div id="bt-list" class="sub" style="margin:6px 0"></div>
     <div id="bt-msg" class="sub"></div>
-    <label>Key map <span class="sub">(short press / hold 0.8 s; set both to none to drop a key)</span></label>
-    <table id="keymap"></table>
-    <div class="btns" style="margin-top:6px">
-      <input type="text" id="km-key" placeholder="key (A, SPACE, F1…)" style="width:11em;font-size:15px">
-      <select id="km-press"></select><select id="km-hold"></select>
-      <button class="act" onclick="setKey($('km-key').value, $('km-press').value, $('km-hold').value)">Set</button>
-    </div>
+    <label>Layers <span class="sub">(one tap = one action; the pad's LED colour says which layer is on. Type the key code each key sends: press it and read "last key" above.)</span></label>
+    <div class="layers" id="keymap"></div>
   </div>
   <div class="card">
     <h2>Power</h2>
@@ -318,16 +318,23 @@ const VOICE_NEXT = {full: 'quiet', quiet: 'off', off: 'full'}, VOICE_LABEL = {fu
 function cycleVoice() { voice = VOICE_NEXT[voice]; ctl('voice', voice); $('mute').textContent = VOICE_LABEL[voice]; }
 let pickup = false, bodyf = true, volLoaded = false, ears = true, mflip = true, mgroove = false;
 function toggleEars() { ears = !ears; ctl('ears', ears); $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off'); }
-const ACTIONS = ['tap', 'downbeat', 'tilt_left', 'tilt_right', 'nod', 'manual_groove', 'wake', 'sleep', 'mute', 'happy', 'none'];
-for (const id of ['km-press', 'km-hold']) $(id).innerHTML = ACTIONS.map(a => `<option>${a}</option>`).join('');
-let lastKeymap = '';
+const LAYER_INFO = {
+  dancing: {title: '1 · Dancing', color: '#7cf5c9', blurb: 'Any key here turns manual groove on. Left / right nudge the groove that way (a lean); three quick taps and it turns to dance that way for 8 beats, then comes back to you.',
+    labels: {groove_left: 'groove left', tap: 'tap the beat', downbeat: 'tap the "1"', groove_right: 'groove right'}},
+  caring: {title: '2 · Caring', color: '#ffb86b', blurb: 'Snack: a little energy; too many and it hiccups, then a tummy ache. Mushroom: dizzy, then two minutes bouncy and curious (a third one comes back out). Pet: a head pat. Boop: boop its nose. Keep booping.',
+    labels: {snack: 'snack', mushroom: 'mushroom', pet: 'pet', boop: 'boop'}},
+  petting: {title: '3 · Petting', color: '#ff8ac9', blurb: 'Virtual petting, for people who are shy of touching it: each one gets the reaction the real thing gets, and counts toward being its friend.',
+    labels: {head_pat: 'head pat', chin_scratch: 'chin scratch', ear_rub: 'ear rub', belly_rub: 'belly rub'}},
+};
+let lastKeymap = '', keypadLayers = null;
 function drawKeymap(km) {
+  if (!keypadLayers) return;
   const key = JSON.stringify(km); if (key === lastKeymap) return; lastKeymap = key;
-  const sel = (k, which, cur) => `<select onchange="setKey('${k}', this.parentNode.parentNode.querySelector('.p').value, this.parentNode.parentNode.querySelector('.h').value)" class="${which}">${ACTIONS.map(a => `<option ${a === cur ? 'selected' : ''}>${a}</option>`).join('')}</select>`;
-  $('keymap').innerHTML = '<tr><th>key</th><th>press</th><th>hold</th><th></th></tr>' + Object.entries(km).sort().map(([k, m]) =>
-    `<tr><td><b>${k}</b></td><td>${sel(k, 'p', m.press)}</td><td>${sel(k, 'h', m.hold)}</td><td><button class="act" onclick="ctl('key', '${m.press}')">try</button></td></tr>`).join('');
+  $('keymap').innerHTML = Object.entries(keypadLayers).map(([layer, actions]) => { const info = LAYER_INFO[layer]; return `
+    <div class="layer" style="border-top-color:${info.color}"><h3>${info.title}</h3><div class="sub">${info.blurb}</div>
+    ${actions.map((a, i) => `<div class="slot"><span>${info.labels[a]}</span><input type="text" value="${km[layer][i] || ''}" placeholder="key" onchange="setKey('${layer}', ${i}, this.value)"><button class="act" onclick="ctl('key', '${a}')">try</button></div>`).join('')}</div>`; }).join('');
 }
-function setKey(k, press, hold) { if (!k) return; ctl('keymap', `${k.toUpperCase()}:${press}:${hold}`); lastKeymap = ''; }
+function setKey(layer, slot, key) { if (!key) return; ctl('keymap', `${layer}:${slot}:${key.trim().toUpperCase()}`); lastKeymap = ''; }
 async function btScan() {
   $('bt-scan').disabled = true; $('bt-msg').textContent = 'scanning… put the keypad in pairing mode now';
   try {
@@ -378,6 +385,7 @@ function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').t
 async function loadCatalog() {
   let c;
   try { c = await (await fetch('/api/catalog')).json(); } catch (e) { setTimeout(loadCatalog, 2000); return; }  // app still starting
+  keypadLayers = c.keypad;
   for (const [id, kind, list] of [['btn-sound', 'sound', c.sounds], ['btn-gesture', 'gesture', c.gestures], ['btn-move', 'move', c.moves]])
     $(id).innerHTML = list.map(x => `<button onclick="ctl('${kind}', '${x}')">${x.replace(/_/g, ' ')}</button>`).join('');
   $('lexicon').innerHTML = c.sounds.map(x => `<tr><td><button class="act" style="min-height:0;padding:6px 12px" onclick="ctl('sound', '${x}')">${x.replace(/_/g, ' ')}</button></td><td>${c.meanings[x]}</td></tr>`).join('');
@@ -472,7 +480,9 @@ async function refresh() {
     kv('yourhead', {'turned (yaw)': s.face ? s.face.head_yaw + '°' : '—', 'nodded (pitch)': s.face ? s.face.head_pitch + '°' : '—', 'tilted (roll)': s.face ? s.face.tilt + '°' : '—', 'smile': s.face ? s.face.smile + (s.face.smile >= 0.8 ? ' 😀' : '') : '—', 'left arm': ar ? `${ar.left} (${ar.left_deg}°)` : '—', 'right arm': ar ? `${ar.right} (${ar.right_deg}°)` : '—'});
     $('heard-card').classList.toggle('hidden', !d.controls.ears);
     const kp = s.keypad, bt = btInfo || {};
-    kv('keypad', {'keyboards seen by the app': kp.devices.length ? kp.devices.join(', ') : 'none', 'last key': kp.last_key ? `${kp.last_key.key} (${kp.last_key.t}s ago)` : '—', 'input access': kp.error || 'ok',
+    kv('keypad', {'keyboards seen by the app': kp.devices.length ? kp.devices.join(', ') : 'none', 'last key': kp.last_key ? `${kp.last_key.key} (${kp.last_key.t}s ago)` + (kp.last_key.does ? ` → ${kp.last_key.does[0]}: ${kp.last_key.does[1].replace('_', ' ')}` : ' → not on the pad') : '—', 'input access': kp.error || 'ok',
+      'groove nudge': kp.turn ? `turned to ${kp.turn.yaw}° for ${kp.turn.for_s} s` : Math.abs(kp.lean) > 0.05 ? `leaning ${kp.lean > 0 ? 'left' : 'right'} ${Math.abs(kp.lean).toFixed(2)}` : '—',
+      'snacks lately': kp.tummy_ache_s ? `tummy ache, ${kp.tummy_ache_s} s` : kp.snacks, 'mushroom': kp.trip_s ? `tripping, ${kp.trip_s} s left (${kp.trip_doses} dose${kp.trip_doses === 1 ? '' : 's'})` : '—', 'boops in a row': kp.boops,
       'bluetooth': bt.error ? bt.error : bt.powered === undefined ? '…' : (bt.powered ? 'on' : 'off'),
       'paired': bt.devices ? (bt.devices.length ? bt.devices.map(x => `${x.name} ${x.connected ? '(connected)' : '(not connected)'} <button class="act" style="padding:2px 8px;min-height:0" onclick="btForget('${x.mac}')">forget</button>`).join('<br>') : 'nothing paired yet') : '—'});
     $('tap-v').textContent = d.senses.tap.bpm ? `${d.senses.tap.bpm} bpm · beat ${d.senses.tap.beat} · bar ${d.senses.tap.bar}${d.senses.tap.downbeat_known ? '' : ' (no "1" yet)'}` : 'no tempo tapped';

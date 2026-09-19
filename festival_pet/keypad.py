@@ -7,8 +7,8 @@ Devices that come and go (a keypad going to sleep, a fresh pairing) are picked u
 rescan. The pet's user must be able to read ``/dev/input`` (group ``input``; the restore
 script adds it).
 
-``KeyMap`` turns key names into pet actions: a short press does one thing, a press held for
-``HOLD_S`` does another. Only the keys named in the map do anything; the rest are ignored.
+``KeyMap`` turns key names into pet actions: three layers of four fixed actions (``LAYERS``), and
+the key code each layer sends for each slot. One tap = one action. Other keys are ignored.
 """
 
 from __future__ import annotations
@@ -45,23 +45,17 @@ KEYCODES = {
 }
 KEYNAMES = {v: k for k, v in KEYCODES.items()}
 
-ACTIONS = ("tap", "downbeat", "tilt_left", "tilt_right", "nod", "manual_groove", "mime", "wake", "sleep", "mute", "happy", "none")
-HOLD_S = 0.8  # hold a key this long for its hold action
-
-# The PCsensor MK424 keypad sends A B C D from the factory; a QWERTY keyboard gets the same plus obvious extras.
-DEFAULT_KEYMAP: dict[str, dict[str, str]] = {
-    "A": {"press": "tilt_left", "hold": "manual_groove"},
-    "B": {"press": "tap", "hold": "none"},
-    "C": {"press": "downbeat", "hold": "none"},
-    "D": {"press": "tilt_right", "hold": "manual_groove"},
-    "SPACE": {"press": "tap", "hold": "none"},
-    "ENTER": {"press": "downbeat", "hold": "none"},
-    "LEFT": {"press": "tilt_left", "hold": "none"},
-    "RIGHT": {"press": "tilt_right", "hold": "none"},
-    "UP": {"press": "nod", "hold": "wake"},
-    "DOWN": {"press": "none", "hold": "sleep"},
-    "M": {"press": "mute", "hold": "none"},
+# The keypad's three layers (the MK424 shows which one is on by its LED colour), four keys each, in the
+# order they sit on the pad. Each layer is one idea; the actions are fixed, only the key codes are set
+# on the page (a layer sends whatever codes it was programmed with).
+LAYERS: dict[str, tuple[str, str, str, str]] = {
+    "dancing": ("groove_left", "tap", "downbeat", "groove_right"),
+    "caring": ("snack", "mushroom", "pet", "boop"),
+    "petting": ("head_pat", "chin_scratch", "ear_rub", "belly_rub"),
 }
+ACTIONS = tuple(a for acts in LAYERS.values() for a in acts)
+# The MK424 sends A B C D from the factory on its first layer; the other two are whatever you programmed them to.
+DEFAULT_LAYER_KEYS: dict[str, list[str]] = {"dancing": ["A", "B", "C", "D"], "caring": ["E", "F", "G", "H"], "petting": ["I", "J", "K", "L"]}
 
 
 @dataclass
@@ -157,57 +151,39 @@ class KeypadListener:
 
 @dataclass
 class KeyMap:
-    """Press/hold semantics on top of raw key events. ``resolve`` returns the action for a completed press."""
+    """Which key code sits in each slot of each layer. One tap = one action, on key-down (no release
+    latency for beats; the keypad is set not to auto-repeat)."""
 
-    keys: dict[str, dict[str, str]] = field(default_factory=lambda: {k: dict(v) for k, v in DEFAULT_KEYMAP.items()})
-    _down_since: dict[str, float] = field(default_factory=dict)
-    _hold_fired: set[str] = field(default_factory=set)
+    layers: dict[str, list[str]] = field(default_factory=lambda: {k: list(v) for k, v in DEFAULT_LAYER_KEYS.items()})
 
-    def set(self, key: str, press: str, hold: str) -> None:
+    def set(self, layer: str, slot: int, key: str) -> None:
+        """Put key code ``key`` in ``slot`` (0-3) of ``layer``; a key used elsewhere is taken away from there."""
+        if layer not in LAYERS:
+            raise KeyError(f"unknown layer '{layer}'")
+        if not 0 <= slot < 4:
+            raise KeyError(f"slot must be 0-3, not {slot}")
         key = key.upper()
         if key not in KEYCODES:
             raise KeyError(f"unknown key '{key}'")
-        for a in (press, hold):
-            if a not in ACTIONS:
-                raise KeyError(f"unknown action '{a}'")
-        if press == "none" and hold == "none":
-            self.keys.pop(key, None)
-        else:
-            self.keys[key] = {"press": press, "hold": hold}
+        for keys in self.layers.values():
+            for i, k in enumerate(keys):
+                if k == key:
+                    keys[i] = ""
+        self.layers[layer][slot] = key
 
-    def feed(self, ev: KeyEvent, now: float) -> tuple[str, float] | None:
-        """Returns (action, event time) when a press or hold completes, else None.
-
-        A press action fires on key-down (so tapping a beat has no release latency) unless the key also
-        has a hold action, in which case a short press fires on release and a long one fires the hold.
-        """
-        m = self.keys.get(ev.key)
-        if m is None:
-            return None
-        if ev.down:
-            self._down_since[ev.key] = ev.t
-            self._hold_fired.discard(ev.key)
-            if m["hold"] == "none" and m["press"] != "none":
-                return (m["press"], ev.t)
-            return None
-        t0 = self._down_since.pop(ev.key, None)
-        if t0 is None or ev.key in self._hold_fired:
-            return None
-        if m["hold"] != "none" and ev.t - t0 >= HOLD_S:
-            return (m["hold"], t0)
-        if m["hold"] != "none" and m["press"] != "none":
-            return (m["press"], t0)
+    def lookup(self, key: str) -> tuple[str, str] | None:
+        """(layer, action) for a key code, or None if it is not on the pad."""
+        for layer, keys in self.layers.items():
+            if key in keys:
+                return layer, LAYERS[layer][keys.index(key)]
         return None
 
-    def tick(self, now: float) -> list[tuple[str, float]]:
-        """Fire hold actions as soon as the hold time passes, without waiting for the release."""
-        out = []
-        for key, t0 in list(self._down_since.items()):
-            m = self.keys.get(key)
-            if m is not None and m["hold"] != "none" and key not in self._hold_fired and now - t0 >= HOLD_S:
-                self._hold_fired.add(key)
-                out.append((m["hold"], t0))
-        return out
+    def feed(self, ev: KeyEvent, now: float) -> tuple[str, float] | None:
+        """Returns (action, event time) for a key-down of a mapped key, else None."""
+        if not ev.down:
+            return None
+        hit = self.lookup(ev.key)
+        return None if hit is None else (hit[1], ev.t)
 
 
 # ----------------------------------------------------------------------------- Bluetooth pairing (bluez)

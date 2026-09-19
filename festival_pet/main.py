@@ -36,7 +36,7 @@ from scipy.spatial.transform import Rotation as R
 from festival_pet import build_info, sounds
 from festival_pet.audio_features import BeatTracker, LevelMeter, RubDetector, ScratchDetector, _tune
 from festival_pet.behavior import Action, Behavior, FaceObs, Observation
-from festival_pet.keypad import KeyMap, KeypadListener
+from festival_pet.keypad import LAYERS, KeyMap, KeypadListener
 from festival_pet.memory import FaceMemory
 from festival_pet.mime import MimeGame
 from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose, SOLO_GESTURES
@@ -79,6 +79,22 @@ MOVE_BLEND_S = 0.5
 FREE_DANCE_BPM = 108.0
 AUDIO_RATE = 16000
 ARMS_MAX_AGE_S = 0.6  # an arm read older than this is nobody's arms
+# Keypad: the dancing layer's nudges and the caring layer's snacks and mushrooms
+NUDGE_WINDOW_S = 2.5  # direction taps this close together count up
+NUDGE_TURN_TAPS = 3  # that many in a row and the body turns to dance that way
+NUDGE_TURN_DEG = 60.0
+NUDGE_TURN_BEATS = 8  # how long it dances facing that way before coming back to whoever it was with
+SNACK_WINDOW_S = 15.0
+SNACK_HICCUP_AT = 5  # snacks this close together: hiccups
+SNACK_ACHE_AT = 9  # tummy ache: no more snacks for a while
+SNACK_ACHE_S = 60.0
+SNACK_ENERGY = 0.04
+TRIP_S = 120.0  # a mushroom: dizzy first, then bouncy, curious and grooving harder for this long
+TRIP_MORE_S = 60.0  # a second one during the trip
+TRIP_ENERGY, TRIP_CRASH = 0.3, 0.15
+TRIP_GROOVE = 1.5
+BOOP_WINDOW_S = 3.0
+BOOP_DANCE_AT, BOOP_BOW_AT = 7, 13  # boop it that many times in a row: a little dance; a bow to the house
 FLOURISH_EVERY_BEATS = 8  # dance-along: every two bars it stops copying and throws in two beats of its own
 FLOURISH_BEATS = 2
 
@@ -399,6 +415,14 @@ class Pet:
         self._beats = 0
         self._last_phase = 0.0
         self._copy_last = 0.0
+        # Keypad state: direction nudges, snacks, the trip, boops (see key_action)
+        self._nudge: list[tuple[float, float]] = []  # (time, side) of recent direction taps
+        self._turn: tuple[float, float] | None = None  # (world yaw to dance facing, until) after repeated nudges
+        self._snacks: list[float] = []
+        self._ache_until = 0.0
+        self._trip_until = 0.0
+        self._trip_doses = 0
+        self._boops: list[float] = []
 
     # ------------------------------------------------------------------ lifecycle
     def start(self, now: float) -> None:
@@ -538,9 +562,15 @@ class Pet:
             hit = self.keymap.feed(ev, now)
             if hit is not None:
                 fired.append(hit)
-        fired += self.keymap.tick(now)
         for action, t_ev in fired:
             self.key_action(action, t_ev, now)
+        if self._trip_until and now >= self._trip_until:  # the mushroom wears off: the crash
+            self._trip_until, self._trip_doses = 0.0, 0
+            beh.mood.energy -= TRIP_CRASH
+            beh.mood.clamp()
+            beh._think(now, "...and I'm back. that was a lot. tired now")
+            self._dispatch(Action("sound", "yawn", 2), now)
+            self._dispatch(Action("gesture", "droop", 2), now)
 
         # ---------------- Simon says (leads; the brain's own games and reactions wait)
         if self.mime.active:
@@ -565,12 +595,17 @@ class Pet:
 
         # ---------------- brain
         solo = comp._gesture is not None and comp._gesture.name in SOLO_GESTURES and comp.gesture_active(now)
-        obs.busy = "mime" if self.mime.active else "sing" if now < self._singing_until else "gesture" if solo else None
+        if self._turn is not None and (now >= self._turn[1] or comp.held or self.asleep):
+            self._turn = None  # the keypad turn is over: back to whoever it was with, mid-groove, no fuss
+        obs.busy = "mime" if self.mime.active else "sing" if now < self._singing_until else "gesture" if solo else "turn" if self._turn else None
         beh.can_sing = self.singing_enabled and not self.asleep and self.move is None
         actions = beh.tick(obs, now, dt)
         comp.energy = beh.mood.energy
         comp.mode = {"SLEEPING": "sleeping", "HELD": "held"}.get(beh.state, "awake")
-        comp.set_gaze(beh.gaze)
+        if self._turn is not None:
+            comp.set_gaze((self._turn[0], beh.gaze[1] if beh.gaze is not None else 0.0))  # dancing that way for a few beats
+        else:
+            comp.set_gaze(beh.gaze)
         comp.groove = None
         comp.mirror_roll = 0.0
         comp.mimic = None
@@ -583,6 +618,8 @@ class Pet:
             comp.groove_phrase = self.tap.phrase_phase(now) if self.tap.downbeat_known else None
         else:
             comp.groove_phrase = None
+        if comp.groove is not None and now < self._trip_until:
+            comp.groove = (comp.groove[0], comp.groove[1], comp.groove[2] * TRIP_GROOVE)  # tripping: everything grooves harder
         self._dance_along(obs, now)
         if vision is not None:
             vision.pose_live = self._copying_arms or (self.mime.active and self.mime.kind == "arms")
@@ -860,34 +897,127 @@ class Pet:
         self.p.behavior._last_interaction = now
 
     def key_action(self, action: str, t_ev: float, now: float) -> None:
-        """One keypad action. ``t_ev`` is the key's own timestamp: taps use it so USB/BT latency does not smear the beat."""
-        beh, comp = self.p.behavior, self.p.composer
+        """One keypad action (keypad.LAYERS). ``t_ev`` is the key's own timestamp: taps use it so USB/BT latency
+        does not smear the beat. Runs inside ``step`` after the senses, so a caring / petting key can add to this
+        tick's observation and the brain reacts as it would to the real thing."""
+        beh, comp, obs = self.p.behavior, self.p.composer, self._last_obs
         beh._last_interaction = now  # someone is playing with it: not lonely
         self.actions_log.append((now, "key", action))
-        if action == "tap":
-            self.tap.tap(t_ev)
-        elif action == "downbeat":
-            self.tap.tap(t_ev, downbeat=True)
-        elif action in ("tilt_left", "tilt_right"):
-            comp.request_gesture("tilt", now, 3, side=1.0 if action == "tilt_left" else -1.0)
-        elif action == "nod":
-            comp.request_gesture("nod", now, 3, reps=2)
-        elif action == "happy":
-            self._dispatch(Action("sound", "happy", 3), now)
-            comp.request_gesture("bounce", now, 3)
-        elif action == "mime":
-            self.control("mime", not self.mime.active)
-        elif action == "manual_groove":
-            self.control("manual_groove", not self.manual_groove)
-            self._dispatch(Action("sound", "happy" if self.manual_groove else "curious", 3), now)
-        elif action in ("wake", "sleep"):
-            self.control(action, None)
-        elif action == "mute":  # the key cycles the voice: full -> quiet -> off -> full
-            self.control("voice", {"full": "quiet", "quiet": "off", "off": "full"}[self.voice])
-        elif action == "none":
-            pass
+        if action in LAYERS["dancing"]:
+            if not self.manual_groove:  # the first press on this layer turns manual groove on
+                self.control("manual_groove", True)
+                self._dispatch(Action("sound", "happy", 3), now)
+            if action == "tap":
+                self.tap.tap(t_ev)
+            elif action == "downbeat":
+                self.tap.tap(t_ev, downbeat=True)
+            else:
+                self._nudge_groove(1.0 if action == "groove_left" else -1.0, now)
+        elif action == "snack":
+            self._snack(now)
+        elif action == "mushroom":
+            self._mushroom(now)
+        elif action in ("pet", "head_pat"):
+            obs.petted = True  # a virtual head pat: the brain leans in and purrs, and remembers who
+        elif action == "boop":
+            self._boop(now)
+        elif action == "chin_scratch":
+            beh._think(now, "chin scratches... mmm")
+            self._dispatch(Action("sound", "content", 3), now)
+            self._dispatch(Action("gesture", "snuggle", 3), now)
+            beh.mood.social += 0.05
+            beh.mood.clamp()
+            if beh._engaged_person is not None:
+                beh.memory.add_pet(beh._engaged_person)
+        elif action == "ear_rub":
+            obs.touched, obs.touched_side, obs.petting = True, comp.rng.randrange(2), True  # an ear massage, not a tickle
+        elif action == "belly_rub":
+            obs.scratched = True
         else:
             raise KeyError(f"unknown key action '{action}'")
+
+    def _nudge_groove(self, side: float, now: float) -> None:
+        """A direction tap on the dancing layer: guidance, not a puppet string. One tap leans the groove that way
+        (head tilt and antennas); NUDGE_TURN_TAPS taps in a row and the body turns to dance facing that way for
+        NUDGE_TURN_BEATS, then comes back to whoever it was with. Never turns when held in a hand."""
+        beh, comp = self.p.behavior, self.p.composer
+        self._nudge = [(t, s) for t, s in self._nudge if now - t <= NUDGE_WINDOW_S and s == side] + [(now, side)]
+        comp.groove_lean = side
+        if len(self._nudge) < NUDGE_TURN_TAPS or comp.held:
+            return
+        self._nudge.clear()
+        period = 60.0 / self.tap.bpm if self.tap.active else 60.0 / FREE_DANCE_BPM
+        here = self._turn[0] if self._turn is not None else (beh.gaze[0] if beh.gaze is not None else comp.body_yaw)
+        yaw = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, here + side * NUDGE_TURN_DEG))
+        self._turn = (yaw, now + NUDGE_TURN_BEATS * period)
+        beh._think(now, f"okay okay, dancing over to the {'left' if side > 0 else 'right'} for a bit... back in {NUDGE_TURN_BEATS} beats")
+        self._dispatch(Action("sound", "excited", 2), now)
+
+    def _snack(self, now: float) -> None:
+        beh = self.p.behavior
+        if now < self._ache_until:
+            beh._think(now, f"no more snacks. tummy hurts. ({self._ache_until - now:.0f} s)")
+            self._dispatch(Action("sound", "huff", 3), now)
+            self.p.composer.request_gesture("shake", now, 3, reps=2)
+            return
+        self._snacks = [t for t in self._snacks if now - t <= SNACK_WINDOW_S] + [now]
+        n = len(self._snacks)
+        beh.mood.energy += SNACK_ENERGY
+        beh.mood.clamp()
+        if n >= SNACK_ACHE_AT:
+            self._snacks.clear()
+            self._ache_until = now + SNACK_ACHE_S
+            beh._think(now, "urgh... too many snacks. tummy ache. no more for a minute")
+            self._dispatch(Action("sound", "sad", 3), now)
+            self.p.composer.request_gesture("droop", now, 3)
+        elif n >= SNACK_HICCUP_AT:
+            beh._think(now, f"snack {n}... hic!")
+            self._dispatch(Action("sound", "hiccup", 3), now)
+            self.p.composer.request_gesture("hiccup", now, 3)
+        else:
+            beh._think(now, f"a snack! (energy {beh.mood.energy:.2f})")
+            self._dispatch(Action("sound", "happy", 3), now)
+            self.p.composer.request_gesture("perk", now, 3)
+
+    def _mushroom(self, now: float) -> None:
+        beh, comp = self.p.behavior, self.p.composer
+        if now >= self._trip_until:  # first dose: dizzy, then the boost
+            self._trip_until, self._trip_doses = now + TRIP_S, 1
+            beh.mood.energy += TRIP_ENERGY
+            beh.mood.curiosity = 1.0
+            beh.mood.clamp()
+            beh._think(now, "oh. OH. everything is... very interesting all of a sudden")
+            self._dispatch(Action("sound", "dizzy", 4), now)
+            comp.request_gesture("dizzy", now, 4)
+        elif self._trip_doses == 1:
+            self._trip_until, self._trip_doses = self._trip_until + TRIP_MORE_S, 2
+            beh._think(now, "another one? okay... whoa")
+            self._dispatch(Action("sound", "giggle", 3), now)
+            comp.request_gesture("wiggle", now, 3)
+        else:  # a third: it all comes out
+            self._trip_until, self._trip_doses = 0.0, 0
+            beh.mood.energy -= TRIP_CRASH
+            beh.mood.clamp()
+            beh._think(now, "too much... aaah... AAAH...")
+            comp.request_gesture("sneeze", now, 4)
+            self._dispatch(Action("sound", "sneeze", 4), now)
+
+    def _boop(self, now: float) -> None:
+        beh, comp = self.p.behavior, self.p.composer
+        self._boops = [t for t in self._boops if now - t <= BOOP_WINDOW_S] + [now]
+        n = len(self._boops)
+        if n == BOOP_BOW_AT:
+            self._boops.clear()
+            beh._think(now, "thirteen boops. you have unlocked... the bow")
+            self._dispatch(Action("sound", "tada", 4), now)
+            comp.request_gesture("bow", now, 4)
+        elif n == BOOP_DANCE_AT:
+            beh._think(now, "seven boops! that calls for a little dance")
+            beh._little_dance_until = now + 6.0
+            self._dispatch(Action("sound", "excited", 3), now)
+        else:
+            self._dispatch(Action("sound", "surprised" if n == 1 else "giggle", 2), now)
+            comp.request_gesture("boop", now, 3)
 
     def _feeling(self, now: float) -> dict:
         """The most recent gesture/move and sound, for the top of the Mind page."""
@@ -932,7 +1062,10 @@ class Pet:
                 "vision": None if getattr(self, "vision", None) is None else self.vision.status(now),
                 "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "imu_rub": self.imu_rub.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
-                "keypad": {"devices": list(self.keypad.devices.values()), "last_key": None if self.keypad.last_key is None else {"key": self.keypad.last_key[0], "t": round(now - self.keypad.last_key[1], 1)}, "error": self.keypad.error},
+                "keypad": {"devices": list(self.keypad.devices.values()), "last_key": None if self.keypad.last_key is None else {"key": self.keypad.last_key[0], "t": round(now - self.keypad.last_key[1], 1), "does": self.keymap.lookup(self.keypad.last_key[0])}, "error": self.keypad.error,
+                           "lean": round(comp.groove_lean, 2), "turn": None if self._turn is None else {"yaw": round(self._turn[0]), "for_s": round(self._turn[1] - now, 1)},
+                           "snacks": len([t for t in self._snacks if now - t <= SNACK_WINDOW_S]), "tummy_ache_s": round(max(0.0, self._ache_until - now)), "trip_s": round(max(0.0, self._trip_until - now)), "trip_doses": self._trip_doses,
+                           "boops": len([t for t in self._boops if now - t <= BOOP_WINDOW_S])},
                 "tap": {"bpm": round(self.tap.bpm, 1), "beat": self.tap.beat_in_bar(now) if self.tap.active else 0, "bar": self.tap.bar_in_phrase(now) if self.tap.active else 0, "downbeat_known": self.tap.downbeat_known},
                 "dance": {"dancing": self.dance.state.dancing, "bpm": round(self.dance.state.bpm, 1), "confidence": round(self.dance.state.confidence, 2), "amplitude": round(self.dance.state.amplitude, 3), "holds_for_s": round(max(0.0, self.dance.locked_for - now), 1) if self.dance.state.dancing else 0.0},
                 "mimic": None if comp.mimic is None else {"yaw": round(comp.mimic[0], 1), "pitch": round(comp.mimic[1], 1), "roll": round(comp.mimic[2], 1)},
@@ -943,7 +1076,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "dance_along": self.dance_along, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "dance_along": self.dance_along, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.layers, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "imu_calibration": self.imu_rub.calibration,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
@@ -996,9 +1129,9 @@ class Pet:
         elif cmd == "tap":  # value: true = this tap is the "1"
             self.tap.tap(now, downbeat=bool(value))
             self.actions_log.append((now, "tap", f"{'ONE ' if value else ''}{self.tap.bpm:.0f} bpm"))
-        elif cmd == "keymap":  # "KEY:press_action:hold_action"
-            key, press, hold = str(value).split(":")
-            self.keymap.set(key, press, hold)
+        elif cmd == "keymap":  # "layer:slot:KEY"
+            layer, slot, key = str(value).split(":")
+            self.keymap.set(layer, int(slot), key)
         elif cmd == "key":  # fire a key action as if pressed (testing from the page)
             self.key_action(str(value), now, now)
         elif cmd == "mime":  # value: true (pick), "head", "arms", or false to stop
@@ -1108,9 +1241,13 @@ class Pet:
             if k == "camera_lag_ms" and self.pose_history is None:
                 continue
             if k == "keymap":
-                self.keymap.keys.clear()
-                for key, m in v.items():
-                    self.control("keymap", f"{key}:{m['press']}:{m['hold']}")
+                if not all(isinstance(keys, list) for keys in v.values()):
+                    logger.warning("settings: the key map is in the pre-0.7.2 press/hold form; keeping the factory layers")
+                    continue
+                for layer, keys in v.items():
+                    for slot, key in enumerate(keys):
+                        if key:
+                            self.control("keymap", f"{layer}:{slot}:{key}")
                 continue
             self.control(names.get(k, k), v)
         logger.info("settings restored from %s: %s", self.settings_file, data)
@@ -1322,7 +1459,7 @@ def install_routes(app, pet: Pet) -> None:
     def catalog() -> dict:
         from festival_pet.motion import GESTURES
 
-        return {"sounds": list(sounds.EMOTIONS), "meanings": sounds.MEANINGS, "gestures": list(GESTURES), "moves": ["curious1", "welcoming1", "loving1", "dance1", "dance2", "dance3", "laughing1", "surprised1", "yes1", "no1", "sleep1", "cheerful1"]}
+        return {"sounds": list(sounds.EMOTIONS), "meanings": sounds.MEANINGS, "gestures": list(GESTURES), "keypad": LAYERS, "moves": ["curious1", "welcoming1", "loving1", "dance1", "dance2", "dance3", "laughing1", "surprised1", "yes1", "no1", "sleep1", "cheerful1"]}
 
     @app.post("/api/control")
     def control(c: Control) -> dict:

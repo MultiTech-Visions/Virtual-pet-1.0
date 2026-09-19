@@ -48,6 +48,7 @@ def arm_rad(deg: float) -> float:
 
 
 ARM_LEVEL_DEG = {"down": 0.0, "out": 90.0, "up": 180.0}  # the three flag positions the arm game shows
+LEAN_FADE_S = 2.0  # a keypad groove nudge fades out over about this long (a few beats)
 
 
 def head_pose(yaw: float, pitch: float, roll: float, z: float, x: float = 0.0) -> np.ndarray:
@@ -348,6 +349,14 @@ def g_nuzzle(u: float) -> Offsets:
     return Offsets(pitch=12.0 * e, x=0.02 * e, z=-0.005 * e, ant_r=0.5 * e, ant_l=-0.5 * e)
 
 
+def g_boop(u: float) -> Offsets:
+    """Nose booped: the head pops back a hair, the antennas cross inward over the face, then it shakes it off."""
+    snap = math.exp(-6 * u)
+    cross = _pulse(min(1.0, u / 0.6))
+    shake = math.sin(2 * math.pi * 6 * u) * max(0.0, u - 0.5) * 2 * 3.0
+    return Offsets(pitch=-6.0 * snap, z=0.006 * snap, x=-0.012 * snap, yaw=shake, ant_r=0.7 * cross, ant_l=-0.7 * cross)
+
+
 def g_glance(u: float, side: float) -> Offsets:
     e = _pulse(u) ** 0.6
     return Offsets(yaw=side * 22.0 * e, pitch=-3.0 * e + 5.0 * math.sin(math.pi * u * 2) * e, roll=side * 4.0 * e)
@@ -379,6 +388,7 @@ GESTURES: dict[str, tuple[float, str]] = {
     "bow": (BOW_S, "plain"),
     "swat": (1.3, "sided"),
     "nuzzle": (3.2, "plain"),
+    "boop": (0.7, "plain"),
 }
 
 SOLO_GESTURES = frozenset({"sneeze", "bow"})  # the whole body is the gesture: no groove, mimic, mirror or beep sway on top
@@ -389,7 +399,7 @@ _FUNCS = {
     "shake_off": g_shake_off, "search": g_search, "glance": g_glance,
     "shy": g_shy, "nod_off": g_nod_off, "sneeze": g_sneeze, "hiccup": g_hiccup, "tada": g_tada,
     "flinch": g_flinch, "lean": g_lean, "shake": g_shake, "point": g_point, "bow": g_bow,
-    "swat": g_swat, "nuzzle": g_nuzzle,
+    "swat": g_swat, "nuzzle": g_nuzzle, "boop": g_boop,
 }
 
 
@@ -496,6 +506,9 @@ class MotionComposer:
         self.arms_until = 0.0
         self._arms_rad = [ANTENNA_NEUTRAL[1], ANTENNA_NEUTRAL[0]]  # [left, right], where they are now
         self._arms_level = 0.0  # how much the arms override the rest (eased in and out)
+        # Groove nudge from the keypad: a lean that way (+ = its left) on top of the groove, fading over a few beats
+        self.groove_lean = 0.0
+        self._lean = 0.0
         self._hold_roll = 0.0
         self._solo_yaw = 0.0  # where it was looking when a solo gesture started: the bow's centre of the house
         self._voice = 0.0
@@ -676,6 +689,15 @@ class MotionComposer:
         else:
             self._mirror += (0.0 - self._mirror) * min(1.0, dt * 1.5)
         off.roll += self._mirror
+
+        # the keypad's groove nudge: lean that way with the head and the antennas (one forward, one back), fading
+        self.groove_lean *= math.exp(-dt / LEAN_FADE_S)
+        self._lean += (self.groove_lean - self._lean) * min(1.0, dt * 6.0)
+        if abs(self._lean) > 0.01 and not solo:
+            off.roll += 12.0 * self._lean
+            off.yaw += 8.0 * self._lean
+            off.ant_r -= 0.5 * self._lean
+            off.ant_l -= 0.5 * self._lean
 
         # being petted: the antennas fold back into an X over the head and STAY there, so the hand can
         # settle on the crossing and massage them; the head lifts a little into the hand. Once it has
