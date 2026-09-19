@@ -31,6 +31,23 @@ Z_LIMIT_M = 0.02
 
 ANTENNA_NEUTRAL = (-0.1745, 0.1745)  # SDK INIT_ANTENNAS_JOINT_POSITIONS (right, left)
 ANTENNA_DOWN = (-2.6, 2.6)  # relaxed / asleep (sleep pose is ±3.05)
+ARM_BACK, ARM_FORWARD = 2.3, 1.3  # the antenna as an arm: laid back (hanging down), forward-horizontal (straight out)
+
+
+def arm_rad(deg: float) -> float:
+    """The RIGHT antenna's radians for an arm at ``deg`` from hanging down (0) through out (90) to up (180).
+
+    Literal, so a person can read it: arm out = antenna horizontal in front, arm up = antenna vertical,
+    arm down = antenna laid back (the hinge is front-to-back, so "down" is as far back as it goes).
+    Piecewise linear, continuous, so the dance-along can copy an arm on its way. Negate for the left.
+    """
+    d = max(0.0, min(180.0, deg))
+    if d <= 90.0:
+        return -ARM_BACK + (ARM_FORWARD + ARM_BACK) * d / 90.0
+    return ARM_FORWARD * (180.0 - d) / 90.0
+
+
+ARM_LEVEL_DEG = {"down": 0.0, "out": 90.0, "up": 180.0}  # the three flag positions the arm game shows
 
 
 def head_pose(yaw: float, pitch: float, roll: float, z: float, x: float = 0.0) -> np.ndarray:
@@ -473,6 +490,12 @@ class MotionComposer:
         self.ear_hold: list[float | None] = [None, None]
         self.ear_hold_until = [0.0, 0.0]
         self._ear_away_k = [0, 0]  # keep-away alternates positions per antenna
+        # The antennas as arms (arm_rad): (robot-left deg, robot-right deg) to show, until when; smoothed fast
+        # enough to follow a dancer at 120 bpm. An ear hold (the clock hand) still wins on its antenna.
+        self.arms: tuple[float, float] | None = None
+        self.arms_until = 0.0
+        self._arms_rad = [ANTENNA_NEUTRAL[1], ANTENNA_NEUTRAL[0]]  # [left, right], where they are now
+        self._arms_level = 0.0  # how much the arms override the rest (eased in and out)
         self._hold_roll = 0.0
         self._solo_yaw = 0.0  # where it was looking when a solo gesture started: the bow's centre of the house
         self._voice = 0.0
@@ -509,6 +532,14 @@ class MotionComposer:
     def ears_clear(self) -> None:
         self.ear_hold = [None, None]
         self._ear_away_k = [0, 0]
+
+    def show_arms(self, left_deg: float | None, right_deg: float | None = None, now: float = 0.0, hold_s: float = float("inf")) -> None:
+        """Antennas as arms: ``left_deg`` / ``right_deg`` are the ROBOT's left and right (0 down, 90 out, 180 up)
+        for ``hold_s``; ``show_arms(None)`` lets them go."""
+        if left_deg is None:
+            self.arms = None
+            return
+        self.arms, self.arms_until = (float(left_deg), float(right_deg)), now + hold_s  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------ intent
     def set_gaze(self, target: tuple[float, float] | None) -> None:
@@ -668,6 +699,19 @@ class MotionComposer:
             pet_r, pet_l = ANTENNA_NEUTRAL[0] + 0.9 + push, ANTENNA_NEUTRAL[1] - 0.9 - push
             ant_r = ant_r * (1 - p) + pet_r * p  # every other antenna overlay fades out as the hand settles
             ant_l = ant_l * (1 - p) + pet_l * p
+
+        # antennas as arms: a shown flag position (Simon says) or a dancer's arms being copied
+        arms_on = self.arms is not None and now < self.arms_until and s < 0.5
+        self._arms_level += ((1.0 if arms_on else 0.0) - self._arms_level) * min(1.0, dt * 6.0)
+        if arms_on:
+            want = [-arm_rad(self.arms[0]), arm_rad(self.arms[1])]  # type: ignore[index]
+            for i in range(2):
+                self._arms_rad[i] += (want[i] - self._arms_rad[i]) * min(1.0, dt * 12.0)
+        elif self._arms_level < 0.01:
+            self._arms_rad = [ant_l, ant_r]
+        if self._arms_level > 0.01:
+            ant_l = ant_l * (1 - self._arms_level) + self._arms_rad[0] * self._arms_level
+            ant_r = ant_r * (1 - self._arms_level) + self._arms_rad[1] * self._arms_level
 
         for i, held in enumerate(self.ear_hold):
             if held is not None and now < self.ear_hold_until[i]:

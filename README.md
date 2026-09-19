@@ -116,7 +116,7 @@ ssh pollen@reachy-mini.local 'bash /home/pollen/festival_pet/scripts/setup_offli
 ```
 
 The script installs the app into the daemon's apps venv (`/venvs/apps_venv`), downloads
-the three OpenCV Zoo ONNX models (~51 MB, pinned by SHA-256 so they are fetched once and
+the four OpenCV Zoo ONNX models (~57 MB, pinned by SHA-256 so they are fetched once and
 only again if the pin changes) and the Vosk small English model (~40 MB) into
 `~/.local/share/festival_pet/models/`, caches the
 `pollen-robotics/reachy-mini-emotions-library` dataset, and runs a load check.
@@ -145,22 +145,38 @@ update, logs (`/logs`) all work as before. A daemon update from the dashboard re
 `launcher.sh`, so run the script (or the installer) again afterwards. To undo: reverse the
 `-m` edit in `launcher.sh` and restart the daemon.
 
-## Play tab: the mime game, and the lexicon
+## Play tab: Simon says (head and arms), dance-along, singing
 
-**Mime game** ("do what I do"): start it from the Play tab (or a keypad key mapped to `mime`).
-It plays a three-note fanfare, then shows a head move (look left/right/up/down, tilt left/right;
-3–5 of them, random every game, never the same twice in a row), returns to neutral and watches
-your head for 4 s. Copy it as in a mirror (flip with the mirror-game direction switch) and it
-chirps "yes", nods, stores a fresh view of your face, and shows the next one. Ignore it and it
-shows the move again, bigger, with a huff; ignore that and it shows it a third time with an
-annoyed shake; ignore that and it droops, sulks and gives up. Do the whole set and it does a
-ta-da. If it loses your face for 5 s it looks around, confused, and stops. The Play tab shows
-the numbers it judges by (your head's turn / nod / tilt and a smile estimate from the mouth
-width), so you can see what counts.
+**Simon says, head** ("do what I do", the close-up game): start it from the Play tab (or a keypad
+key mapped to `mime`). It plays a three-note fanfare, then shows a head move (look left/right/up/down,
+tilt left/right; 3–5 of them, random every game, never the same twice in a row), returns to your
+face and watches your head for 4 s. Copy it as in a mirror (flip with the mirror-game direction
+switch) and it chirps "yes", perks, stores a fresh view of your face, and shows the next one.
+Ignore it and it shows the move again, bigger, with a huff; ignore that and it shows it a third
+time with an annoyed shake; ignore that and it droops, sulks and gives up. Do the whole set and it
+does a ta-da. If it loses your face for 5 s it looks around, confused, and stops. Up and down are
+left out when it is looking steeply up or down at you (the camera cannot read them from there).
 
-**Lexicon**: every sound with what it means, tap to hear. Distinct calls: a rising two-note for
-"let's play mirror" (falling for "mirror over"), the fanfare for the mime game, a double blip
-before each shown move, a bright "yes", a puffed "huff".
+**Simon says, arms** (flag signals): the antennas are its arms, read literally: laid back = arm
+down, horizontal in front = arm out, straight up = arm up. It shows one flag position, you copy it
+(as in a mirror), then it shows that one and a second, you copy both in order, and so on up to
+five, like the old Simon toy. Your arms are read by the MediaPipe pose model behind the person
+detector (`festival_pet/pose.py`): shoulder, elbow and wrist, as an angle from hanging down, in
+three levels (down under 50°, out, up over 130°). When it cannot see your arms (too close: a face
+that fills the frame has no arms in it, or the pose model is unsure) it plays the head game
+instead. The Play tab shows what it reads of your arms and what it is waiting for.
+
+**Dance-along**: while there is a beat (someone seen dancing, music heard, or the tapped clock
+with manual groove on) and your arms can be read, the antennas copy your arms live, as in a
+mirror, fast enough for 120 bpm (the pose runs on every camera frame then, and the close-up face
+work is skipped). Every eight beats it takes two beats for a riff of its own (alternating, pumping
+or a wave), then goes back to copying. Off during Simon says, library moves and sleep; switch it
+off on the Play tab.
+
+**Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
+"Puppet it". Distinct calls: a rising two-note for "let's play mirror" (falling for "mirror
+over"), the fanfare for Simon says, a double blip before each shown move, a bright "yes", a
+puffed "huff".
 
 **Sneeze**: 10.6 s. It stops looking at you, looks down with the antennas laid right back, gives
 a little shake, lifts three times with rising inhales while the antennas climb a step each time,

@@ -338,6 +338,34 @@ def test_ear_holds_park_an_antenna_and_expire():
     assert head[0, 3] > 0.01  # pushes forward into the hand
 
 
+def test_antennas_as_arms_read_literally_and_follow_fast():
+    from festival_pet.motion import ANTENNA_NEUTRAL, ARM_BACK, ARM_FORWARD, arm_rad
+
+    near = lambda a, b: abs(a - b) < 1e-9  # noqa: E731
+    assert near(arm_rad(0.0), -ARM_BACK) and near(arm_rad(90.0), ARM_FORWARD) and arm_rad(180.0) == 0.0  # down: laid back; out: forward; up: vertical
+    assert near(arm_rad(45.0), -ARM_BACK + (ARM_FORWARD + ARM_BACK) / 2) and near(arm_rad(135.0), ARM_FORWARD / 2)  # continuous in between
+    assert arm_rad(-20.0) == arm_rad(0.0) and arm_rad(400.0) == arm_rad(180.0)
+    m = MotionComposer()
+    for i in range(50):
+        m.sample(i * 0.02, 0.02)
+    m.show_arms(90.0, 0.0, 1.0, 5.0)  # left out, right down
+    for i in range(50, 110):
+        _, ants, _ = m.sample(i * 0.02, 0.02)
+    assert abs(ants[1] - (-ARM_FORWARD)) < 0.1 and abs(ants[0] - (-ARM_BACK)) < 0.1  # left antenna forward (its sign is negated), right laid back
+    m.show_arms(180.0, 180.0, 2.2, 5.0)  # both up: within a quarter beat at 120 bpm it is most of the way there
+    _, ants, _ = m.sample(2.34, 0.02)
+    for i in range(118, 125):
+        _, ants, _ = m.sample(i * 0.02, 0.02)
+    assert abs(ants[0]) < 0.6 and abs(ants[1]) < 0.6
+    m.ear_clock(0, 0.0, 2.5)  # the clock hand still wins on its antenna
+    _, ants, _ = m.sample(2.52, 0.02)
+    assert ants[0] == m.EAR_CLOCK_DOWN
+    m.show_arms(None)
+    for i in range(130, 230):
+        _, ants, _ = m.sample(i * 0.02, 0.02)
+    assert abs(ants[0] - ANTENNA_NEUTRAL[0]) < 0.3 and abs(ants[1] - ANTENNA_NEUTRAL[1]) < 0.3  # let go: back to normal
+
+
 def test_imu_rub_calibration_sets_the_floor_between_rest_and_a_rub():
     from festival_pet.senses import ImuRubDetector
 

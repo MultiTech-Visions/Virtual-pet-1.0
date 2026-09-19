@@ -139,6 +139,86 @@ def test_up_and_down_are_left_out_when_the_face_is_steeply_above_or_below():
         assert len(g.sequence) == 5 and all(a != b for a, b in zip(g.sequence, g.sequence[1:]))
 
 
+def arms(left, right):
+    from festival_pet.pose import Arms
+
+    deg = {"down": 10.0, "out": 90.0, "up": 170.0}
+    return Arms(0.0, deg[left], deg[right], left, right, 0.9, 50.0, {})
+
+
+def test_the_arm_game_builds_the_sequence_up_like_simon():
+    from festival_pet.mime import ARM_LEVEL_DEG, ARM_MOVES, ARM_ROUNDS, GAP_BETWEEN_S
+
+    g = MimeGame(random.Random(7), mirror_image=True)
+    acts = g.start(0.0, kind="arms")
+    assert g.kind == "arms" and len(g.sequence) == ARM_ROUNDS and set(g.sequence) <= set(ARM_MOVES) and g.round_len == 1
+    assert any(a[0] == "think" and "arms" in a[1] for a in acts)
+    t = 0.0
+    everything = list(acts)
+    face = FaceObs(1, 5.0, -10.0, 0.02, None, 0.0)  # a small far face: enough to aim at
+    for rnd in range(1, ARM_ROUNDS + 1):
+        # it shows the first `rnd` moves, each DEMO_S with a short drop between
+        lead = INTRO_S if rnd == 1 else PRAISE_S
+        span = lead + rnd * DEMO_S + (rnd - 1) * GAP_BETWEEN_S + GAP_S + 1.0  # (each state change lands a tick late)
+        acts, t0 = [], t
+        while t < t0 + span:
+            acts += g.tick(face, t, arms("down", "down"))
+            t += 0.05
+        everything += acts
+        shown = [a[1] for a in acts if a[0] == "arms" and a[1] is not None]
+        assert len(shown) == rnd, (rnd, shown)
+        for k, (l, r, _) in enumerate(shown):
+            left, right = ARM_MOVES[g.sequence[k]]
+            assert (l, r) == (ARM_LEVEL_DEG[left], ARM_LEVEL_DEG[right])
+        assert g.state == "wait" and g.step == 0, (rnd, g.state)
+        # then they copy each, in order, as in a mirror (their right arm is its left antenna)
+        for k in range(rnd):
+            left, right = ARM_MOVES[g.sequence[k]]
+            mine = arms(right, left)
+            acts = []
+            for _ in range(12):
+                acts += g.tick(face, t, mine)
+                t += 0.05
+            everything += acts
+            assert "yes" in kinds(acts, "sound"), (rnd, k)
+            assert ("capture",) not in acts  # no face embedding from an arm move
+        if rnd < ARM_ROUNDS:
+            assert g.state == "praise" and g.round_len == rnd + 1 and g.step == 0
+    assert g.state == "celebrate" and "tada" in kinds(everything, "sound")
+    t0 = t
+    acts = []
+    while t < t0 + 3.0:
+        acts += g.tick(face, t, None)
+        t += 0.05
+    assert not g.active and g.outcome == "won" and ("arms", None) in acts
+
+
+def test_the_arm_game_shows_the_whole_round_again_when_ignored_and_reads_same_direction_when_not_mirrored():
+    from festival_pet.mime import ARM_MOVES
+
+    g = MimeGame(random.Random(8), mirror_image=False)
+    g.start(0.0, kind="arms")
+    face = FaceObs(1, 0.0, 0.0, 0.02, None, 0.0)
+    t = 0.0
+    acts = []
+    while t < INTRO_S + DEMO_S + GAP_S + 0.2:
+        acts += g.tick(face, t, arms("down", "down")); t += 0.05
+    assert g.state == "wait"
+    left, right = ARM_MOVES[g.sequence[0]]
+    assert g.expected_arms() == (left, right)  # same direction: their left is its left
+    # the wrong arms do nothing; the wait runs out: a huff and the move again
+    acts = []
+    while t < INTRO_S + DEMO_S + GAP_S + WAIT_S + 0.4:
+        acts += g.tick(face, t, arms(right, left) if left != right else arms("out", "out") if left != "out" else arms("up", "up")); t += 0.05
+    assert "huff" in kinds(acts, "sound") and any(a[0] == "arms" and a[1] is not None for a in acts) and g.state == "demo" and g.attempt == 1
+    # arms not seen for a while: lost you
+    acts = []
+    while t < INTRO_S + DEMO_S + GAP_S + WAIT_S + 12.0:
+        acts += g.tick(face, t, None); t += 0.05
+    assert not g.active and g.outcome == "lost you" and ("arms", None) in acts
+    assert g.status(t)["kind"] == "arms"
+
+
 def test_the_clock_ear_counts_the_wait_down_and_clears():
     from festival_pet.mime import clock_ear
 

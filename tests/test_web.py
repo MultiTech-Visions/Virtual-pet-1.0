@@ -42,11 +42,13 @@ class FakeMove:
         return np.eye(4), np.zeros(2), 0.0
 
 
-def _pet():
+def _pet(t0: float = 1000.0):
+    """``t0``: the pet's clock. Controls from the page use the wall clock, so a test that steps the pet after
+    a page control (a game start, a flourish timer) starts it at time.time() and steps from there."""
     mem = FaceMemory("/nonexistent/never-written.json")
     pet = Pet(PetParts(NullIO(), mem, lambda name: FakeMove(), lambda: None, None, Behavior(mem), MotionComposer()))
-    pet.start(1000.0)
-    pet.step(1000.1)
+    pet.start(t0)
+    pet.step(t0 + 0.1)
     return pet
 
 
@@ -377,6 +379,101 @@ def test_quiet_voice_drops_the_chatter_and_keeps_the_reactions():
     pet.stop()
 
 
+class ArmsVision:
+    """A fake vision that reports arms (and nothing else)."""
+
+    pose, pose_live, refined = True, False, False
+    stats = {"detect_ms": 1.0, "embed_ms": 0.0, "body_ms": 0.0, "pose_ms": 0.0, "frames": 3, "faces": 1, "bodies": 0, "last_frame_at": 0.0, "no_frame": 0, "errors": 0, "last_error": ""}
+    last_jpeg = None
+    body_enabled = True
+
+    def __init__(self):
+        self.arms = None
+
+    def latest_arms(self):
+        return self.arms
+
+    def status(self, now):
+        return {**self.stats, "alive": True, "active": True, "refined": False, "pose": True, "pose_live": self.pose_live, "frame_age_s": 0.1}
+
+
+def _arms(left, right, ts):
+    from festival_pet.pose import Arms
+
+    deg = {"down": 10.0, "out": 90.0, "up": 170.0}
+    return Arms(ts, deg[left], deg[right], left, right, 0.9, 50.0, {})
+
+
+def test_arm_simon_says_runs_from_the_page_and_falls_back_to_the_head_game():
+    from festival_pet.behavior import FaceObs
+
+    t = time.time()
+    pet = _pet(t - 1.0)
+    pet.vision = ArmsVision()
+    app = FastAPI(); install_routes(app, pet); c = TestClient(app)
+    r = c.post("/api/control", json={"cmd": "mime", "value": "arms"})
+    assert r.status_code == 400 and "arms" in r.json()["detail"]  # nobody there at all
+    # arms in view: the arm game, and the pose runs live
+    pet.vision.arms = _arms("down", "down", t)
+    pet.step(t)
+    assert c.post("/api/control", json={"cmd": "mime", "value": "arms"}).status_code == 200
+    assert pet.mime.active and pet.mime.kind == "arms"
+    t0 = pet.mime._until - 1.8  # the game's own start time (INTRO_S before its first deadline)
+    pet.step(t0 + 0.05)
+    assert pet.vision.pose_live
+    m = c.get("/api/mind").json()
+    assert m["mime"]["kind"] == "arms" and m["arms"]["left"] == "down" and m["senses"]["vision"]["pose_live"]
+    # the demo puts the antennas in the flag position
+    from festival_pet.mime import ARM_LEVEL_DEG, ARM_MOVES, INTRO_S
+
+    for i in range(1, 8):
+        pet.vision.arms = _arms("down", "down", t0 + INTRO_S + i * 0.05)
+        pet.step(t0 + INTRO_S + i * 0.05)
+    left, right = ARM_MOVES[pet.mime.sequence[0]]
+    assert pet.p.composer.arms == (ARM_LEVEL_DEG[left], ARM_LEVEL_DEG[right])
+    assert c.post("/api/control", json={"cmd": "mime", "value": False}).status_code == 200
+    assert not pet.mime.active and pet.p.composer.arms is None
+    pet.step(t0 + 3.0)
+    assert not pet.vision.pose_live
+    # only a face, too close for arms: asking for the arm game gets the head game
+    pet.vision.arms = None
+    pet._last_obs.face = FaceObs(1, 0.0, 0.0, 0.2, None, 0.0)
+    assert c.post("/api/control", json={"cmd": "mime", "value": "arms"}).status_code == 200
+    assert pet.mime.active and pet.mime.kind == "head"
+    assert c.post("/api/control", json={"cmd": "mime", "value": "legs"}).status_code == 400
+    pet.stop()
+
+
+def test_dance_along_copies_the_arms_to_the_beat_with_a_flourish():
+    t = time.time()
+    pet = _pet(t - 1.0)
+    pet.vision = ArmsVision()
+    app = FastAPI(); install_routes(app, pet); c = TestClient(app)
+    assert c.post("/api/control", json={"cmd": "manual_groove", "value": True}).status_code == 200
+    assert c.post("/api/control", json={"cmd": "bpm", "value": 120}).status_code == 200
+    comp = pet.p.composer
+    copied, flourished = [], False
+    for i in range(160):  # 8 s: 16 beats at 120 bpm
+        now = t + i * 0.05
+        pet.vision.arms = _arms("up", "out", now)  # their left up, right out
+        pet.step(now)
+        if now < pet._flourish_until:
+            flourished = True
+        elif pet._copying_arms and comp.arms is not None:
+            copied.append(comp.arms)
+    st = c.get("/api/mind").json()["dance_along"]
+    assert st["on"] and st["copying"]
+    assert pet._copying_arms and copied and flourished
+    assert all(a == (90.0, 170.0) for a in copied)  # mirror: their right (out) is its left, their left (up) its right
+    assert any("dancing with you" in th for _, th in pet.p.behavior.thoughts) and any("my turn" in th for _, th in pet.p.behavior.thoughts)
+    # switched off: it lets go
+    assert c.post("/api/control", json={"cmd": "dance_along", "value": False}).status_code == 200
+    pet.step(t)
+    assert not pet._copying_arms and comp.arms is None
+    assert c.get("/api/mind").json()["controls"]["dance_along"] is False
+    pet.stop()
+
+
 def test_mind_json_never_carries_numpy_scalars():
     """0.6.5 put a numpy bool in the vision status and every poll of the page failed with a 500."""
     import numpy as np
@@ -388,7 +485,8 @@ def test_mind_json_never_carries_numpy_scalars():
     v._thread = None
     v._active = threading.Event()
     v.refined = bool(np.float32(40.0) < 90)  # what the fixed code produces
-    v.stats = {"detect_ms": 1.0, "embed_ms": 0.0, "body_ms": 0.0, "frames": 3, "faces": 1, "bodies": 0, "last_frame_at": 0.0, "no_frame": 0, "errors": 0, "last_error": ""}
+    v.pose, v.pose_live, v._arms, v._lock = None, False, None, threading.Lock()
+    v.stats = {"detect_ms": 1.0, "embed_ms": 0.0, "body_ms": 0.0, "pose_ms": 0.0, "frames": 3, "faces": 1, "bodies": 0, "last_frame_at": 0.0, "no_frame": 0, "errors": 0, "last_error": ""}
     pet.vision = v
 
     def walk(x, path="mind"):

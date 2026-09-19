@@ -200,6 +200,11 @@
     <label>Library moves</label><div class="grid-btns" id="btn-move"></div>
   </div>
   <div class="card" style="grid-column:1/-1">
+    <h2>Lexicon: what its sounds mean</h2>
+    <div class="sub">Tap to hear each one.</div>
+    <table id="lexicon"></table>
+  </div>
+  <div class="card" style="grid-column:1/-1">
     <h2>Keypad</h2>
     <div class="sub">Any paired Bluetooth (or plugged-in USB) keyboard is a hand controller. Pair once here; it reconnects on its own after that. The PCsensor MK424 sends A B C D and pairs with PIN 1234.</div>
     <div class="kv" id="keypad" style="margin:8px 0"></div>
@@ -230,18 +235,34 @@
 
 <section id="tab-play" class="grid hidden">
   <div class="card">
-    <h2>Simon says: do what I do</h2>
+    <h2>Simon says: head (close up)</h2>
     <div class="sub">It shows a head move, then watches your head for the same one (as in a mirror: its left is your right, unless the mirror-game direction is flipped). Copy it and it moves on; ignore it and it shows you again, gets huffy, then sulks. 3–5 random moves per game. Every copied move also stores a fresh view of your face.</div>
     <div class="btns" style="margin:8px 0">
-      <button class="act big" id="mime-btn" onclick="ctl('mime', !mimeOn)">Start Simon says</button>
+      <button class="act big" id="mime-btn" onclick="ctl('mime', mimeOn && mimeKind === 'head' ? false : 'head')">Start head game</button>
     </div>
     <div class="kv" id="mime"></div>
     <div class="btns" style="margin-top:8px"><button class="act" id="preview-btn2" onclick="togglePreview()">Show what it sees</button></div>
     <img id="preview2" class="hidden" alt="" style="width:100%; border-radius:10px; margin-top:8px; background:#0b0e1a">
   </div>
   <div class="card">
-    <h2>What it sees of your head</h2>
-    <div class="sub">The numbers the game judges by. Turn, nod, tilt and watch them move; the move counts at ±14° turn, ±10° nod, ±10° tilt, held for 0.4 s.</div>
+    <h2>Simon says: arms (flag signals)</h2>
+    <div class="sub">Its antennas are its arms: laid back = down, horizontal in front = out, straight up = up. It shows one position, you copy it (as in a mirror); then that one and a second, you copy both in order; up to five, like the old Simon toy. Stand back far enough for it to see your shoulders and elbows. If it cannot see your arms it plays the head game instead.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act big" id="arms-btn" onclick="ctl('mime', mimeOn && mimeKind === 'arms' ? false : 'arms')">Start arm game</button>
+    </div>
+    <div class="kv" id="armgame"></div>
+  </div>
+  <div class="card">
+    <h2>Dance-along</h2>
+    <div class="sub">When there is a beat (you dancing, music, or the tapped clock with manual groove on) and it can see your arms, its antennas copy your arms live, as in a mirror. Every eight beats it throws in two beats of its own, then copies again.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act" id="dance-btn" onclick="toggleDanceAlong()">Dance-along: on</button>
+    </div>
+    <div class="kv" id="dancealong"></div>
+  </div>
+  <div class="card">
+    <h2>What it sees of you</h2>
+    <div class="sub">The numbers the games judge by. Head: the move counts at ±12° turn, ±8° nod, ±10° tilt, held for 0.4 s. Arms: the angle from hanging down; down under 50°, out, up over 130°.</div>
     <div class="kv" id="yourhead"></div>
   </div>
   <div class="card">
@@ -253,11 +274,6 @@
       <button class="act" onclick="ctl('save_song')">Save last song</button>
     </div>
     <div class="kv" id="song"></div>
-  </div>
-  <div class="card" style="grid-column:1/-1">
-    <h2>Lexicon: what its sounds mean</h2>
-    <div class="sub">Tap to hear each one.</div>
-    <table id="lexicon"></table>
   </div>
 </section>
 
@@ -366,8 +382,9 @@ async function loadCatalog() {
     $(id).innerHTML = list.map(x => `<button onclick="ctl('${kind}', '${x}')">${x.replace(/_/g, ' ')}</button>`).join('');
   $('lexicon').innerHTML = c.sounds.map(x => `<tr><td><button class="act" style="min-height:0;padding:6px 12px" onclick="ctl('sound', '${x}')">${x.replace(/_/g, ' ')}</button></td><td>${c.meanings[x]}</td></tr>`).join('');
 }
-let mimeOn = false, singing = false;
+let mimeOn = false, mimeKind = 'head', singing = false, danceAlong = true;
 function toggleSinging() { singing = !singing; ctl('singing', singing); $('sing-btn').textContent = 'Singing: ' + (singing ? 'on' : 'off'); }
+function toggleDanceAlong() { danceAlong = !danceAlong; ctl('dance_along', danceAlong); $('dance-btn').textContent = 'Dance-along: ' + (danceAlong ? 'on' : 'off'); }
 let selected = [];
 function toggleSel(id) {
   selected = selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id].slice(-2);
@@ -405,7 +422,7 @@ async function refresh() {
     $('conn').textContent = 'live · ' + new Date().toLocaleTimeString();
     $('ver').textContent = 'v' + d.build.version;
     const STATE_EMOJI = {SLEEPING: '😴', WAKING: '🥱', IDLE: m.energy < 0.3 ? '😪' : '🙂', ENGAGED: '😊', SEARCHING: '🤔', HELD: '🤗'};
-    $('state').textContent = (STATE_EMOJI[m.state] || '') + ' ' + m.state + (m.dizzy ? ' 😵' : '') + (m.mimicking ? ' 🪞' : '') + (d.mime.active ? ' 🎭' : '') + (d.song.singing ? ' 🎵' : '') + (s.dance.dancing ? ' 🕺' : '');
+    $('state').textContent = (STATE_EMOJI[m.state] || '') + ' ' + m.state + (m.dizzy ? ' 😵' : '') + (m.mimicking ? ' 🪞' : '') + (d.mime.active ? (d.mime.kind === 'arms' ? ' 🚩' : ' 🎭') : '') + (d.song.singing ? ' 🎵' : '') + (s.dance.dancing ? ' 🕺' : '') + (d.dance_along.copying ? ' 💃' : '');
     $('state-sub').textContent = `for ${m.state_for_s}s` + (m.engaged_person ? ` · with person #${m.engaged_person} (${m.engaged_tier})` : '') + (m.dizzy ? ' · dizzy' : '') + (m.mimicking ? ' · mirror game' : '');
     const FEEL = {nod: '👍', tilt: '🤨', wiggle: '😆', bounce: '🤩', perk: '👀', droop: '😞', startle: '😳', snuggle: '🥰', dizzy: '😵‍💫', shake_off: '😤', search: '🔍', glance: '👀', shy: '☺️', nod_off: '😴', sneeze: '🤧', hiccup: '😮', tada: '🎉', flinch: '😖', lean: '😌', shake: '🙅', point: '👉', bow: '🙇',
       hello_new: '👋', hello_friend: '😄', hello_bestie: '🥳', curious: '🧐', happy: '😊', excited: '🤩', content: '😌', purr: '😻', giggle: '🤭', surprised: '😲', confused: '😕', sad: '😢', lonely: '🥺', sleepy: '😪', yawn: '🥱', wake: '🌅', annoyed: '😠', low_battery: '🪫', name: '❓', ticklish: '😂', sing: '🎵', mirror_start: '🪞', mirror_end: '🪞', mime_start: '🎭', mime_end: '🎭', mime_cue: '👁️', yes: '✅', huff: '😤', no_no: '🙅'};
@@ -429,7 +446,7 @@ async function refresh() {
     const v = s.vision;
     const camera = !v ? 'no vision on this pet' : !v.alive ? '⚠️ vision thread died: ' + (v.last_error || 'no error recorded') : !v.active ? 'paused (asleep)'
       : v.frame_age_s === null ? '⚠️ no frame from the camera yet' + (v.no_frame ? ` (${v.no_frame} empty reads)` : '') : v.frame_age_s > 2 ? `⚠️ last frame ${v.frame_age_s} s ago` + (v.last_error ? ' · ' + v.last_error : '')
-      : `ok · ${v.frames} frames · detect ${v.detect_ms.toFixed(0)} ms` + (v.refined ? ' · landmarks from a close-up' : '') + (v.errors ? ` · ${v.errors} errors, last: ${v.last_error}` : '');
+      : `ok · ${v.frames} frames · detect ${v.detect_ms.toFixed(0)} ms` + (v.pose ? ` · pose ${v.pose_ms.toFixed(0)} ms${v.pose_live ? ' (live)' : ''}` : '') + (v.refined ? ' · landmarks from a close-up' : '') + (v.errors ? ` · ${v.errors} errors, last: ${v.last_error}` : '');
     kv('eyes', {camera, face: s.face ? 'yes' : 'none', track: fc.track ?? '—', yaw: s.face ? fc.yaw + '°' : '—', pitch: s.face ? fc.pitch + '°' : '—', size: fc.size ?? '—',
       person: s.face ? (fc.person === null ? 'stranger' : '#' + fc.person) : '—', similarity: fc.similarity ?? '—', tilt: s.face ? fc.tilt + '°' : '—', 'head turned / nodded': s.face ? `${fc.head_yaw}° / ${fc.head_pitch}°` : '—', smile: s.face ? fc.smile : '—',
       body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
@@ -441,11 +458,18 @@ async function refresh() {
     drawKeymap(d.controls.keymap);
     // sg: the song block, declared above
     kv('song', {now: sg.singing ? 'singing 🎵' : 'quiet', 'last song': sg.last ? `${sg.last.name} · ${sg.last.bpm} bpm · ${sg.last.bars.join(' ')}${sg.last.saved ? ' (saved)' : ''}` : '—', repertoire: sg.repertoire.length ? sg.repertoire.join(', ') : 'nothing saved yet', 'next song in': sg.next_in_s === null ? 'singing is off' : sg.next_in_s + ' s'});
-    const mg = d.mime; mimeOn = mg.active;
-    $('mime-btn').textContent = mimeOn ? 'Stop Simon says' : 'Start Simon says';
-    kv('mime', {state: mimeOn ? mg.state : (mg.outcome ? 'over: ' + mg.outcome : 'not playing'), move: mg.move || '—', step: mg.of ? `${mg.step} of ${mg.of}` : '—', attempt: mimeOn ? mg.attempt : '—', 'time to copy': mg.time_left_s === null ? '—' : mg.time_left_s + ' s',
-      'your rest pose (yaw/pitch/roll)': mg.baseline ? mg.baseline.map(x => x.toFixed(0) + '°').join(' / ') : '—', 'your head now': s.face ? `${s.face.head_yaw}° / ${s.face.head_pitch}° / ${s.face.tilt}°` : '—'});
-    kv('yourhead', {'turned (yaw)': s.face ? s.face.head_yaw + '°' : '—', 'nodded (pitch)': s.face ? s.face.head_pitch + '°' : '—', 'tilted (roll)': s.face ? s.face.tilt + '°' : '—', 'smile': s.face ? s.face.smile + (s.face.smile >= 0.8 ? ' 😀' : '') : '—'});
+    const mg = d.mime; mimeOn = mg.active; mimeKind = mg.kind;
+    const headOn = mimeOn && mimeKind === 'head', armsOn = mimeOn && mimeKind === 'arms';
+    $('mime-btn').textContent = headOn ? 'Stop head game' : 'Start head game';
+    $('arms-btn').textContent = armsOn ? 'Stop arm game' : 'Start arm game';
+    const gameState = on => on ? mg.state : (mg.outcome && !mimeOn ? 'over: ' + mg.outcome : mimeOn ? 'the other game is on' : 'not playing');
+    kv('mime', {state: gameState(headOn), move: headOn ? mg.move : '—', step: headOn ? `${mg.step} of ${mg.of}` : '—', attempt: headOn ? mg.attempt : '—', 'time to copy': headOn && mg.time_left_s !== null ? mg.time_left_s + ' s' : '—',
+      'your rest pose (yaw/pitch/roll)': headOn && mg.baseline ? mg.baseline.map(x => x.toFixed(0) + '°').join(' / ') : '—', 'your head now': s.face ? `${s.face.head_yaw}° / ${s.face.head_pitch}° / ${s.face.tilt}°` : '—'});
+    const ar = d.arms, arms = ar ? `L ${ar.left} (${ar.left_deg}°) · R ${ar.right} (${ar.right_deg}°) · conf ${ar.conf}` : (v && v.pose ? 'not seen' : 'no pose model on this robot');
+    kv('armgame', {state: gameState(armsOn), round: armsOn ? `${mg.round} of ${d.mime.of === mg.round ? mg.of : 5}` : '—', 'waiting for': armsOn && mg.expect_arms ? `move ${mg.step} of ${mg.of}: your left ${mg.expect_arms[0]}, right ${mg.expect_arms[1]}` : '—', attempt: armsOn ? mg.attempt : '—', 'time to copy': armsOn && mg.time_left_s !== null ? mg.time_left_s + ' s' : '—', 'your arms': arms});
+    const da = d.dance_along; danceAlong = da.on; $('dance-btn').textContent = 'Dance-along: ' + (da.on ? 'on' : 'off');
+    kv('dancealong', {now: !da.on ? 'off' : da.flourish ? 'my turn: a riff of my own 🎉' : da.copying ? 'copying your arms 🕺' : (s.music.grooving ? 'beat on, waiting to see your arms' : 'no beat (dance, play music, or tap one in)'), antennas: da.antennas ? `left ${da.antennas[0]}° · right ${da.antennas[1]}°` : '—', 'your arms': arms, 'pose rate': v && v.pose ? (v.pose_live ? `every frame (${v.pose_ms.toFixed(0)} ms)` : `idle, 2/s (${v.pose_ms.toFixed(0)} ms)`) : '—'});
+    kv('yourhead', {'turned (yaw)': s.face ? s.face.head_yaw + '°' : '—', 'nodded (pitch)': s.face ? s.face.head_pitch + '°' : '—', 'tilted (roll)': s.face ? s.face.tilt + '°' : '—', 'smile': s.face ? s.face.smile + (s.face.smile >= 0.8 ? ' 😀' : '') : '—', 'left arm': ar ? `${ar.left} (${ar.left_deg}°)` : '—', 'right arm': ar ? `${ar.right} (${ar.right_deg}°)` : '—'});
     $('heard-card').classList.toggle('hidden', !d.controls.ears);
     const kp = s.keypad, bt = btInfo || {};
     kv('keypad', {'keyboards seen by the app': kp.devices.length ? kp.devices.join(', ') : 'none', 'last key': kp.last_key ? `${kp.last_key.key} (${kp.last_key.t}s ago)` : '—', 'input access': kp.error || 'ok',
@@ -479,6 +503,7 @@ async function refresh() {
       ears = d.controls.ears; $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off');
       mgroove = d.controls.manual_groove; $('mgroove').textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off');
       singing = d.controls.singing; $('sing-btn').textContent = 'Singing: ' + (singing ? 'on' : 'off');
+      danceAlong = d.controls.dance_along; $('dance-btn').textContent = 'Dance-along: ' + (danceAlong ? 'on' : 'off');
       $('imurub').value = d.controls.imu_rub_gyro; $('imurub-v').textContent = d.controls.imu_rub_gyro;
       $('fwd').value = d.controls.head_forward_mm; $('fwd-v').textContent = d.controls.head_forward_mm;
       if (d.controls.camera_lag_ms !== null) { $('lag').value = d.controls.camera_lag_ms; $('lag-v').textContent = d.controls.camera_lag_ms; } else { $('lag').disabled = true; $('lag-v').textContent = 'n/a'; }

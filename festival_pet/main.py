@@ -68,6 +68,7 @@ YUNET_MODEL = DATA_DIR / "models" / "face_detection_yunet_2023mar.onnx"
 SFACE_MODEL = DATA_DIR / "models" / "face_recognition_sface_2021dec.onnx"
 VOSK_MODEL = DATA_DIR / "models" / "vosk-model-small-en-us-0.15"
 PERSON_MODEL = DATA_DIR / "models" / "person_detection_mediapipe_2023mar.onnx"
+POSE_MODEL = DATA_DIR / "models" / "pose_estimation_mediapipe_2023mar.onnx"
 MEMORY_FILE = DATA_DIR / "memory.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 SONGS_FILE = DATA_DIR / "songs.json"
@@ -77,6 +78,9 @@ PLAY_LIBRARY_SOUNDS = False  # True = play Pollen's sidecar sound with library m
 MOVE_BLEND_S = 0.5
 FREE_DANCE_BPM = 108.0
 AUDIO_RATE = 16000
+ARMS_MAX_AGE_S = 0.6  # an arm read older than this is nobody's arms
+FLOURISH_EVERY_BEATS = 8  # dance-along: every two bars it stops copying and throws in two beats of its own
+FLOURISH_BEATS = 2
 
 
 class RobotIO(Protocol):
@@ -385,6 +389,16 @@ class Pet:
         self.face_history: deque[tuple[float, float, float, str, bool]] = deque(maxlen=200)  # ~20 s at face rate
         self.settings_file: Path | None = None
         self._last_obs = Observation()
+        # Dance-along: while someone dances (or the tapped clock runs) and their arms can be read, the antennas
+        # copy their arms live, with a flourish of its own every couple of bars.
+        self.dance_along = True
+        self._copying_arms = False
+        self._flourish_until = 0.0
+        self._flourish_len = 1.0
+        self._flourish_riff = 0
+        self._beats = 0
+        self._last_phase = 0.0
+        self._copy_last = 0.0
 
     # ------------------------------------------------------------------ lifecycle
     def start(self, now: float) -> None:
@@ -477,6 +491,11 @@ class Pet:
                 self.face_history.append((sighting.ts, seen.yaw_deg, seen.pitch_deg, sighting.kind, self.dance.state.dancing))
         elif self.dance.state.dancing and now - self._last_rhythm_ts > 2.0:
             self.dance.push(now, *self._last_seen_angles)  # nobody in view: hold still, let the lock run out
+        vision = getattr(self, "vision", None)
+        if vision is not None:
+            arms = vision.latest_arms()
+            if arms is not None and now - arms.ts <= ARMS_MAX_AGE_S:
+                obs.arms = arms
         if self.dance.state.dancing:
             obs.dance_bpm = self.dance.state.bpm
             if not self._dance_seen:  # seen dancing: hand the tempo to the tap clock so manual groove / "1" pick it up
@@ -523,9 +542,10 @@ class Pet:
         for action, t_ev in fired:
             self.key_action(action, t_ev, now)
 
-        # ---------------- mime game (leads; the brain's own games and reactions wait)
+        # ---------------- Simon says (leads; the brain's own games and reactions wait)
         if self.mime.active:
-            for item in self.mime.tick(obs.face, now):
+            aim = obs.face if obs.face is not None else obs.body  # the arm game only needs to know where they are
+            for item in self.mime.tick(aim, now, obs.arms):
                 self._mime_action(item, now)
             beh._next_react = max(beh._next_react, now + 3.0)
             if beh.mimicking:
@@ -563,6 +583,9 @@ class Pet:
             comp.groove_phrase = self.tap.phrase_phase(now) if self.tap.downbeat_known else None
         else:
             comp.groove_phrase = None
+        self._dance_along(obs, now)
+        if vision is not None:
+            vision.pose_live = self._copying_arms or (self.mime.active and self.mime.kind == "arms")
 
         # ---------------- body
         if self.move is not None:
@@ -606,6 +629,55 @@ class Pet:
         else:
             self._short_since = 0.0
         self.p.memory.save()
+
+    # ------------------------------------------------------------------ dance-along
+    def _dance_along(self, obs: Observation, now: float) -> None:
+        """Copy a dancer's arms with the antennas, to the beat, with a riff of its own every couple of bars.
+
+        On while there is a beat to dance to (someone seen dancing, or the tapped clock with manual groove on,
+        or music) and their arms are readable; off during Simon says, a library move, sleep or being held.
+        """
+        comp, beh = self.p.composer, self.p.behavior
+        allowed = (self.dance_along and comp.groove is not None and not self.mime.active and self.move is None
+                   and not self.asleep and beh.state not in ("HELD", "SLEEPING", "WAKING"))
+        if not allowed or obs.arms is None:
+            # a missed arm read or two is not the end; anything else stops it at once
+            if self._copying_arms and (not allowed or now - self._copy_last > 1.0):
+                self._copying_arms = False
+                comp.show_arms(None)
+                self.actions_log.append((now, "arms", "stopped copying"))
+            return
+        self._copy_last = now
+        if not self._copying_arms:
+            self._copying_arms = True
+            self._flourish_until, self._beats, self._last_phase = 0.0, 0, comp.groove[0]
+            beh._think(now, "dancing with you: my antennas are your arms")
+            self.actions_log.append((now, "arms", "copying"))
+        # beats are counted where the groove's phase wraps, whatever clock is driving it (tapped, heard or seen)
+        phase = comp.groove[0]
+        if phase < self._last_phase - 0.5:
+            self._beats += 1
+            if now >= self._flourish_until and self._beats % FLOURISH_EVERY_BEATS == 0:
+                period = 60.0 / (self.tap.bpm if self.tap.active else self.dance.state.bpm if self.dance.state.dancing else FREE_DANCE_BPM)
+                self._flourish_len = FLOURISH_BEATS * period
+                self._flourish_until = now + self._flourish_len
+                self._flourish_riff = comp.rng.randrange(3)
+                beh._think(now, "my turn! a little something of my own")
+                self.actions_log.append((now, "arms", f"flourish {self._flourish_riff}"))
+        self._last_phase = phase
+        if now < self._flourish_until:
+            u = 1.0 - (self._flourish_until - now) / self._flourish_len  # 0..1 over the flourish
+            half = int(u * FLOURISH_BEATS * 2) % 2  # flips every half beat
+            if self._flourish_riff == 0:  # alternate: one up, one out, swapping on the half beat
+                comp.show_arms(180.0 if half else 90.0, 90.0 if half else 180.0, now, 0.5)
+            elif self._flourish_riff == 1:  # both pump up and out together
+                comp.show_arms(180.0 if half else 90.0, 180.0 if half else 90.0, now, 0.5)
+            else:  # a wave: one goes up as the other comes down
+                comp.show_arms(180.0 * u, 180.0 * (1 - u), now, 0.5)
+            return
+        a = obs.arms
+        left, right = (a.right_deg, a.left_deg) if comp.mimic_flip else (a.left_deg, a.right_deg)  # mirror: their right is our left
+        comp.show_arms(left, right, now, 0.5)
 
     # ------------------------------------------------------------------ helpers
     def _to_face_obs(self, s: Sighting) -> FaceObs:
@@ -651,10 +723,7 @@ class Pet:
             if act.name == "sing":
                 self.sing(now)
             elif act.name == "mime":
-                if self._last_obs.face is not None:
-                    self.mime.mirror_image = comp.mimic_flip
-                    for item in self.mime.start(now):
-                        self._mime_action(item, now)
+                self.start_simon(None, now)
         elif act.kind == "wake":
             # Never trust the flag alone: the daemon boots asleep (--no-wake-up-on-start) and an app can be
             # launched into that, so a limp robot is woken whatever we think our state is.
@@ -740,6 +809,26 @@ class Pet:
         if self.songs_file is not None and self.songs_file.exists():
             self.songs = json.loads(self.songs_file.read_text())
 
+    def start_simon(self, kind: str | None, now: float) -> str | None:
+        """Start Simon says. ``kind`` "arms" or "head", or None to pick: the arm game when their arms can be
+        read, else the head game when there is a face (the close-up game: a face that fills the frame has no
+        arms in it). Returns the kind started, or None when there is nobody to play with."""
+        o = self._last_obs
+        if kind is None:
+            kind = "arms" if o.arms is not None else "head" if o.face is not None else None
+        elif kind == "arms" and o.arms is None:
+            kind = "head" if o.face is not None else None
+            if kind is not None:
+                self.p.behavior._think(now, "can't see your arms from here: the head game instead")
+        elif kind == "head" and o.face is None:
+            kind = None
+        if kind is None:
+            return None
+        self.mime.mirror_image = self.p.composer.mimic_flip
+        for item in self.mime.start(now, kind=kind):
+            self._mime_action(item, now)
+        return kind
+
     def _mime_action(self, item: tuple, now: float) -> None:
         kind = item[0]
         comp = self.p.composer
@@ -749,6 +838,11 @@ class Pet:
             comp.request_gesture(item[1], now, 3)
         elif kind == "hold":
             comp.hold = None if item[1] is None else (item[1][0], item[1][1], item[1][2], now + item[1][3])
+        elif kind == "arms":
+            if item[1] is None:
+                comp.show_arms(None)
+            else:
+                comp.show_arms(item[1][0], item[1][1], now, item[1][2])
         elif kind == "capture":
             vision = getattr(self, "vision", None)
             if vision is not None:
@@ -825,6 +919,9 @@ class Pet:
             "mind": self.p.behavior.mind(now),
             "feeling": self._feeling(now),
             "mime": self.mime.status(now),
+            "arms": None if o.arms is None else {"left": o.arms.left, "right": o.arms.right, "left_deg": round(o.arms.left_deg), "right_deg": round(o.arms.right_deg), "conf": round(o.arms.conf, 2), "shoulder_px": round(o.arms.shoulder_px)},
+            "dance_along": {"on": self.dance_along, "copying": self._copying_arms, "flourish": self._copying_arms and now < self._flourish_until,
+                            "antennas": None if comp.arms is None or now >= comp.arms_until else [round(comp.arms[0]), round(comp.arms[1])]},
             "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs], "next_in_s": round(max(0.0, self.p.behavior._cool.get("sing", now) - now)) if self.singing_enabled else None},
             "build": build_info(),
             "asleep": self.asleep,
@@ -846,7 +943,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "dance_along": self.dance_along, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.keys, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "imu_calibration": self.imu_rub.calibration,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
@@ -904,16 +1001,18 @@ class Pet:
             self.keymap.set(key, press, hold)
         elif cmd == "key":  # fire a key action as if pressed (testing from the page)
             self.key_action(str(value), now, now)
-        elif cmd == "mime":
-            if bool(value):
-                if self._last_obs.face is None:
-                    raise ValueError("nobody in view to play Simon says with")
-                self.mime.mirror_image = self.p.composer.mimic_flip
-                for item in self.mime.start(now):
-                    self._mime_action(item, now)
-            else:
+        elif cmd == "mime":  # value: true (pick), "head", "arms", or false to stop
+            if value in (False, 0, None, "stop"):
                 for item in self.mime.stop(now):
                     self._mime_action(item, now)
+            else:
+                kind = None if value is True else str(value)
+                if kind not in (None, "head", "arms"):
+                    raise ValueError(f"Simon says kind must be head or arms, not '{value}'")
+                if self.start_simon(kind, now) is None:
+                    raise ValueError("nobody in view to play Simon says with" + (" (and no arms to read)" if kind == "arms" else ""))
+        elif cmd == "dance_along":
+            self.dance_along = bool(value)
         elif cmd == "singing":
             self.singing_enabled = bool(value)  # the brain picks songs when it feels like one (drives.py)
         elif cmd == "sing":
@@ -982,7 +1081,7 @@ class Pet:
         return {"ok": True}
 
     # ------------------------------------------------------------------ settings persistence
-    _SETTING_KEYS = ("voice", "muted", "pickup", "ears", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+    _SETTING_KEYS = ("voice", "muted", "pickup", "ears", "dance_along", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
         c = self.mind()["controls"]
@@ -1168,9 +1267,11 @@ def build_real_pet(reachy, memory_file: Path = MEMORY_FILE, name_spotting: bool 
     library = RecordedMoves(DEFAULT_EMOTIONS_DATASET)
     poses = PoseHistory(reachy.get_current_head_pose)
     vision = Vision(YUNET_MODEL, SFACE_MODEL, memory, reachy.media.get_frame, poses.lagged,
-                    person_model=PERSON_MODEL if PERSON_MODEL.exists() else None)
+                    person_model=PERSON_MODEL if PERSON_MODEL.exists() else None, pose_model=POSE_MODEL if POSE_MODEL.exists() else None)
     if not PERSON_MODEL.exists():
         logger.warning("person model missing (%s): body-finding disabled; rerun the installer", PERSON_MODEL)
+    if not POSE_MODEL.exists():
+        logger.warning("pose model missing (%s): arm games and dance-along disabled; rerun the installer", POSE_MODEL)
     spotter = None
     if name_spotting:
         from festival_pet.hearing import NameSpotter

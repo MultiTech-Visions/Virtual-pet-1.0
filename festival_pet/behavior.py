@@ -94,6 +94,7 @@ class Observation:
     music_confidence: float = 0.0
     dance_bpm: float = 0.0  # someone visibly bobbing at this tempo (0 = nobody dancing)
     busy: str | None = None  # an activity the robot layer is running for the brain: "mime" or "sing"
+    arms: object | None = None  # pose.Arms: the person's arms are readable this tick (the arm games need this)
 
 
 @dataclass
@@ -253,7 +254,7 @@ class Behavior:
             self._close_hold_since = 0.0
         close = self._close_hold_since != 0.0 and now - self._close_hold_since >= self.timers.mimic_hold
         return Situation(person=face is not None, close=close, beat=obs.music_bpm > 0 or obs.dance_bpm > 0, held=obs.held,
-                         busy=obs.busy, can_sing=self.can_sing, can_mime=self.can_mime and face is not None)
+                         busy=obs.busy, can_sing=self.can_sing, can_mime=self.can_mime and (face is not None or obs.arms is not None))
 
     def _choose(self, obs: Observation, now: float) -> list[Action]:
         """Re-decide what to be doing when the situation changes, when a game or song ends, or every so often."""
@@ -310,7 +311,7 @@ class Behavior:
             self._think(now, f"you're right up close... let's play mirror. I'll copy you {why}")
             out.append(Action("sound", "mirror_start", 2))
         elif new == "mime":
-            self._think(now, f"I want to play... mime game! {why}")
+            self._think(now, f"I want to play... Simon says! {why}")
         elif new == "sing":
             self._think(now, f"I feel a song coming on {why}")
         elif new == "look_around":
