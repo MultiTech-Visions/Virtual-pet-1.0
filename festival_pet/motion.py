@@ -51,6 +51,7 @@ def arm_rad(deg: float) -> float:
 
 ARM_LEVEL_DEG = {"down": 0.0, "out": 90.0, "up": 180.0}  # the three flag positions the arm game shows
 LEAN_FADE_S = 2.0  # a keypad groove nudge fades out over about this long (a few beats)
+LEAN_BODY_DEG = 5.0  # how far the body leans into a full nudge (a lean, not a turn: the gaze stays on the person)
 
 
 def head_pose(yaw: float, pitch: float, roll: float, z: float, x: float = 0.0) -> np.ndarray:
@@ -515,7 +516,6 @@ class MotionComposer:
         self._mirror = 0.0
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
-        self.body_turn: float | None = None  # world yaw the body is asked to face (a keypad groove turn), groove or not
         self._reaiming = False  # mid-way through a big re-aim while grooving: the gaze hold is off until it lands
         self.held = False  # in someone's hands: the body never turns (see Pet.control("pickup"))
         self.petted = False  # a hand on the head: the antennas ease down like a dog's ears
@@ -675,7 +675,7 @@ class MotionComposer:
         # those small corrections; a real re-aim (a keypad turn, a new person, a search) still goes through.
         grooving = self._groove_level > 0.05
         away = float(np.max(np.abs(target - self._gaze)))
-        if away > GROOVE_HOLD_DEG or self.body_turn is not None:
+        if away > GROOVE_HOLD_DEG:
             self._reaiming = True  # a real move: follow it all the way in, hold or no hold
         elif away < 2.0:
             self._reaiming = False
@@ -729,12 +729,14 @@ class MotionComposer:
             self._mirror += (0.0 - self._mirror) * min(1.0, dt * 1.5)
         off.roll += self._mirror
 
-        # the keypad's groove nudge: lean that way with the head and the antennas (one forward, one back), fading
+        # the keypad's groove nudge: lean that way with the head, the antennas (one forward, one back) and a
+        # few degrees of body, fading. The body only leans: it never turns away from whoever it is dancing with.
         self.groove_lean *= math.exp(-dt / LEAN_FADE_S)
         self._lean += (self.groove_lean - self._lean) * min(1.0, dt * 6.0)
         if abs(self._lean) > 0.01 and not solo:
             off.roll += 12.0 * self._lean
             off.yaw += 8.0 * self._lean
+            off.body += LEAN_BODY_DEG * self._lean
             off.ant_r -= 0.5 * self._lean
             off.ant_l -= 0.5 * self._lean
 
@@ -810,11 +812,10 @@ class MotionComposer:
         if self.held:
             self.body_yaw = 0.0
         elif self.body_follow and s < 0.5:
-            goal = self.body_turn if self.body_turn is not None else float(self._gaze[0])
-            band = BODY_DEADBAND if self.body_turn is not None or not grooving else BODY_DEADBAND_GROOVE
-            off_body = goal - self.body_yaw
+            band = BODY_DEADBAND if not grooving else BODY_DEADBAND_GROOVE
+            off_body = float(self._gaze[0]) - self.body_yaw
             if abs(off_body) > band:
-                rate = BODY_RATE_FAR if self.body_turn is not None or abs(off_body) > HEAD_YAW_LIMIT * 0.8 else BODY_RATE
+                rate = BODY_RATE_FAR if abs(off_body) > HEAD_YAW_LIMIT * 0.8 else BODY_RATE
                 step = min(abs(off_body) - band * 0.5, rate * dt)
                 self.body_yaw += math.copysign(step, off_body)
         self.body_yaw = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw))

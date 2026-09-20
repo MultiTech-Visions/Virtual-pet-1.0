@@ -209,17 +209,23 @@ Controls tab, **Keypad** card:
   tap = one action (set the pad not to auto-repeat); there are no hold actions. The actions
   are fixed per layer; type the key code each key sends (press it, read "last key").
   1. **Dancing**: groove left · tap the beat · tap the "1" · groove right. Any key on this
-     layer turns manual groove on. Left / right are guidance, not puppet strings: one tap
-     leans the groove that way (head tilt, one antenna forward, one back, fading over a couple
-     of seconds); three taps within 2.5 s and the body turns 60° that way and dances facing
-     there for 8 beats, then comes back to whoever it was with, mid-groove, no re-greeting.
-     Never turns when held in a hand. Left-right-left-right within a second (a fighting-game
-     combo) stops the dancing: manual groove off, the tempo cleared. A tempo tapped faster
-     than 150 bpm grooves at halftime (every other beat, on the "1" and "3" once the "1" is
-     known): the daemon does not smooth the 50 Hz targets, and a full bob every 0.4 s rattles.
+     layer turns manual groove on. Left / right say which way to groove, they do not point it:
+     it leans that way (head roll and yaw, one antenna forward and one back, about 5° of body)
+     and keeps dancing with whoever it is with, fading over a couple of seconds. Keep tapping
+     the same way and the lean grows to full and it tilts its head over as well (at most every
+     2 s). The body never turns away from the person. Left-right-left-right within a second (a
+     fighting-game combo) stops the dancing: manual groove off, the tempo cleared. A tempo
+     tapped faster than 150 bpm grooves at halftime (every other beat, on the "1" and "3" once
+     the "1" is known): the daemon does not smooth the 50 Hz targets, and a full bob every
+     0.4 s rattles.
   2. **Petting** (one press of the pad's mode key from dancing lands here): head pat · chin
-     scratch · ear rub · belly rub. Each gets the reaction the real touch gets, and counts as
-     a pet for whoever it is with.
+     scratch · ear rub · belly rub. A press does not fire an animation. It keeps a hand on the
+     robot for a moment (the same continuous fold-and-lean a real rub gets) and tops up a
+     build-up, so drumming on all four keys like a fidget toy reads as one long cuddle rather
+     than a fit of gestures. The build-up passes four marks, each once per session and never
+     closer together than 2.5 s: a curious perk, a contented lean, a purring snuggle, and
+     melted. It ebbs away over about 6 s once you stop, and a gap of 3 s starts a fresh
+     session. Every press counts toward being its friend (at most one every 2 s).
   3. **Caring**: snack (a little energy; five in 15 s and it hiccups, nine and it has a tummy
      ache and refuses snacks for a minute) · mushroom (dizzy, then two minutes of extra energy,
      maxed curiosity and a groove half as big again; a second one adds a minute; a third

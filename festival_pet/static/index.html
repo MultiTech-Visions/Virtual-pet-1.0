@@ -319,11 +319,11 @@ function cycleVoice() { voice = VOICE_NEXT[voice]; ctl('voice', voice); $('mute'
 let pickup = false, bodyf = true, volLoaded = false, ears = true, mflip = true, mgroove = false;
 function toggleEars() { ears = !ears; ctl('ears', ears); $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off'); }
 const LAYER_INFO = {
-  dancing: {title: '1 · Dancing', color: '#7cf5c9', blurb: 'Any key here turns manual groove on. Left / right nudge the groove that way (a lean); three quick taps and it turns to dance that way for 8 beats, then comes back to you. Left-right-left-right within a second: stop dancing. Faster than 150 bpm it grooves at halftime.',
+  dancing: {title: '1 · Dancing', color: '#7cf5c9', blurb: 'Any key here turns manual groove on. Left / right say which way to groove: it leans that way (head, antennas, a few degrees of body) and keeps dancing with you, never turning away. Keep tapping the same way and the lean grows and it tilts its head over. Left-right-left-right within a second: stop dancing. Faster than 150 bpm it grooves at halftime.',
     labels: {groove_left: 'groove left', tap: 'tap the beat', downbeat: 'tap the "1"', groove_right: 'groove right'}},
   caring: {title: '3 · Caring', color: '#ffb86b', blurb: 'Snack: a little energy; too many and it hiccups, then a tummy ache. Mushroom: dizzy, then two minutes bouncy and curious (a third one comes back out). Pet: a head pat. Boop: boop its nose. Keep booping.',
     labels: {snack: 'snack', mushroom: 'mushroom', pet: 'pet', boop: 'boop'}},
-  petting: {title: '2 · Petting', color: '#ff8ac9', blurb: 'Virtual petting, for people who are shy of touching it: each one gets the reaction the real thing gets, and counts toward being its friend.',
+  petting: {title: '2 · Petting', color: '#ff8ac9', blurb: 'Virtual petting, for people who are shy of touching it. Presses keep a hand on it rather than firing an animation each time, so drumming on all four is one long cuddle that builds up: hello, that is nice, ohhh right there, melted. Leave off for a few seconds and it ebbs away.',
     labels: {head_pat: 'head pat', chin_scratch: 'chin scratch', ear_rub: 'ear rub', belly_rub: 'belly rub'}},
 };
 let lastKeymap = '', keypadLayers = null;
@@ -481,7 +481,8 @@ async function refresh() {
     $('heard-card').classList.toggle('hidden', !d.controls.ears);
     const kp = s.keypad, bt = btInfo || {};
     kv('keypad', {'keyboards seen by the app': kp.devices.length ? kp.devices.join(', ') : 'none', 'last key': kp.last_key ? `${kp.last_key.key} (${kp.last_key.t}s ago)` + (kp.last_key.does ? ` → ${kp.last_key.does[0]}: ${kp.last_key.does[1].replace('_', ' ')}` : ' → not on the pad') : '—', 'input access': kp.error || 'ok',
-      'groove nudge': kp.turn ? `turned to ${kp.turn.yaw}° for ${kp.turn.for_s} s` : Math.abs(kp.lean) > 0.05 ? `leaning ${kp.lean > 0 ? 'left' : 'right'} ${Math.abs(kp.lean).toFixed(2)}` : '—',
+      'groove nudge': Math.abs(kp.lean) > 0.05 ? `leaning ${kp.lean > 0 ? 'left' : 'right'} ${Math.abs(kp.lean).toFixed(2)}` : '—',
+      'cuddles': kp.cuddle > 0.01 ? `${Math.round(kp.cuddle * 100)}%` + (kp.cuddle > 0.9 ? ' (melted)' : '') : '—',
       'snacks lately': kp.tummy_ache_s ? `tummy ache, ${kp.tummy_ache_s} s` : kp.snacks, 'mushroom': kp.trip_s ? `tripping, ${kp.trip_s} s left (${kp.trip_doses} dose${kp.trip_doses === 1 ? '' : 's'})` : '—', 'boops in a row': kp.boops,
       'bluetooth': bt.error ? bt.error : bt.powered === undefined ? '…' : (bt.powered ? 'on' : 'off'),
       'paired': bt.devices ? (bt.devices.length ? bt.devices.map(x => `${x.name} ${x.connected ? '(connected)' : '(not connected)'} <button class="act" style="padding:2px 8px;min-height:0" onclick="btForget('${x.mac}')">forget</button>`).join('<br>') : 'nothing paired yet') : '—'});

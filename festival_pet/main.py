@@ -82,9 +82,23 @@ AUDIO_RATE = 16000
 ARMS_MAX_AGE_S = 0.6  # an arm read older than this is nobody's arms
 # Keypad: the dancing layer's nudges and the caring layer's snacks and mushrooms
 NUDGE_WINDOW_S = 2.5  # direction taps this close together count up
-NUDGE_TURN_TAPS = 3  # that many in a row and the body turns to dance that way
-NUDGE_TURN_DEG = 60.0
-NUDGE_TURN_BEATS = 8  # how long it dances facing that way before coming back to whoever it was with
+NUDGE_LEAN_MIN, NUDGE_LEAN_STEP = 0.45, 0.2  # one tap leans this much; each further tap in the window adds this, to 1.0
+NUDGE_TILT_TAPS = 3  # that many in a row and it tilts its head that way as well
+NUDGE_TILT_EVERY_S = 2.0
+# Petting keys: presses keep a hand "on" it and build up, instead of retriggering an animation each time
+CUDDLE_STEP = 0.14  # how much one press adds to the build-up
+CUDDLE_FADE_S = 6.0  # ...which ebbs away over about this long once the pressing stops
+CUDDLE_HOLD_S = 1.2  # a press keeps the virtual hand on it this long: spamming reads as continuous petting
+CUDDLE_GAP_S = 3.0  # a gap longer than this starts a fresh session (the milestones below can happen again)
+CUDDLE_REACT_S = 2.5  # at most one reaction of its own this often, whatever is being pressed
+CUDDLES = {"pet": "head pats...", "head_pat": "head pats...", "chin_scratch": "chin scratches...", "ear_rub": "ear rubs...", "belly_rub": "tummy rubs..."}
+# The build-up: (level, what it is thinking, sound, gesture). One each per session, in order.
+CUDDLE_STEPS = (
+    (0.0, "oh, hello", "curious", "perk"),
+    (0.35, "mm, that's nice", "content", "lean"),
+    (0.65, "ohhh yes, right there", "purr", "snuggle"),
+    (0.95, "I have melted. this is my life now", "purr", "nuzzle"),
+)
 SNACK_WINDOW_S = 15.0
 SNACK_HICCUP_AT = 5  # snacks this close together: hiccups
 SNACK_ACHE_AT = 9  # tummy ache: no more snacks for a while
@@ -440,7 +454,14 @@ class Pet:
         # Keypad state: direction nudges, snacks, the trip, boops (see key_action)
         self._nudge: list[tuple[float, float]] = []  # (time, side) of recent direction taps
         self._combo: list[tuple[float, float]] = []  # (time, side) of ALL recent direction taps, for the stop combo
-        self._turn: tuple[float, float] | None = None  # (world yaw to dance facing, until) after repeated nudges
+        self._last_tilt = 0.0  # last head tilt from repeated direction taps
+        # Petting build-up (see _cuddle_touch): level, last press, what was last pressed, milestones done this session
+        self._cuddle = 0.0
+        self._cuddle_last = -1e9
+        self._cuddle_kind = ""
+        self._cuddle_done: set[int] = set()
+        self._cuddle_next_react = 0.0
+        self._cuddle_pet_at = 0.0  # last time this cuddling was counted toward the person's affection
         self._snacks: list[float] = []
         self._ache_until = 0.0
         self._trip_until = 0.0
@@ -518,6 +539,14 @@ class Pet:
             obs.touched = self.touch.update(self.last_ants, present_ants, busy, dt)
         obs.touched_side = self.touch.last_side
         obs.petting = self.audio.rub.rubbing or self.imu_rub.rubbing
+        # the petting keys: each press keeps the virtual hand on for a moment and tops up the build-up, which
+        # ebbs away once the pressing stops. Spamming the keys reads as one long cuddle, not a fit of animations.
+        if now - self._cuddle_last <= CUDDLE_HOLD_S:
+            obs.petting = True
+        elif self._cuddle > 0.0:
+            self._cuddle = self._cuddle * math.exp(-dt / CUDDLE_FADE_S)
+            if self._cuddle < 0.01:
+                self._cuddle = 0.0
         comp.petted = obs.petting
         if now >= self._next_doa:
             self._next_doa = now + 0.2
@@ -628,9 +657,7 @@ class Pet:
 
         # ---------------- brain
         solo = comp._gesture is not None and comp._gesture.name in SOLO_GESTURES and comp.gesture_active(now)
-        if self._turn is not None and (now >= self._turn[1] or comp.held or self.asleep):
-            self._turn = None  # the keypad turn is over: back to whoever it was with, mid-groove, no fuss
-        obs.busy = "mime" if self.mime.active else "sing" if now < self._singing_until else "gesture" if solo else "turn" if self._turn else None
+        obs.busy = "mime" if self.mime.active else "sing" if now < self._singing_until else "gesture" if solo else None
         # Manual groove with a tempo in: we are dancing. The brain treats it like a beat (no games, songs, mirror
         # or nod-copying start) and the tapped beat below wins over anything it heard or saw.
         grooving = self.manual_groove and self.tap.active and not self.asleep and beh.state not in ("HELD", "SLEEPING", "WAKING")
@@ -639,12 +666,7 @@ class Pet:
         actions = beh.tick(obs, now, dt)
         comp.energy = beh.mood.energy
         comp.mode = {"SLEEPING": "sleeping", "HELD": "held"}.get(beh.state, "awake")
-        if self._turn is not None:
-            comp.set_gaze((self._turn[0], beh.gaze[1] if beh.gaze is not None else 0.0))  # dancing that way for a few beats
-            comp.body_turn = self._turn[0]  # and the body goes with it: the head alone cannot reach 60 degrees
-        else:
-            comp.set_gaze(beh.gaze)
-            comp.body_turn = None
+        comp.set_gaze(beh.gaze)  # dancing or not, it stays locked on whoever it is with
         comp.groove = None
         comp.mirror_roll = 0.0
         comp.mimic = None
@@ -957,7 +979,6 @@ class Pet:
                     # left right left right, fast: that's enough dancing
                     self._combo.clear()
                     self._nudge.clear()
-                    self._turn = None
                     comp.groove_lean = 0.0
                     self.control("manual_groove", False)
                     self.tap.clear()
@@ -970,41 +991,55 @@ class Pet:
             self._snack(now)
         elif action == "mushroom":
             self._mushroom(now)
-        elif action in ("pet", "head_pat"):
-            obs.petted = True  # a virtual head pat: the brain leans in and purrs, and remembers who
         elif action == "boop":
             self._boop(now)
-        elif action == "chin_scratch":
-            beh._think(now, "chin scratches... mmm")
-            self._dispatch(Action("sound", "content", 3), now)
-            self._dispatch(Action("gesture", "snuggle", 3), now)
-            beh.mood.social += 0.05
-            beh.mood.clamp()
-            if beh._engaged_person is not None:
-                beh.memory.add_pet(beh._engaged_person)
-        elif action == "ear_rub":
-            obs.touched, obs.touched_side, obs.petting = True, comp.rng.randrange(2), True  # an ear massage, not a tickle
-        elif action == "belly_rub":
-            obs.scratched = True
+        elif action in CUDDLES:
+            self._cuddle_touch(action, now)
         else:
             raise KeyError(f"unknown key action '{action}'")
 
+    def _cuddle_touch(self, kind: str, now: float) -> None:
+        """A petting key. Presses do not each fire an animation: they keep a hand on it (``composer.petted``,
+        the same continuous fold-and-lean the real rub uses) and build up an affection level that ebbs away.
+        The reactions come off that level, each once per session and never more often than CUDDLE_REACT_S,
+        so somebody drumming on all four keys gets a pet slowly going gooey, not four animations at once."""
+        beh, obs = self.p.behavior, self._last_obs
+        if now - self._cuddle_last > CUDDLE_GAP_S:
+            self._cuddle_done = set()  # a fresh session: it can go through the whole build-up again
+            if self._cuddle < 0.05 and beh.state != "SLEEPING":
+                obs.petted = True  # the one edge: "ahh, head pets... leaning in"
+        self._cuddle_last = now
+        self._cuddle = min(1.0, self._cuddle + CUDDLE_STEP)
+        self._cuddle_kind = kind
+        obs.petting = True  # a hand is on it (a level, not an edge): the brain purrs and leans at its own pace
+        beh.mood.social += 0.02
+        beh.mood.boredom -= 0.02
+        beh.mood.clamp()
+        if beh._engaged_person is not None and now - self._cuddle_pet_at > 2.0:
+            self._cuddle_pet_at = now
+            beh.memory.add_pet(beh._engaged_person)
+        if beh.state == "SLEEPING":
+            return
+        for i, (at, thought, sound, gesture) in enumerate(CUDDLE_STEPS):
+            if self._cuddle >= at and i not in self._cuddle_done and now >= self._cuddle_next_react:
+                self._cuddle_done.add(i)
+                self._cuddle_next_react = now + CUDDLE_REACT_S
+                self._dispatch(Action("sound", sound, 2), now)
+                self._dispatch(Action("gesture", gesture, 2), now)
+                beh._think(now, f"{CUDDLES[kind]} {thought}")
+                return
+
     def _nudge_groove(self, side: float, now: float) -> None:
-        """A direction tap on the dancing layer: guidance, not a puppet string. One tap leans the groove that way
-        (head tilt and antennas); NUDGE_TURN_TAPS taps in a row and the body turns to dance facing that way for
-        NUDGE_TURN_BEATS, then comes back to whoever it was with. Never turns when held in a hand."""
+        """A direction tap on the dancing layer: which way to groove, not where to point. It leans that way
+        (head roll and yaw, antennas, a few degrees of body) and keeps dancing with whoever it is with; keep
+        tapping the same way and the lean grows and it tilts its head over too. The body never turns away."""
         beh, comp = self.p.behavior, self.p.composer
         self._nudge = [(t, s) for t, s in self._nudge if now - t <= NUDGE_WINDOW_S and s == side] + [(now, side)]
-        comp.groove_lean = side
-        if len(self._nudge) < NUDGE_TURN_TAPS or comp.held:
-            return
-        self._nudge.clear()
-        period = self.tap.groove_period if self.tap.active else 60.0 / FREE_DANCE_BPM
-        here = self._turn[0] if self._turn is not None else (beh.gaze[0] if beh.gaze is not None else comp.body_yaw)
-        yaw = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, here + side * NUDGE_TURN_DEG))
-        self._turn = (yaw, now + NUDGE_TURN_BEATS * period)
-        beh._think(now, f"okay okay, dancing over to the {'left' if side > 0 else 'right'} for a bit... back in {NUDGE_TURN_BEATS} beats")
-        self._dispatch(Action("sound", "excited", 2), now)
+        comp.groove_lean = side * min(1.0, NUDGE_LEAN_MIN + NUDGE_LEAN_STEP * (len(self._nudge) - 1))
+        if len(self._nudge) >= NUDGE_TILT_TAPS and now - self._last_tilt >= NUDGE_TILT_EVERY_S:
+            self._last_tilt = now
+            beh._think(now, f"yeah, over this way ({'left' if side > 0 else 'right'})")
+            self._dispatch(Action("gesture", f"tilt:{'+' if side > 0 else '-'}", 2), now)
 
     def _snack(self, now: float) -> None:
         beh = self.p.behavior
@@ -1117,7 +1152,7 @@ class Pet:
                 "held": o.held, "shaken": o.shaken, "imu": self.pickup.stats, "imu_rub": self.imu_rub.stats, "head_rate": round(self.self_motion.rate, 2), "ears": self.touch.stats,
                 "music": {"bpm": round(b.bpm, 1), "confidence": round(b.confidence, 2), "grooving": comp.groove is not None, "intensity": round(comp.groove[2], 2) if comp.groove else 0.0},
                 "keypad": {"devices": list(self.keypad.devices.values()), "last_key": None if self.keypad.last_key is None else {"key": self.keypad.last_key[0], "t": round(now - self.keypad.last_key[1], 1), "does": self.keymap.lookup(self.keypad.last_key[0])}, "error": self.keypad.error,
-                           "lean": round(comp.groove_lean, 2), "turn": None if self._turn is None else {"yaw": round(self._turn[0]), "for_s": round(self._turn[1] - now, 1)},
+                           "lean": round(comp.groove_lean, 2), "cuddle": round(self._cuddle, 2),
                            "snacks": len([t for t in self._snacks if now - t <= SNACK_WINDOW_S]), "tummy_ache_s": round(max(0.0, self._ache_until - now)), "trip_s": round(max(0.0, self._trip_until - now)), "trip_doses": self._trip_doses,
                            "boops": len([t for t in self._boops if now - t <= BOOP_WINDOW_S])},
                 "tap": {"bpm": round(self.tap.bpm, 1), "beat": self.tap.beat_in_bar(now) if self.tap.active else 0, "bar": self.tap.bar_in_phrase(now) if self.tap.active else 0, "downbeat_known": self.tap.downbeat_known, "halftime": self.tap.active and self.tap.halftime},

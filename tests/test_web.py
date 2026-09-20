@@ -283,9 +283,9 @@ def test_keypad_actions_reach_the_pet_and_the_map_persists(tmp_path):
     pet.stop(); pet2.stop(); pet3.stop()
 
 
-def test_dance_layer_nudges_lean_then_turn_and_come_back_without_a_regreeting():
+def test_dance_layer_nudges_lean_harder_and_tilt_but_never_turn_away():
     from festival_pet.behavior import FaceObs
-    from festival_pet.main import NUDGE_TURN_BEATS, NUDGE_TURN_DEG
+    from festival_pet.main import NUDGE_LEAN_MIN, NUDGE_LEAN_STEP
 
     pet = _pet()
     comp, beh = pet.p.composer, pet.p.behavior
@@ -297,42 +297,38 @@ def test_dance_layer_nudges_lean_then_turn_and_come_back_without_a_regreeting():
     for i in range(60):
         beh.tick(Observation(face=face), t + i * 0.05, 0.05)
     assert beh.state == "ENGAGED"
-    greetings = sum(1 for _, k, n in pet.actions_log if k == "sound" and n.startswith("hello"))
     t += 3.0
-    # one tap: a lean, no turn
+    # one tap: a lean, and manual groove comes on
     pet.key_action("groove_left", t, t)
-    assert comp.groove_lean == 1.0 and pet._turn is None and pet.manual_groove
-    # three quick taps: it turns 60 degrees to its left of where it was looking, for 8 beats
+    assert abs(comp.groove_lean - NUDGE_LEAN_MIN) < 1e-9 and pet.manual_groove
+    # keep tapping the same way: the lean grows and it tilts its head over, but it stays looking at them
     pet.key_action("groove_left", t + 0.4, t + 0.4)
+    assert abs(comp.groove_lean - (NUDGE_LEAN_MIN + NUDGE_LEAN_STEP)) < 1e-9 and comp._gesture.name != "tilt"
     pet.key_action("groove_left", t + 0.8, t + 0.8)
-    assert pet._turn is not None and abs(pet._turn[0] - (20.0 + NUDGE_TURN_DEG)) < 1e-6
-    assert abs(pet._turn[1] - (t + 0.8 + NUDGE_TURN_BEATS * 0.5)) < 1e-6
-    # while turned, the face is gone from the camera: the brain keeps its engagement (busy "turn")
+    assert comp._gesture.name == "tilt" and comp._gesture.side == 1.0
+    assert abs(comp.groove_lean - (NUDGE_LEAN_MIN + 2 * NUDGE_LEAN_STEP)) < 1e-9
+    pet.step(t + 1.0)
+    assert comp._gaze_target is not None and abs(comp._gaze_target[0] - 20.0) < 1e-6  # still on them, not turned 60 degrees away
+    assert pet._last_obs.busy is None  # no "turn" for the brain to wait out any more
+    # the lean puts a few degrees of body into it, and no more (the rest of the body's angle is it facing them)
     for i in range(1, 60):
-        now = t + 0.8 + i * 0.05
-        beh.tick(Observation(busy="turn"), now, 0.05)
-        pet._last_obs = Observation()
-    assert beh.state == "ENGAGED"
-    # a step with the turn on aims the composer that way; after it ends, back at them, no new greeting
-    pet.step(t + 2.0)
-    assert comp._gaze_target is not None and abs(comp._gaze_target[0] - 80.0) < 1e-6
-    pet.step(t + 0.8 + NUDGE_TURN_BEATS * 0.5 + 0.1)
-    assert pet._turn is None
-    beh.tick(Observation(face=face), t + 6.0, 0.05)
-    assert beh.state == "ENGAGED" and sum(1 for _, k, n in pet.actions_log if k == "sound" and n.startswith("hello")) == greetings
-    # held in a hand: taps lean but never turn
-    comp.held = True
-    for k in range(3):
-        pet.key_action("groove_right", t + 10.0 + k * 0.3, t + 10.0 + k * 0.3)
-    assert pet._turn is None and comp.groove_lean == -1.0
-    comp.held = False
+        comp.groove_lean = 1.0  # as if the key were held down: the lean decays otherwise
+        _, _, leaning = comp.sample(t + 1.0 + i * 0.02, 0.02)
+    comp.groove_lean = 0.0
+    for i in range(60, 200):
+        _, _, plain = comp.sample(t + 1.0 + i * 0.02, 0.02)
+    assert 2.0 < leaning - plain < 8.0
+    # capped however hard you drum on it
+    for k in range(8):
+        pet.key_action("groove_right", t + 10.0 + k * 0.2, t + 10.0 + k * 0.2)
+    assert comp.groove_lean == -1.0
     # the stop combo: left right left right within a second ends the dancing
     assert pet.manual_groove and pet.tap.active
     for k, a in enumerate(("groove_left", "groove_right", "groove_left")):
         pet.key_action(a, t + 20.0 + k * 0.2, t + 20.0 + k * 0.2)
     assert pet.manual_groove  # three is not the combo
     pet.key_action("groove_right", t + 20.6, t + 20.6)
-    assert not pet.manual_groove and not pet.tap.active and comp.groove_lean == 0.0 and pet._turn is None
+    assert not pet.manual_groove and not pet.tap.active and comp.groove_lean == 0.0
     assert "done dancing" in beh.thoughts[-1][1] and comp._gesture.name == "shake_off"
     # too slow is just nudging (and the first tap turns the groove back on)
     for k, a in enumerate(("groove_left", "groove_right", "groove_left", "groove_right")):
@@ -391,24 +387,42 @@ def test_caring_layer_snacks_mushroom_pet_and_boops():
     pet.stop()
 
 
-def test_petting_layer_reaches_the_brain_as_the_real_touches_do():
+def test_petting_keys_build_up_into_one_long_cuddle_instead_of_firing_animations():
     from festival_pet.keypad import KeyEvent
+    from festival_pet.main import CUDDLE_FADE_S, CUDDLE_HOLD_S, CUDDLE_STEP
 
     pet = _pet()
-    beh = pet.p.behavior
+    beh, comp = pet.p.behavior, pet.p.composer
     t = 1001.0
+    gestures = lambda: [n for _, k, n in pet.actions_log if k == "gesture"]  # noqa: E731
     pet.keypad.events.put(KeyEvent("E", True, t, "test"))  # head pat
     pet.step(t + 0.05)
-    assert "head pets" in beh.thoughts[-1][1] and any(n == "lean" for _, k, n in pet.actions_log if k == "gesture")
-    pet.keypad.events.put(KeyEvent("F", True, t + 5, "test"))  # chin scratch
-    pet.step(t + 5.05)
-    assert "chin" in beh.thoughts[-1][1] and any(n == "snuggle" for _, k, n in pet.actions_log if k == "gesture")
-    pet.keypad.events.put(KeyEvent("G", True, t + 10, "test"))  # ear rub
-    pet.step(t + 10.05)
-    assert "ear" in beh.thoughts[-1][1] and "keep going" in beh.thoughts[-1][1]
-    pet.keypad.events.put(KeyEvent("H", True, t + 15, "test"))  # belly rub
-    pet.step(t + 15.05)
-    assert "tickles" in beh.thoughts[-1][1]
+    thoughts = lambda: " ".join(x[1] for x in beh.thoughts)  # noqa: E731
+    assert abs(pet._cuddle - CUDDLE_STEP) < 1e-9 and "head pats" in thoughts()
+    assert "ahh, head pets" in thoughts()  # the one edge, at the start
+    # somebody drumming on all four keys like a fidget toy: one hand on it, a build-up, not four animations
+    n_before = len(gestures())
+    now = t + 0.1
+    for i in range(120):
+        pet.keypad.events.put(KeyEvent("EFGH"[i % 4], True, now, "test"))
+        pet.step(now)
+        now += 0.1
+    assert pet._cuddle == 1.0 and comp.petted  # a hand is on it the whole time
+    # 120 presses: the build-up's four steps plus the brain's own slow lean-and-purr, nothing per press
+    assert len(gestures()) - n_before <= 12
+    assert "melted" in thoughts()
+    assert all(k in thoughts() for k in ("head pats", "chin scratches", "ear rubs", "tummy rubs"))  # it names whatever is being done
+    # hands off: the hand comes off after CUDDLE_HOLD_S and the build-up ebbs away
+    pet.step(now + CUDDLE_HOLD_S + 0.1)
+    assert not pet._last_obs.petting
+    for i in range(30):
+        pet.step(now + CUDDLE_HOLD_S + 0.2 + i * CUDDLE_FADE_S / 4)
+    assert pet._cuddle == 0.0
+    # and it can all happen again
+    n_before = len(gestures())
+    pet.keypad.events.put(KeyEvent("F", True, now + 200, "test"))
+    pet.step(now + 200.05)
+    assert 0 < pet._cuddle <= CUDDLE_STEP and len(gestures()) > n_before
     assert not pet.manual_groove  # only the dancing layer touches the groove
     pet.stop()
 

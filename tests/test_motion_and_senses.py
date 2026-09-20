@@ -175,8 +175,8 @@ def test_body_follows_far_gaze_and_head_stays_within_reach():
     assert abs(body - b0) < 1e-6
 
 
-def test_grooving_holds_the_gaze_against_jitter_but_a_turn_moves_head_and_body():
-    from festival_pet.motion import BODY_DEADBAND_GROOVE
+def test_grooving_holds_the_gaze_against_jitter_but_follows_a_real_move():
+    from festival_pet.motion import BODY_DEADBAND_GROOVE, LEAN_BODY_DEG
 
     m = MotionComposer()
     m.set_gaze((0.0, 0.0))
@@ -189,20 +189,21 @@ def test_grooving_holds_the_gaze_against_jitter_but_a_turn_moves_head_and_body()
         m.groove = ((i * 0.02 / 0.5) % 1.0, 0.0, 0.8)
         head, _, body = m.sample(i * 0.02, 0.02)
     assert abs(_euler(head)[2]) < 2.0 and body == 0.0
-    # a keypad turn: the body is asked to face 60 degrees left; head and body get there within a couple of seconds
+    # a nudge leans the body a few degrees that way and no further: it never turns off the person
+    m.groove_lean = 1.0
+    for i in range(350, 420):
+        m.groove = ((i * 0.02 / 0.5) % 1.0, 0.0, 0.8)
+        head, _, body = m.sample(i * 0.02, 0.02)
+        m.groove_lean = 1.0  # as if the key were being held down: the lean decays otherwise
+    assert 1.0 < abs(body) <= LEAN_BODY_DEG + 3.0  # (+ the groove's own body sway)
+    m.groove_lean = 0.0
+    # they move for real: the gaze follows all the way in, and the body comes round once it is worth it
     m.set_gaze((60.0, 0.0))
-    m.body_turn = 60.0
-    for i in range(350, 500):
+    for i in range(420, 700):
         m.groove = ((i * 0.02 / 0.5) % 1.0, 0.0, 0.8)
         head, _, body = m.sample(i * 0.02, 0.02)
-    assert body > 60.0 - BODY_DEADBAND_GROOVE and abs(_euler(head)[2] - 60.0) < 8.0
-    # the turn ends: back to the person, and the body comes back too, still grooving (it is far off the gaze)
-    m.set_gaze((0.0, 0.0))
-    m.body_turn = None
-    for i in range(500, 700):
-        m.groove = ((i * 0.02 / 0.5) % 1.0, 0.0, 0.8)
-        head, _, body = m.sample(i * 0.02, 0.02)
-    assert abs(body) <= BODY_DEADBAND_GROOVE + 3.0 and abs(_euler(head)[2]) < 8.0 and abs(m.yaw_short) < 1e-6  # (+ the groove's body sway)
+    # (grooving, the body stops at the edge of its wide deadband: the head covers the rest, well inside its reach)
+    assert abs(_euler(head)[2] - 60.0) < 8.0 and body >= 60.0 - BODY_DEADBAND_GROOVE - 1.0 and abs(m.yaw_short) < 1e-6
 
 
 def test_beep_sway_only_while_talking():
