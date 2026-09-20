@@ -521,8 +521,10 @@ def test_manual_groove_on_cuts_a_song_and_a_game_and_keeps_the_brain_out_of_them
 def test_a_wave_gets_a_mirrored_wave_back_and_a_hug_gets_a_nuzzle():
     from festival_pet.pose import Arms, HUG_HOLD_S
 
-    def arms(ts, l_deg, r_deg, r_dx=0.0):
-        pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0), "l_wrist": (100.0, 40.0), "r_wrist": (150.0 + r_dx, 40.0), "l_wrist_ok": True, "r_wrist_ok": True}
+    def arms(ts, l_deg, r_deg, r_dx=0.0, hug=False):
+        pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0), "l_elbow": (95.0, 125.0), "r_elbow": (155.0, 125.0),
+               "l_wrist": (100.0, 100.0 if hug else 40.0), "r_wrist": (150.0 + r_dx, 100.0 if hug else 40.0),
+               "l_wrist_ok": True, "r_wrist_ok": True}
         from festival_pet.pose import arm_level
         return Arms(ts, l_deg, r_deg, arm_level(l_deg), arm_level(r_deg), 0.9, 50.0, pts)
 
@@ -543,7 +545,7 @@ def test_a_wave_gets_a_mirrored_wave_back_and_a_hug_gets_a_nuzzle():
     t2 = t + 10.0
     now = t2
     while now < t2 + HUG_HOLD_S + 0.5:
-        pet.vision.arms = arms(now, 90.0, 90.0)
+        pet.vision.arms = arms(now, 90.0, 90.0, hug=True)
         pet.step(now)
         now += 0.1
     assert any(k == "arms" and n == "hug" for _, k, n in pet.actions_log)
@@ -553,10 +555,11 @@ def test_a_wave_gets_a_mirrored_wave_back_and_a_hug_gets_a_nuzzle():
     pet.stop()
 
 
-def test_the_plur_handshake_ends_with_it_holding_still_for_the_bracelet(tmp_path):
+def test_the_plur_handshake_offers_an_antenna_and_feels_the_bracelet_land(tmp_path):
     import numpy as np
 
-    from festival_pet.main import KANDI_STILL_S
+    from festival_pet.main import KANDI_CAREFUL_S, KANDI_OFFER_S, KANDI_SETTLE_S
+    from festival_pet.motion import CAREFUL_ANTENNA_RAD, OFFER_RAD
     from festival_pet.pose import PLUR_STEPS
     from test_pose import PLUR_POSES
 
@@ -567,7 +570,6 @@ def test_the_plur_handshake_ends_with_it_holding_still_for_the_bracelet(tmp_path
     mem = pet.p.memory
     mem.path = tmp_path / "mem.json"  # this test enrols someone, so give it somewhere of its own to save
     beh._engaged_person = mem.enroll(np.ones(4), t)
-    kandi_before = beh._engaged_person.kandi
 
     now = t
     for step in PLUR_STEPS:  # peace, love, unity, respect, each held for a beat
@@ -577,27 +579,79 @@ def test_the_plur_handshake_ends_with_it_holding_still_for_the_bracelet(tmp_path
             pet.step(now)
             now += 0.05
         now += 0.3
-    done = [n for _, k, n in pet.actions_log if k == "arms"]
-    assert [n for n in done if n.startswith("plur")] == [f"plur {s}" for s in PLUR_STEPS]
+    assert [n for _, k, n in pet.actions_log if k == "arms" and n.startswith("plur")] == [f"plur {s}" for s in PLUR_STEPS]
     thoughts = " ".join(x[1] for x in beh.thoughts)
     assert "peace" in thoughts and "love" in thoughts and "unity" in thoughts and "respect" in thoughts
     assert pet._last_obs.busy == "kandi"  # nothing else gets started in the middle of this
-    # the finale: it stops dead so the bracelet can go on without a fight
-    assert comp.still_until > now and pet._kandi_at > now
+
+    # it holds an antenna out, just past vertical, and freezes
+    assert pet._kandi_offer_until > now and pet.kandi_side == 0 and comp.offer_side == 0
     for _ in range(40):
         pet.step(now)
         now += 0.05
+    _, ants, _ = comp.sample(now, 0.02)
+    assert abs(ants[0] - OFFER_RAD) < 0.02 and ants[1] > 0.5  # right one offered, left one out of the way
     head_a, _, _ = comp.sample(now, 0.02)
     head_b, _, _ = comp.sample(now + 0.5, 0.02)
-    assert float(np.abs(head_a - head_b).max()) < 0.01  # not breathing, not drifting: holding it
-    # and when the time is up it has a look at what it was given, and remembers who gave it
-    while now < pet._kandi_at + 0.2:
+    assert float(np.abs(head_a - head_b).max()) < 0.01  # dead still while they thread it on
+
+    # the bracelet landing is felt as that antenna being pushed: no flinch, no ear-tickle giggle
+    pet.touch.update = lambda *a, **k: True  # type: ignore[assignment]
+    pet.touch.last_side = 0
+    pet.step(now)
+    now += 0.05
+    pet.touch.update = lambda *a, **k: False  # type: ignore[assignment]
+    assert pet._kandi_got_at > 0.0 and not pet._last_obs.touched  # the touch was swallowed, not reacted to
+    # the touch was swallowed and answered as the bracelet, not passed to the brain as an ear tickle
+    assert "that's mine now" in beh.thoughts[-1][1]
+
+    # two seconds of settling, then it eases back and starts being careful
+    assert comp.careful_side is None
+    while now < pet._kandi_got_at + KANDI_SETTLE_S + 0.2:
         pet.step(now)
         now += 0.05
-    assert "kandi traded" in [n for _, k, n in pet.actions_log if k == "arms"]
-    assert beh._engaged_person.kandi == kandi_before + 1 and beh._engaged_person.affection > 0.2
-    assert beh._little_dance_until > now
-    assert pet._kandi_at == 0.0 and KANDI_STILL_S > 3.0
+    assert comp.careful_side == 0 and comp.offer_side is None
+    assert pet.kandi_until > now and abs(pet.kandi_until - (now + KANDI_CAREFUL_S)) < 1.0
+    assert beh._engaged_person.kandi == 1 and beh._engaged_person.affection > 0.2
+    assert "kandi traded" in [n for _, k, n in pet.actions_log if k == "kandi"]
+    # ...which means that antenna stays upright whatever else it does
+    worst = 0.0
+    for k in range(400):
+        comp.request_gesture("bounce", now + k * 0.02, 3)
+        _, ants, _ = comp.sample(now + k * 0.02, 0.02)
+        worst = max(worst, abs(ants[0]))
+    assert worst <= CAREFUL_ANTENNA_RAD + 1e-6
+    # and after a while it can move normally again
+    pet.step(pet.kandi_until + 0.1)
+    assert comp.careful_side is None and pet.kandi_until == 0.0
+    assert KANDI_OFFER_S >= 10.0  # long enough to dig one out of a bag
+    pet.stop()
+
+
+def test_the_offer_times_out_and_can_be_driven_from_the_page(tmp_path):
+    from festival_pet.main import KANDI_OFFER_S
+
+    pet = _pet()
+    app = FastAPI(); install_routes(app, pet); c = TestClient(app)
+    t = 1001.0
+    # nobody had one ready: it gives up after the timeout and goes back to normal
+    assert c.post("/api/control", json={"cmd": "kandi", "value": "left"}).status_code == 200
+    assert pet.kandi_side == 1 and pet.p.composer.offer_side == 1
+    m = c.get("/api/mind").json()["kandi"]
+    assert m["offering"] and m["side"] == "left" and m["waiting_s"] > 0
+    pet.step(time.time() + KANDI_OFFER_S + 0.1)
+    assert not pet._kandi_offer_until and pet.p.composer.offer_side is None
+    assert "nothing came" in " ".join(n for _, k, n in pet.actions_log if k == "kandi")
+    # started by mistake: cancel it
+    assert c.post("/api/control", json={"cmd": "kandi", "value": True}).status_code == 200
+    assert c.post("/api/control", json={"cmd": "kandi", "value": False}).status_code == 200
+    assert not pet._kandi_offer_until and pet.signs.plur_step == 0
+    # and the bracelet toggle, for when you move it onto the body
+    assert c.post("/api/control", json={"cmd": "bracelet", "value": "right"}).status_code == 200
+    assert pet.p.composer.careful_side == 0 and c.get("/api/mind").json()["kandi"]["bracelet"] == "right"
+    assert c.post("/api/control", json={"cmd": "bracelet", "value": False}).status_code == 200
+    assert pet.p.composer.careful_side is None and c.get("/api/mind").json()["kandi"]["bracelet"] is None
+    assert c.post("/api/control", json={"cmd": "kandi", "value": "sideways"}).status_code == 400
     pet.stop()
 
 
@@ -679,10 +733,16 @@ class ArmsVision:
 
 
 def _arms(left, right, ts):
+    """A reading with a full set of landmarks, as the real reader always produces."""
     from festival_pet.pose import Arms
 
     deg = {"down": 10.0, "out": 90.0, "up": 170.0}
-    return Arms(ts, deg[left], deg[right], left, right, 0.9, 50.0, {})
+    dy = {"down": 60.0, "out": 0.0, "up": -60.0}  # where the wrist sits relative to the shoulder
+    pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0),
+           "l_elbow": (95.0, 125.0), "r_elbow": (155.0, 125.0),
+           "l_wrist": (80.0, 100.0 + dy[left]), "r_wrist": (170.0, 100.0 + dy[right]),
+           "l_wrist_ok": True, "r_wrist_ok": True}
+    return Arms(ts, deg[left], deg[right], left, right, 0.9, 50.0, pts)
 
 
 def test_arm_simon_says_runs_from_the_page_and_falls_back_to_the_head_game():

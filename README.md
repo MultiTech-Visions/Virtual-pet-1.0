@@ -234,20 +234,35 @@ next one or the handshake lapses.
 
 | Step | You | It |
 |---|---|---|
-| **Peace** | both arms up in a V, hands well apart | antennas snap up into a V, excited chirp |
+| **Peace** | both arms up at 45°, hands well apart and above your shoulders | antennas snap up into a V, excited chirp |
 | **Love** | hands together up at your chest, making a heart | antennas arc inward until the tips nearly meet, a coo |
-| **Unity** | hands clasped low in front of you | antennas fold in, it snuggles, content |
-| **Respect** | one arm held out to it, offering the bracelet | it stops dead |
+| **Unity** | hands clasped and lowered right down in front, arms in a V | antennas fold in, it snuggles, content |
+| **Respect** | one arm up and bent, forearm and fist straight up at head height, other arm down | it holds out an antenna |
 
-That last one is the point. For seven seconds it holds **completely still** — no breathing, no
-groove, no gestures, head dipped and antennas parked — so a bracelet can be threaded over an
-antenna without the thing squirming and dropping it. Then it looks at what it has been given, goes
-off with a ta-da and a little dance, and remembers who gave it: trades are counted per person and
-are worth a lot of affection, so a trader becomes a bestie fast. While a handshake is under way
-nothing else starts, and the wave and hug detectors stand down (a peace sign and a hug are nearly
-the same shape to a pair of arm angles). The Senses tab shows which step it is waiting for.
+A hug is the same hands-apart shape as peace but with the arms straight out at shoulder height, so
+the height of the wrists separates them; while a handshake is under way the wave and hug detectors
+stand down anyway.
 
-**Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
+**The bracelet.** On *respect* it offers one antenna as a post: that antenna goes to just past
+vertical and tipped toward you, the other leans out of the way, the head tips a little toward the
+offered side, and then it **freezes** — no breathing, no groove, no gestures — so you can slide a
+bracelet down over the wire and let gravity take it to the head. It knows when the bracelet lands
+because the antenna gets pushed off its commanded angle, which is the same detector that feels an
+ear tickle; that touch is swallowed rather than passed to the brain, or it would flinch at exactly
+the wrong moment. It waits ten seconds in case you are digging one out of a bag, then gives up
+gently. Two seconds after the bracelet lands it eases the antenna and head back to normal, slowly,
+and looks at you.
+
+For the next 45 seconds it **wears** it: that antenna is clamped to within 26° of vertical whatever
+gesture is playing, so the bracelet cannot slide off, and the head's pitch, roll and lift all drop
+to 40 % so nothing gets flung about. The celebration is a nod and a ta-da, not a dance. Trades are
+counted per person and are worth a lot of affection, so a trader becomes a bestie fast.
+
+The **Kandi trading** card on the Controls tab has the manual overrides: offer an antenna now (or
+pick left / right), cancel one that started by mistake, and a bracelet toggle to turn off the
+careful mode when you have moved the bracelet onto the body.
+
+**Lexicon**: every sound with what it means**Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
 "Puppet it". Distinct calls: a rising two-note for "let's play mirror" (falling for "mirror
 over"), the fanfare for Simon says, a double blip before each shown move, a bright "yes", a
 puffed "huff".

@@ -73,11 +73,15 @@ WAVE_MIN_SWING = 0.12  # each swing at least this fraction of the shoulder width
 PLUR_STEPS = ("peace", "love", "unity", "respect")
 PLUR_HOLD_S = 0.5  # hold a pose this long for it to count
 PLUR_STEP_WINDOW_S = 12.0  # ...and get to the next one within this, or the handshake lapses
-PEACE_MIN_DEG = 125.0  # both arms up, not just out (an out-to-the-sides pose is a hug)
+PEACE_MIN_DEG = 118.0  # arms halfway between out and up (a hug is arms straight out, ~90)
 PEACE_MIN_SEP = 1.0  # wrists at least this far apart, in shoulder widths
-TOGETHER_SEP = 0.65  # wrists this close count as hands together
-HEART_MIN_ABOVE = -0.15  # hands at or above the shoulder line (in shoulder widths, + is up)
-CLASP_MAX_ABOVE = -0.5  # ...and clearly below it for a clasp
+PEACE_MIN_ABOVE = 0.0  # ...and above the shoulder line, which a hug's arms are not
+TOGETHER_SEP = 0.7  # wrists this close count as hands together
+HEART_MIN_ABOVE = -0.3  # hands together at chest height or higher (in shoulder widths, + is above the shoulders)
+CLASP_MAX_ABOVE = -0.7  # ...and right down in front of them, arms in a V, for the clasp
+RESPECT_FOREARM_DEG = 35.0  # the raised fist: forearm within this of straight up
+RESPECT_MIN_ABOVE = -0.25  # ...with the fist up around head level
+RESPECT_OTHER_DEG = 40.0  # ...and the other arm hanging down
 HUG_HOLD_S = 2.5  # both arms held out this long: a hug
 HUG_REARM_S = 1.0  # the arms have to leave "out" for this long before another hug counts
 SIGN_WATCH_S = 1.5  # a raised or open arm seen this recently keeps the pose model reading every frame
@@ -181,26 +185,39 @@ def _mid(a, b) -> tuple[float, float]:
 
 
 def plur_pose(a: Arms) -> str | None:
-    """Which PLUR pose the arms are making, if any. See PLUR_STEPS."""
+    """Which PLUR pose the arms are making, if any. See PLUR_STEPS.
+
+    All four are read from arm angles and where the wrists are, which is what this model gives us
+    reliably at across-the-tent distance. Peace is arms up at 45 with the hands apart (a hug is the
+    same hands-apart shape but with the arms straight out, so the height of the wrists separates
+    them); love is the hands together up at the chest; unity is the same hands, lowered right down
+    in front; respect is one arm raised and bent so the forearm stands straight up, fist at head
+    height, with the other arm down.
+    """
     p = a.points
     scale = max(a.shoulder_px, 1e-6)
     l_deg, r_deg = a.left_deg, a.right_deg
-    both_wrists = bool(p.get("l_wrist_ok")) and bool(p.get("r_wrist_ok"))
-    if both_wrists:
+    sh_y = _mid(p["l_shoulder"], p["r_shoulder"])[1]
+    if bool(p.get("l_wrist_ok")) and bool(p.get("r_wrist_ok")):
         sep = math.dist(p["l_wrist"], p["r_wrist"]) / scale
-        shoulder_y = _mid(p["l_shoulder"], p["r_shoulder"])[1]
-        above = (shoulder_y - _mid(p["l_wrist"], p["r_wrist"])[1]) / scale  # + = hands above the shoulders
-        if min(l_deg, r_deg) >= PEACE_MIN_DEG and sep >= PEACE_MIN_SEP:
+        above = (sh_y - _mid(p["l_wrist"], p["r_wrist"])[1]) / scale  # + = hands above the shoulders
+        if min(l_deg, r_deg) >= PEACE_MIN_DEG and sep >= PEACE_MIN_SEP and above >= PEACE_MIN_ABOVE:
             return "peace"
         if sep <= TOGETHER_SEP:
             if above >= HEART_MIN_ABOVE:
                 return "love"
-            if above <= CLASP_MAX_ABOVE and max(l_deg, r_deg) < ARM_UP_DEG:
+            if above <= CLASP_MAX_ABOVE:
                 return "unity"
-    # one arm held out to it, the other down: here, this is for you
-    out, down = sorted((l_deg, r_deg), reverse=True)
-    if 35.0 <= out <= 120.0 and down < 30.0:
-        return "respect"
+    # the raised fist: one forearm standing straight up with the hand about head high, the other arm down
+    for side, deg, other in (("l", l_deg, r_deg), ("r", r_deg, l_deg)):
+        if other >= RESPECT_OTHER_DEG or not p.get(side + "_wrist_ok"):
+            continue
+        elbow, wrist = p[side + "_elbow"], p[side + "_wrist"]
+        rise, run = elbow[1] - wrist[1], wrist[0] - elbow[0]  # image y grows downward, so rise > 0 is upward
+        if rise <= 0:
+            continue
+        if math.degrees(math.atan2(abs(run), rise)) <= RESPECT_FOREARM_DEG and (sh_y - wrist[1]) / scale >= RESPECT_MIN_ABOVE:
+            return "respect"
     return None
 
 

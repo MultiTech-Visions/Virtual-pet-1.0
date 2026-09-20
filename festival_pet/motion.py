@@ -52,6 +52,11 @@ def arm_rad(deg: float) -> float:
 ARM_LEVEL_DEG = {"down": 0.0, "out": 90.0, "up": 180.0}  # the three flag positions the arm game shows
 LEAN_FADE_S = 2.0  # a keypad groove nudge fades out over about this long (a few beats)
 STILL_PITCH = 10.0  # head dipped a little while it holds still: an offered head, and a stable antenna
+OFFER_RAD = 0.14  # the offered antenna: just past vertical, tipped toward them so a bracelet slides down it
+OFFER_AWAY_RAD = 0.9  # ...and the other one leans out of the way
+OFFER_ROLL = 7.0  # the head tips a little toward the offered side, to present it
+CAREFUL_ANTENNA_RAD = 0.45  # with a bracelet on, that antenna never leaves this much of vertical, or it slides off
+CAREFUL_SCALE = 0.4  # ...and everything else moves this much of normal, so nothing gets flung
 LEAN_BODY_DEG = 5.0  # how far the body leans into a full nudge (a lean, not a turn: the gaze stays on the person)
 
 
@@ -534,6 +539,9 @@ class MotionComposer:
         self._mirror = 0.0
         self.still_until = 0.0  # holding dead still (someone is putting something on it)
         self._still = 0.0
+        self.offer_side: int | None = None  # 0 right, 1 left: the antenna held out for a bracelet while still
+        self.careful_side: int | None = None  # ...and the one with a bracelet on it now: keep it upright, move gently
+        self._careful = 0.0
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
         self._reaiming = False  # mid-way through a big re-aim while grooving: the gaze hold is off until it lands
@@ -608,11 +616,22 @@ class MotionComposer:
         self.arms, self.arms_until = (float(left_deg), float(right_deg)), now + hold_s  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------ intent
-    def hold_still(self, now: float, seconds: float) -> None:
+    def hold_still(self, now: float, seconds: float, offer: int | None = None) -> None:
         """Stop moving for ``seconds``: breathing, groove, gestures and all, head bowed a little and the
         antennas parked. For someone threading a kandi bracelet over an antenna, a pet that keeps breathing
-        is a pet that drops it."""
+        is a pet that drops it.
+
+        ``offer`` (0 right, 1 left) holds that antenna up just past vertical and tipped toward them, with
+        the other one leaned away and the head turned a little that way: a post to slide a bracelet onto,
+        angled so gravity takes it down to the head rather than off the end.
+        """
         self.still_until = max(self.still_until, now + seconds)
+        self.offer_side = offer
+
+    def release_still(self) -> None:
+        """Come out of it early (the bracelet is on, or someone cancelled). The blend eases back, it does not snap."""
+        self.still_until = 0.0
+        self.offer_side = None
 
     def set_gaze(self, target: tuple[float, float] | None) -> None:
         self._gaze_target = target
@@ -830,12 +849,33 @@ class MotionComposer:
         self._still += ((1.0 if now < self.still_until else 0.0) - self._still) * min(1.0, dt * 2.5)
         if self._still > 0.001:
             k = self._still
+            want_r, want_l = ANTENNA_NEUTRAL
+            want_roll = 0.0
+            if self.offer_side == 0:  # the right antenna is the post: up past vertical, the left out of the way
+                want_r, want_l, want_roll = OFFER_RAD, OFFER_AWAY_RAD, -OFFER_ROLL
+            elif self.offer_side == 1:
+                want_r, want_l, want_roll = -OFFER_AWAY_RAD, -OFFER_RAD, OFFER_ROLL
             yaw = yaw * (1 - k) + float(self._gaze[0]) * k
             pitch = pitch * (1 - k) + STILL_PITCH * k
-            roll *= 1 - k
+            roll = roll * (1 - k) + want_roll * k
             z *= 1 - k
-            ant_r = ant_r * (1 - k) + ANTENNA_NEUTRAL[0] * k
-            ant_l = ant_l * (1 - k) + ANTENNA_NEUTRAL[1] * k
+            ant_r = ant_r * (1 - k) + want_r * k
+            ant_l = ant_l * (1 - k) + want_l * k
+
+        # a bracelet is hanging on one antenna: keep it upright so it cannot slide off, and take
+        # the size out of everything else so it is not swung about
+        self._careful += ((1.0 if self.careful_side is not None else 0.0) - self._careful) * min(1.0, dt * 1.5)
+        if self._careful > 0.001:
+            c = self._careful
+            gentle = 1.0 - c * (1.0 - CAREFUL_SCALE)
+            pitch *= gentle
+            roll *= gentle
+            z *= gentle
+            lim = CAREFUL_ANTENNA_RAD + (1.0 - c) * math.pi  # the clamp closes as the care comes on
+            if self.careful_side == 0:
+                ant_r = max(-lim, min(lim, ant_r))
+            elif self.careful_side == 1:
+                ant_l = max(-lim, min(lim, ant_l))
 
         yaw = max(-YAW_LIMIT, min(YAW_LIMIT, yaw))
         pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, pitch))

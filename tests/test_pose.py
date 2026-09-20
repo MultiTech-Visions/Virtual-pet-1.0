@@ -21,7 +21,9 @@ def test_arm_angle_and_levels():
 def _arms_at(ts, l_deg, r_deg, l_wrist_dx=0.0, r_wrist_dx=0.0, shoulder=50.0):
     from festival_pet.pose import Arms
 
-    pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (100.0 + shoulder, 100.0), "l_wrist": (100.0 + l_wrist_dx, 40.0), "r_wrist": (100.0 + shoulder + r_wrist_dx, 40.0),
+    pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (100.0 + shoulder, 100.0),
+           "l_elbow": (100.0, 125.0), "r_elbow": (100.0 + shoulder, 125.0),
+           "l_wrist": (100.0 + l_wrist_dx, 40.0), "r_wrist": (100.0 + shoulder + r_wrist_dx, 40.0),
            "l_wrist_ok": True, "r_wrist_ok": True}
     return Arms(ts, l_deg, r_deg, arm_level(l_deg), arm_level(r_deg), 0.9, shoulder, pts)
 
@@ -142,21 +144,28 @@ def test_no_person_or_arms_out_of_the_picture_reads_as_nothing():
     assert r.roi is not None  # still tracking them, though
 
 
-def _plur_arms(ts, l_deg, r_deg, l_wrist, r_wrist, shoulder=50.0, shoulder_y=100.0):
+def _plur_arms(ts, l_deg, r_deg, l_wrist, r_wrist, l_elbow=None, r_elbow=None, shoulder=50.0, shoulder_y=100.0):
     from festival_pet.pose import Arms
 
     pts = {"l_shoulder": (100.0, shoulder_y), "r_shoulder": (100.0 + shoulder, shoulder_y),
-           "l_elbow": (100.0, shoulder_y + 20), "r_elbow": (100.0 + shoulder, shoulder_y + 20),
+           "l_elbow": l_elbow or (100.0, shoulder_y + 20), "r_elbow": r_elbow or (100.0 + shoulder, shoulder_y + 20),
            "l_wrist": l_wrist, "r_wrist": r_wrist, "l_wrist_ok": True, "r_wrist_ok": True}
     return Arms(ts, l_deg, r_deg, arm_level(l_deg), arm_level(r_deg), 0.9, shoulder, pts)
 
 
 PLUR_POSES = {
-    "peace": lambda t: _plur_arms(t, 150.0, 150.0, (60.0, 40.0), (190.0, 40.0)),  # both arms up in a V, hands apart
-    "love": lambda t: _plur_arms(t, 100.0, 100.0, (120.0, 85.0), (133.0, 85.0)),  # hands together, up at the chest
-    "unity": lambda t: _plur_arms(t, 30.0, 30.0, (120.0, 160.0), (133.0, 160.0)),  # hands clasped, low
-    "respect": lambda t: _plur_arms(t, 80.0, 10.0, (160.0, 95.0), (150.0, 180.0)),  # one arm out to it
+    # arms up at 45 with the hands apart and above the shoulders
+    "peace": lambda t: _plur_arms(t, 135.0, 135.0, (55.0, 60.0), (195.0, 60.0)),
+    # hands together up at the chest
+    "love": lambda t: _plur_arms(t, 100.0, 100.0, (120.0, 95.0), (133.0, 95.0)),
+    # hands clasped right down in front, arms in a V
+    "unity": lambda t: _plur_arms(t, 25.0, 25.0, (120.0, 175.0), (133.0, 175.0)),
+    # right arm up and bent, forearm straight up, fist at head height; left arm down
+    "respect": lambda t: _plur_arms(t, 10.0, 120.0, (95.0, 180.0), (165.0, 80.0),
+                                    l_elbow=(100.0, 140.0), r_elbow=(163.0, 125.0)),
 }
+# arms straight out to the sides at shoulder height: a hug, and none of the four
+HUG_ARMS = lambda t: _plur_arms(t, 90.0, 90.0, (30.0, 100.0), (220.0, 100.0))  # noqa: E731
 
 
 def test_plur_poses_are_told_apart_and_only_count_in_order():
@@ -164,9 +173,9 @@ def test_plur_poses_are_told_apart_and_only_count_in_order():
 
     for name, make in PLUR_POSES.items():
         assert plur_pose(make(0.0)) == name, name
-    # arms hanging down, or out to the sides for a hug, are none of them
+    # arms hanging down, or straight out to the sides for a hug, are none of them
     assert plur_pose(_plur_arms(0.0, 10.0, 10.0, (95.0, 180.0), (155.0, 180.0))) is None
-    assert plur_pose(_plur_arms(0.0, 90.0, 90.0, (40.0, 100.0), (210.0, 100.0))) is None
+    assert plur_pose(HUG_ARMS(0.0)) is None
 
     def run(signs, order, t0=0.0, hold=1.2):
         got, t = [], t0

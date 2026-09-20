@@ -108,9 +108,22 @@ ENGAGED_FRAC = 0.55  # this much of the song watched, and it has an audience
 ENCORE_GAP_S = 1.6  # the pause between songs while it decides
 ENCORE_MAX = 3  # songs in one performance
 THIRD_SONG_CHANCE = 0.35  # the third is a rarity, so it stays special
-KANDI_STILL_S = 7.0  # how long it holds dead still at the end of a PLUR handshake, to be given the bracelet
+# The end of a PLUR handshake: it offers an antenna as a post to slide a bracelet onto, and waits.
+KANDI_OFFER_S = 10.0  # how long it holds the antenna out before giving up (they may be digging in a bag)
+KANDI_SETTLE_S = 2.0  # after something lands on the antenna, stay frozen this long before moving again
+KANDI_CAREFUL_S = 45.0  # ...then move gently, and keep that antenna upright, for this long
 COMBO_TAPS = 4  # left right left right on the dancing layer...
 COMBO_WINDOW_S = 1.0  # ...this fast: stop dancing
+
+
+def _side_arg(value) -> int | None:
+    """A control's antenna argument: "right" -> 0, "left" -> 1, true -> None (let the pet choose)."""
+    if value is True:
+        return None
+    side = {"right": 0, "left": 1}.get(str(value).lower())
+    if side is None:
+        raise ValueError(f"antenna must be 'left' or 'right', not '{value}'")
+    return side
 
 
 class RobotIO(Protocol):
@@ -419,7 +432,11 @@ class Pet:
         self._song_watched = 0
         self._songs_in_set = 0
         self._next_song_at = 0.0
-        self._kandi_at = 0.0  # when the holding-still is over and it can look at what it has been given
+        # The kandi trade: which antenna is out (or wearing one), and the clocks for each stage
+        self.kandi_side: int | None = None  # 0 right, 1 left
+        self._kandi_offer_until = 0.0
+        self._kandi_got_at = 0.0  # when something landed on the offered antenna (0 = still waiting)
+        self.kandi_until = 0.0  # being careful with a bracelet until this
         self._singing_until = 0.0
         self.songs_file: Path | None = None
         self.pose_history: PoseHistory | None = None  # set on the real robot; fed every tick for the vision thread
@@ -627,18 +644,13 @@ class Pet:
         for action, t_ev in fired:
             self.key_action(action, t_ev, now)
 
-        if self._kandi_at and now >= self._kandi_at:  # it has been held still long enough: look at the new bracelet
-            self._kandi_at = 0.0
-            beh._think(now, "...is it on? IT'S ON. look at it. LOOK at it")
-            self._dispatch(Action("sound", "tada", 4), now)
-            self._dispatch(Action("gesture", "tada", 4), now)
-            beh._little_dance_until = now + 6.0
-            beh.mood.social = min(1.0, beh.mood.social + 0.2)
-            if beh._engaged_person is not None:
-                beh.memory.add_kandi(beh._engaged_person)
-            self.actions_log.append((now, "arms", "kandi traded"))
+        if self._kandi_offer_until:
+            self._kandi_wait(obs, now)
+        elif self.kandi_until and now >= self.kandi_until:  # long enough: it can move normally again
+            self.set_bracelet(None, now)
+            beh._think(now, "(the bracelet must be safe by now)")
 
-        # ---------------- Simon says (leads; the brain's own games and reactions wait)
+                # ---------------- Simon says (leads; the brain's own games and reactions wait)
         if self.mime.active:
             aim = obs.face if obs.face is not None else obs.body  # the arm game only needs to know where they are
             for item in self.mime.tick(aim, now, obs.arms):
@@ -667,7 +679,7 @@ class Pet:
         # ---------------- brain
         solo = comp._gesture is not None and comp._gesture.name in SOLO_GESTURES and comp.gesture_active(now)
         performing = now < self._singing_until or self._next_song_at > 0.0  # a gap between songs is still the act
-        trading = self.signs.plur_step > 0 or self._kandi_at > 0.0  # mid-handshake: nothing else starts
+        trading = self.signs.plur_step > 0 or self._kandi_offer_until > 0.0  # mid-handshake: nothing else starts
         obs.busy = "mime" if self.mime.active else "sing" if performing else "kandi" if trading else "gesture" if solo else None
         # Manual groove with a tempo in: we are dancing. The brain treats it like a beat (no games, songs, mirror
         # or nod-copying start) and the tapped beat below wins over anything it heard or saw.
@@ -929,14 +941,80 @@ class Pet:
             self._dispatch(Action("sound", "content", 3), now)
             self._dispatch(Action("gesture", "snuggle", 3), now)
         elif step == "respect":
-            beh._think(now, "...and respect. here: I'll hold still, put it on me")
+            beh._think(now, "...and respect")
             self._dispatch(Action("sound", "happy", 3), now)
-            self.p.composer.hold_still(now, KANDI_STILL_S)
-            self._kandi_at = now + KANDI_STILL_S
+            self.start_kandi(now)
         else:
             raise KeyError(f"unknown PLUR step '{step}'")
         beh._last_interaction = now
         beh.mood.boredom = max(0.0, beh.mood.boredom - 0.15)
+
+    def start_kandi(self, now: float, side: int | None = None) -> int:
+        """Hold out an antenna for a bracelet and freeze. ``side`` 0 right, 1 left; by default the one
+        that is not already wearing something. Returns the side offered."""
+        if side is None:
+            side = 1 if self.kandi_side == 0 and self.p.composer.careful_side == 0 else 0
+        if side not in (0, 1):
+            raise ValueError(f"antenna side must be 0 (right) or 1 (left), not {side}")
+        self.kandi_side = side
+        self._kandi_offer_until = now + KANDI_OFFER_S
+        self._kandi_got_at = 0.0
+        self.p.composer.hold_still(now, KANDI_OFFER_S + KANDI_SETTLE_S, offer=side)
+        self.p.behavior._think(now, f"here: my {'left' if side else 'right'} ear. I'll hold still, slide it on")
+        self.actions_log.append((now, "kandi", f"offering the {'left' if side else 'right'} antenna"))
+        return side
+
+    def cancel_kandi(self, now: float) -> None:
+        """Stop offering (it was started by mistake, or nobody came)."""
+        self._kandi_offer_until = self._kandi_got_at = 0.0
+        self.signs.plur_step = 0
+        self.p.composer.release_still()
+        self.actions_log.append((now, "kandi", "offer cancelled"))
+
+    def set_bracelet(self, side: int | None, now: float) -> None:
+        """Say whether an antenna is wearing a bracelet. While one is, it moves gently and keeps that
+        antenna upright; ``None`` clears it (you took the bracelet off and put it on the body)."""
+        if side is not None and side not in (0, 1):
+            raise ValueError(f"antenna side must be 0 (right), 1 (left) or none, not {side}")
+        self.p.composer.careful_side = side
+        self.kandi_until = now + KANDI_CAREFUL_S if side is not None else 0.0
+        self.actions_log.append((now, "kandi", "bracelet off" if side is None else f"bracelet on the {'left' if side else 'right'} antenna"))
+
+    def _kandi_wait(self, obs: Observation, now: float) -> None:
+        """Waiting with an antenna out. The bracelet going on is felt as that antenna being pushed off
+        its commanded angle — the same detector that feels an ear tickle — so no extra sensing is needed.
+        The touch is swallowed here, or the brain would flinch at the very moment it must not move.
+        """
+        beh, comp = self.p.behavior, self.p.composer
+        touched, side = obs.touched, obs.touched_side
+        obs.touched = False  # not an ear tickle: it is the whole point of standing here
+        if not self._kandi_got_at:
+            if touched and side == self.kandi_side:
+                self._kandi_got_at = now
+                comp.hold_still(now, KANDI_SETTLE_S, offer=self.kandi_side)  # two more seconds of not moving
+                beh._think(now, "...that's it. that's mine now. thank you")
+                self._dispatch(Action("sound", "content", 3), now)
+                self.actions_log.append((now, "kandi", "something landed on the antenna"))
+                return
+            if now >= self._kandi_offer_until:  # nobody had one ready
+                self._kandi_offer_until = 0.0
+                comp.release_still()
+                beh._think(now, "...no? that's okay. next time")
+                self._dispatch(Action("sound", "curious", 2), now)
+                self.actions_log.append((now, "kandi", "nothing came: offer over"))
+            return
+        if now < self._kandi_got_at + KANDI_SETTLE_S:
+            return  # let it settle before anything moves
+        self._kandi_offer_until = 0.0
+        comp.release_still()  # the antenna and head ease back to normal, slowly
+        self.set_bracelet(self.kandi_side, now)
+        beh._think(now, f"I'm wearing it. on my {'left' if self.kandi_side else 'right'} ear. careful now")
+        self._dispatch(Action("sound", "tada", 3), now)
+        self._dispatch(Action("gesture", "nod", 2), now)  # a nod, not a dance: there is a bracelet on there
+        beh.mood.social = min(1.0, beh.mood.social + 0.2)
+        if beh._engaged_person is not None:
+            beh.memory.add_kandi(beh._engaged_person)
+        self.actions_log.append((now, "kandi", "kandi traded"))
 
     def _watching(self, obs: Observation) -> bool:
         """Is somebody actually watching this? A face in view with their head pointed at us: near enough
@@ -1152,7 +1230,12 @@ class Pet:
             "mime": self.mime.status(now),
             "arms": None if o.arms is None else {"left": o.arms.left, "right": o.arms.right, "left_deg": round(o.arms.left_deg), "right_deg": round(o.arms.right_deg), "conf": round(o.arms.conf, 2), "shoulder_px": round(o.arms.shoulder_px),
                                                 "watching": self.signs.watching and now < self.signs.watching_until,
-                                                "plur": None if not (self.signs.plur_step or self._kandi_at) else {"step": self.signs.plur_step, "next": PLUR_STEPS[self.signs.plur_step] if self.signs.plur_step else None, "holding_still_s": round(max(0.0, self._kandi_at - now), 1)}},
+                                                "plur": None if not (self.signs.plur_step or self._kandi_offer_until) else {"step": self.signs.plur_step, "next": PLUR_STEPS[self.signs.plur_step] if self.signs.plur_step else None}},
+            "kandi": {"offering": self._kandi_offer_until > 0.0, "side": None if self.kandi_side is None else ("left" if self.kandi_side else "right"),
+                      "waiting_s": round(max(0.0, self._kandi_offer_until - now), 1) if self._kandi_offer_until else None,
+                      "got_it": self._kandi_got_at > 0.0, "step": self.signs.plur_step,
+                      "bracelet": None if comp.careful_side is None else ("left" if comp.careful_side else "right"),
+                      "careful_s": round(max(0.0, self.kandi_until - now), 1) if self.kandi_until else None},
             "dance_along": {"on": self.dance_along, "copying": self._copying_arms, "flourish": self._copying_arms and now < self._flourish_until,
                             "antennas": None if comp.arms is None or now >= comp.arms_until else [round(comp.arms[0]), round(comp.arms[1])]},
             "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "style": self.last_song["style"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs],
@@ -1254,6 +1337,21 @@ class Pet:
                     raise ValueError(f"Simon says kind must be head or arms, not '{value}'")
                 if self.start_simon(kind, now) is None:
                     raise ValueError("nobody in view to play Simon says with" + (" (and no arms to read)" if kind == "arms" else ""))
+        elif cmd == "kandi":  # value: true to offer an antenna now, "left"/"right" to pick one, false to stop
+            if value in (False, 0, None, "off"):
+                self.cancel_kandi(now)
+            else:
+                self.start_kandi(now, _side_arg(value))
+        elif cmd == "bracelet":  # value: "left"/"right" (or true for whichever was offered), false when you take it off
+            if value in (False, 0, None, "off"):
+                self.set_bracelet(None, now)
+            else:
+                side = _side_arg(value)
+                if side is None:
+                    side = self.kandi_side
+                if side is None:
+                    raise ValueError("say which antenna has the bracelet: left or right")
+                self.set_bracelet(side, now)
         elif cmd == "dance_along":
             self.dance_along = bool(value)
         elif cmd == "singing":
