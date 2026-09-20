@@ -175,6 +175,36 @@ def test_body_follows_far_gaze_and_head_stays_within_reach():
     assert abs(body - b0) < 1e-6
 
 
+def test_grooving_holds_the_gaze_against_jitter_but_a_turn_moves_head_and_body():
+    from festival_pet.motion import BODY_DEADBAND_GROOVE
+
+    m = MotionComposer()
+    m.set_gaze((0.0, 0.0))
+    for i in range(300):  # grooving hard, settled on someone straight ahead
+        m.groove = ((i * 0.02 / 0.5) % 1.0, 0.0, 0.8)
+        m.sample(i * 0.02, 0.02)
+    assert m._groove_level > 0.5
+    m.set_gaze((6.0, 0.0))  # a small correction (the bob in the face reading): held against
+    for i in range(300, 350):
+        m.groove = ((i * 0.02 / 0.5) % 1.0, 0.0, 0.8)
+        head, _, body = m.sample(i * 0.02, 0.02)
+    assert abs(_euler(head)[2]) < 2.0 and body == 0.0
+    # a keypad turn: the body is asked to face 60 degrees left; head and body get there within a couple of seconds
+    m.set_gaze((60.0, 0.0))
+    m.body_turn = 60.0
+    for i in range(350, 500):
+        m.groove = ((i * 0.02 / 0.5) % 1.0, 0.0, 0.8)
+        head, _, body = m.sample(i * 0.02, 0.02)
+    assert body > 60.0 - BODY_DEADBAND_GROOVE and abs(_euler(head)[2] - 60.0) < 8.0
+    # the turn ends: back to the person, and the body comes back too, still grooving (it is far off the gaze)
+    m.set_gaze((0.0, 0.0))
+    m.body_turn = None
+    for i in range(500, 700):
+        m.groove = ((i * 0.02 / 0.5) % 1.0, 0.0, 0.8)
+        head, _, body = m.sample(i * 0.02, 0.02)
+    assert abs(body) <= BODY_DEADBAND_GROOVE + 3.0 and abs(_euler(head)[2]) < 8.0 and abs(m.yaw_short) < 1e-6  # (+ the groove's body sway)
+
+
 def test_beep_sway_only_while_talking():
     m = MotionComposer()
     quiet, _, _ = m.sample(0.0, 0.02)

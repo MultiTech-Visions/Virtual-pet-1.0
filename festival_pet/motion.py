@@ -26,6 +26,8 @@ BODY_YAW_LIMIT = 150.0
 BODY_DEADBAND = 12.0  # head can point this far off-body before the body starts turning
 BODY_RATE = 45.0  # deg/s, for the ordinary drift after a gaze
 BODY_RATE_FAR = 65.0  # deg/s when the gaze is beyond the head's reach: body for coarse, head for fine
+BODY_DEADBAND_GROOVE = 20.0  # while grooving the body only follows a gaze this far off it (a real move, not the bob); well inside the head's reach
+GROOVE_HOLD_DEG = 40.0  # while grooving, gaze corrections smaller than this are held against (the bob's own jitter); a 60° turn goes through
 ROLL_LIMIT = 25.0
 Z_LIMIT_M = 0.02
 
@@ -513,6 +515,8 @@ class MotionComposer:
         self._mirror = 0.0
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
+        self.body_turn: float | None = None  # world yaw the body is asked to face (a keypad groove turn), groove or not
+        self._reaiming = False  # mid-way through a big re-aim while grooving: the gaze hold is off until it lands
         self.held = False  # in someone's hands: the body never turns (see Pet.control("pickup"))
         self.petted = False  # a hand on the head: the antennas ease down like a dog's ears
         self._pet_level = 0.0
@@ -667,9 +671,15 @@ class MotionComposer:
             target = np.array(self._gaze_target)
             rate = 6.0  # snappy but not twitchy; vision already filters
         # While grooving, the face reading carries whatever of our own bob the camera timing did not cancel;
-        # chasing it would feed that error back into the head and the swing grows. Hold the gaze instead.
+        # chasing it would feed that error back into the head and the swing grows. Hold the gaze against
+        # those small corrections; a real re-aim (a keypad turn, a new person, a search) still goes through.
         grooving = self._groove_level > 0.05
-        if grooving and not (solo or holding):
+        away = float(np.max(np.abs(target - self._gaze)))
+        if away > GROOVE_HOLD_DEG or self.body_turn is not None:
+            self._reaiming = True  # a real move: follow it all the way in, hold or no hold
+        elif away < 2.0:
+            self._reaiming = False
+        if grooving and not (solo or holding or self._reaiming):
             rate *= 0.02
         self._gaze += (target - self._gaze) * min(1.0, dt * rate)
         self._hold_roll += ((self.hold[2] if holding else 0.0) - self._hold_roll) * min(1.0, dt * 5.0)
@@ -794,14 +804,18 @@ class MotionComposer:
         z = max(-Z_LIMIT_M, min(Z_LIMIT_M, z))
 
         # Body follows the gaze (not the gesture wobble) when the head is far off-centre, slowly and with a deadband,
-        # so the whole robot ends up facing the person and the head has room to move both ways.
+        # so the whole robot ends up facing the person and the head has room to move both ways. While grooving the
+        # deadband is wide (the body sway must not turn into a slow chase of the bobbing face reading), unless a
+        # turn is asked for: then the body goes there, at the far rate, groove or not.
         if self.held:
             self.body_yaw = 0.0
-        elif self.body_follow and s < 0.5 and not grooving:
-            off_body = self._gaze[0] - self.body_yaw
-            if abs(off_body) > BODY_DEADBAND:
-                rate = BODY_RATE_FAR if abs(off_body) > HEAD_YAW_LIMIT * 0.8 else BODY_RATE
-                step = min(abs(off_body) - BODY_DEADBAND * 0.5, rate * dt)
+        elif self.body_follow and s < 0.5:
+            goal = self.body_turn if self.body_turn is not None else float(self._gaze[0])
+            band = BODY_DEADBAND if self.body_turn is not None or not grooving else BODY_DEADBAND_GROOVE
+            off_body = goal - self.body_yaw
+            if abs(off_body) > band:
+                rate = BODY_RATE_FAR if self.body_turn is not None or abs(off_body) > HEAD_YAW_LIMIT * 0.8 else BODY_RATE
+                step = min(abs(off_body) - band * 0.5, rate * dt)
                 self.body_yaw += math.copysign(step, off_body)
         self.body_yaw = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw))
         body = 0.0 if self.held else max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, self.body_yaw + off.body * (1 - s)))

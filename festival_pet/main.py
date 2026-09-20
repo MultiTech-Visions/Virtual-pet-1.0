@@ -641,8 +641,10 @@ class Pet:
         comp.mode = {"SLEEPING": "sleeping", "HELD": "held"}.get(beh.state, "awake")
         if self._turn is not None:
             comp.set_gaze((self._turn[0], beh.gaze[1] if beh.gaze is not None else 0.0))  # dancing that way for a few beats
+            comp.body_turn = self._turn[0]  # and the body goes with it: the head alone cannot reach 60 degrees
         else:
             comp.set_gaze(beh.gaze)
+            comp.body_turn = None
         comp.groove = None
         comp.mirror_roll = 0.0
         comp.mimic = None
