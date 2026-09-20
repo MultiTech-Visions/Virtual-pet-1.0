@@ -93,6 +93,7 @@ class Observation:
     music_bpm: float = 0.0  # 0 when no confident beat
     music_confidence: float = 0.0
     dance_bpm: float = 0.0  # someone visibly bobbing at this tempo (0 = nobody dancing)
+    grooving: bool = False  # manual groove with a tempo tapped in: we are dancing, nothing else starts
     busy: str | None = None  # what the robot layer is running: "mime", "sing", "gesture" (a solo one) or "turn" (keypad groove turn)
     arms: object | None = None  # pose.Arms: the person's arms are readable this tick (the arm games need this)
 
@@ -253,7 +254,7 @@ class Behavior:
         else:
             self._close_hold_since = 0.0
         close = self._close_hold_since != 0.0 and now - self._close_hold_since >= self.timers.mimic_hold
-        return Situation(person=face is not None, close=close, beat=obs.music_bpm > 0 or obs.dance_bpm > 0, held=obs.held,
+        return Situation(person=face is not None, close=close, beat=obs.music_bpm > 0 or obs.dance_bpm > 0 or obs.grooving, held=obs.held,
                          busy=obs.busy, can_sing=self.can_sing, can_mime=self.can_mime and (face is not None or obs.arms is not None))
 
     def _choose(self, obs: Observation, now: float) -> list[Action]:
@@ -696,7 +697,7 @@ class Behavior:
 
                 # The mirror game is chosen by the activity layer (a close face for a couple of seconds makes it
                 # available); it ends when they back away, after a minute, or when a dance starts.
-                if self.mimicking and (face.area_frac < t.mimic_exit_area or now - self._mimic_since > t.mimic_max_s or obs.dance_bpm > 0):
+                if self.mimicking and (face.area_frac < t.mimic_exit_area or now - self._mimic_since > t.mimic_max_s or obs.dance_bpm > 0 or obs.grooving):
                     self.mimicking = False
                     self._think(now, "mirror game over")
                     actions.append(Action("sound", "mirror_end", 2))
@@ -709,7 +710,7 @@ class Behavior:
                 # Mirror them: nod back at a nod, shake back at a shake (tilt is mirrored continuously by the body).
                 self._face_hist.append((now, face.yaw_deg, face.pitch_deg))
                 # Not while they (or the music) are moving to a beat: a bob that keeps going is dancing, not a nod.
-                if not self.mimicking and now - self._last_mimic > t.mimic_cooldown and obs.dance_bpm == 0 and obs.music_bpm == 0:
+                if not self.mimicking and now - self._last_mimic > t.mimic_cooldown and obs.dance_bpm == 0 and obs.music_bpm == 0 and not obs.grooving:
                     mimic = self._detect_nod_or_shake(now)
                     if mimic is not None:
                         self._last_mimic = now
@@ -719,7 +720,7 @@ class Behavior:
                         actions.append(Action("gesture", mimic, 2))
 
                 # Periodic micro-reactions while someone is around (not while we are dancing with them).
-                if obs.dance_bpm > 0:
+                if obs.dance_bpm > 0 or obs.grooving:
                     self._next_react = max(self._next_react, now + 3.0)
                 if now >= self._next_react:
                     self._next_react = now + self.rng.uniform(t.react_min, t.react_max)
@@ -788,7 +789,7 @@ class Behavior:
                     self._think(now, "mirror game over (lost you)")
                     actions.append(Action("sound", "mirror_end", 2))
                     self._end_activity(now, cooldown=60.0)
-                if self.state == "ENGAGED" and (obs.dance_bpm > 0 or obs.busy in ("mime", "gesture", "turn")):
+                if self.state == "ENGAGED" and (obs.dance_bpm > 0 or obs.grooving or obs.busy in ("mime", "gesture", "turn")):
                     pass  # mid-dance, a Simon says move, a solo gesture (bow, sneeze) or a keypad turn: the camera is moving, keep the gaze
                     self._last_face_time = max(self._last_face_time, now - 0.5)  # and the face-lost clock waits too
                 elif self.state == "ENGAGED":

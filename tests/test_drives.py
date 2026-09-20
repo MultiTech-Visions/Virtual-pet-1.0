@@ -109,6 +109,24 @@ def test_singing_is_chosen_when_bored_and_enabled_and_then_cools_down():
     assert b.activity != "sing" and b._cool["sing"] > 100.0
 
 
+def test_manual_groove_counts_as_a_beat_so_no_game_or_song_starts():
+    from festival_pet.drives import Drives, Situation, choose
+
+    rng = random.Random(1)
+    bored = Drives(boredom=0.9, curiosity=0.9)
+    with_beat = choose(bored, Situation(person=True, close=True, beat=True, can_mime=True, can_sing=True), "watch", {}, 100.0, rng)
+    assert not {"mime", "sing", "mirror"} & set(with_beat.scores)
+    # the brain maps the robot layer's "we're grooving" onto that beat flag, and a running mirror game ends
+    b = _brain(boredom=0.9, curiosity=0.9)
+    b.can_sing = True
+    face = FaceObs(1, 0.0, 0.0, 0.05, None, 0.0)
+    acts = _run(b, lambda t: Observation(face=face, grooving=True), 0.0, 8.0)
+    assert not {"mime", "sing", "mirror"} & set(_activities(acts)), b._scores
+    b.mimicking, b.activity, b._mimic_since = True, "mirror", 8.0
+    acts = _run(b, lambda t: Observation(face=face, grooving=True), 8.0, 8.2)
+    assert not b.mimicking and any(a.kind == "sound" and a.name == "mirror_end" for a in acts)
+
+
 def test_low_social_asks_for_attention_alone_and_begs_with_company():
     b = _brain(social=0.05)
     acts = _run(b, lambda t: Observation(), 0.0, 3.0)

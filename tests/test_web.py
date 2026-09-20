@@ -444,6 +444,38 @@ def test_singing_sings_bows_and_saves(tmp_path):
     pet.stop(); pet2.stop()
 
 
+def test_manual_groove_on_cuts_a_song_and_a_game_and_keeps_the_brain_out_of_them():
+    from festival_pet.behavior import FaceObs
+
+    t = time.time()
+    pet = _pet(t - 1.0)
+    beh = pet.p.behavior
+    pet.control("singing", True)
+    pet.sing(t)
+    assert pet._singing_until > t and not pet.sound._cut.is_set()
+    pet.control("manual_groove", True)  # mid-song: the song stops, we're grooving
+    assert pet._singing_until == 0.0 and pet.sound._cut.is_set() and pet.sound.busy_until == 0.0
+    pet.step(t + 0.05)
+    assert pet._last_obs.grooving and pet._last_obs.busy is None
+    # the brain sees a beat: bored as it is, no game or song gets chosen
+    face = FaceObs(1, 0.0, 0.0, 0.2, None, 0.0)
+    beh.mood.boredom, beh.mood.curiosity = 0.9, 0.9
+    pet.vision = ArmsVision()
+    for i in range(1, 160):
+        pet.vision.arms = _arms("down", "down", t + i * 0.05)
+        pet._last_obs.face = face
+        pet.step(t + i * 0.05)
+    assert beh.activity not in ("mime", "sing", "mirror") and not pet.mime.active and pet._singing_until == 0.0
+    assert not beh.can_sing
+    # a game started from the page, then the dancing layer pressed: the game is dropped
+    pet.control("manual_groove", False)
+    pet._last_obs.face = face
+    assert pet.start_simon("head", t + 10) == "head" and pet.mime.active
+    pet.key_action("groove_left", t + 10.5, t + 10.5)
+    assert pet.manual_groove and not pet.mime.active
+    pet.stop()
+
+
 def test_imu_rub_reads_as_petting_and_lowers_the_antennas():
     from festival_pet.senses import ImuRubDetector
 

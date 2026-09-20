@@ -137,6 +137,7 @@ class SoundPlayer:
         self._busy_priority = 0
         self._sample_rate = sample_rate
         self._stop = threading.Event()
+        self._cut = threading.Event()  # set by cut(): drop the rest of what is playing
         self._thread = threading.Thread(target=self._run, name="festival-pet-sound", daemon=True)
         self.played: list[str] = []  # recent history, handy for the status page and tests
         self._env: np.ndarray = np.zeros(0, dtype=np.float32)  # loudness envelope of the phrase being played, 50 Hz
@@ -152,6 +153,17 @@ class SoundPlayer:
     @property
     def busy_until(self) -> float:
         return self._busy_until
+
+    def cut(self) -> None:
+        """Stop what is playing (a song, mid-verse) and forget anything queued behind it."""
+        self._cut.set()
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
+        self._busy_until = 0.0
+        self._env = np.zeros(0, dtype=np.float32)
 
     def level(self, now: float) -> float:
         """Normalised loudness (0..1) of what the speaker is saying right now; 0 when silent."""
@@ -191,9 +203,14 @@ class SoundPlayer:
             del self.played[:-30]
             # Push in ~40 ms chunks so playback starts immediately and the buffer never balloons.
             chunk = int(self._sample_rate * 0.04)
+            self._cut.clear()
+            t_end = time.time() + dur
             for i in range(0, len(buf), chunk):
+                if self._cut.is_set():
+                    break
                 self._io.play(buf[i : i + chunk])
-            time.sleep(dur)
+            while time.time() < t_end and not self._cut.is_set():
+                time.sleep(0.02)
 
 
 class AudioSense:
@@ -598,7 +615,11 @@ class Pet:
         if self._turn is not None and (now >= self._turn[1] or comp.held or self.asleep):
             self._turn = None  # the keypad turn is over: back to whoever it was with, mid-groove, no fuss
         obs.busy = "mime" if self.mime.active else "sing" if now < self._singing_until else "gesture" if solo else "turn" if self._turn else None
-        beh.can_sing = self.singing_enabled and not self.asleep and self.move is None
+        # Manual groove with a tempo in: we are dancing. The brain treats it like a beat (no games, songs, mirror
+        # or nod-copying start) and the tapped beat below wins over anything it heard or saw.
+        grooving = self.manual_groove and self.tap.active and not self.asleep and beh.state not in ("HELD", "SLEEPING", "WAKING")
+        obs.grooving = grooving
+        beh.can_sing = self.singing_enabled and not self.asleep and self.move is None and not grooving
         actions = beh.tick(obs, now, dt)
         comp.energy = beh.mood.energy
         comp.mode = {"SLEEPING": "sleeping", "HELD": "held"}.get(beh.state, "awake")
@@ -612,8 +633,8 @@ class Pet:
         comp.voice_level = self.sound.level(now)  # the body moves with every beep it makes
         for act in actions:
             self._dispatch(act, now)
-        if self.manual_groove and self.tap.active and not self.asleep and beh.state not in ("HELD", "SLEEPING", "WAKING"):
-            # Tapped-in beat wins over anything it heard or saw; 0.6 is a plain head-bob before the user's dials.
+        if grooving:
+            # 0.6 is a plain head-bob before the user's dials.
             comp.groove = (self.tap.phase(now), self.tap.bar_phase(now), 0.6 * self.groove_scale)
             comp.groove_phrase = self.tap.phrase_phase(now) if self.tap.downbeat_known else None
         else:
@@ -1126,6 +1147,13 @@ class Pet:
             self.groove_scale = float(value)
         elif cmd == "manual_groove":
             self.manual_groove = bool(value)
+            if self.manual_groove:  # we're grooving: whatever it was performing stops now
+                if self.mime.active:
+                    for item in self.mime.stop(now):
+                        self._mime_action(item, now)
+                if now < self._singing_until:
+                    self._singing_until = 0.0
+                    self.sound.cut()
         elif cmd == "tap":  # value: true = this tap is the "1"
             self.tap.tap(now, downbeat=bool(value))
             self.actions_log.append((now, "tap", f"{'ONE ' if value else ''}{self.tap.bpm:.0f} bpm"))
