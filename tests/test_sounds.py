@@ -71,19 +71,26 @@ def test_songs_compose_render_and_describe():
         buf = songs.render(song)
         assert buf.dtype == np.float32 and np.max(np.abs(buf)) <= 0.8001 and np.isfinite(buf).all()
         assert abs(len(buf) / 16000 - songs.duration(song)) < 0.01
-        assert 5.0 < songs.duration(song) < 40.0
+        assert 5.0 < songs.duration(song) < 45.0
         assert song["name"] in songs.describe(song) and song["style"] in songs.describe(song)
         if song["style"] == "drumline":
             assert song["bars"][-1] == "roll_and_stop" and 4 <= len(song["bars"]) <= 9
             assert len(songs.hits(song)) >= 4 * len(song["bars"]) - 4
         else:
             assert song["bpm"] == songs.BASS_BPM and songs.body_bpm(song) == songs.BASS_BPM / 2  # halftime for the body
-            assert song["bars"].count("drop") == 1 and song["bars"].index("build") == song["bars"].index("drop") - 1
-            assert song["bars"][:2] == ["intro", "intro"] and song["bars"][-1] == "out"  # a count-in, and an ending
-            assert song["bars"].index("drop") % 4 == 0  # the drop lands on a four-bar phrase boundary
+            assert 1 <= song["bars"].count("drop") <= 4  # at least one, and a breakdown earns another
+            assert song["bars"][0] == "intro" and song["bars"][-1] == "out"  # a count-in, and an ending
+            assert len(song["degrees"]) == len(song["bars"])
+            for k, move in enumerate(song["bars"]):
+                if move == "drop":
+                    assert k % 4 == 0 or song["bars"][k - 1] == "drop"  # drops land on a phrase line
+                    assert "build" in song["bars"][max(0, k - 4):k] or song["bars"][k - 1] == "drop"  # ...with a build in front
             assert song["lo"] >= 300  # the speaker carries nothing lower: the bass is implied, not played
             assert all(m in songs.BASS_MOVES for m in song["bars"]) and song["kit"] in songs.DRUM_KITS
     assert len(seen) > 3 and styles == {"drumline", "bass"}  # variety
+    # four days of festival: the shape has to change, not just the notes
+    shapes = {tuple(songs.compose(random.Random(k), "bass")["bars"]) for k in range(40)}
+    assert len(shapes) == 40 and len({len(x) for x in shapes}) >= 3
     # a paradiddle bar has 16 hits with accents on each group of four
     assert [a for _, _, a in songs.PATTERNS["paradiddle"]] == [1, 0, 0, 0] * 4
     # an unknown style is an error, not a quiet fallback

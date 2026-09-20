@@ -202,25 +202,50 @@ two-bar loop, in one of three kits — so there is always a backbeat to count ag
 does the strange part. On top of it, a held note whose filter opens and shuts a fixed number of
 times per beat (one, two or three, always locked to the grid), or wahs, lasers or offbeat stabs.
 
-The arrangement is fixed rather than random, in four-bar phrases:
-
-| Bars | |
-|---|---|
-| 1–2 | kit alone, so you have the count before anything else happens |
-| 3 | the A bass |
-| 4 | build: a snare roll doubling up, then a quarter-note of dead silence |
-| 5 | **the drop**, on the downbeat |
-| 6–7 | the B bass |
-| 8 | fill, into another gap |
-| 9–10 | the C bass, a minor third up |
-| 11 | B again, a step down |
-| 12 | last hit, left to ring |
+Arrangements are built from four-bar phrases by a small grammar, so no two songs have the same
+shape — four days of festival is a lot of songs to sit through. The grammar is what keeps them
+followable: every song counts you in with a bar or two of kit alone, every drop has a build in
+front of it and lands on a phrase line, a breakdown always builds back into another drop, and every
+song has an ending. Within that it picks its own phrases (count-in, drop, ride, breakdown, outro,
+each in two variants), how many, which three bass voices fill the A/B/C slots, and a riff that moves
+the bass note around under each phrase. Songs run 21 to 41 seconds, some with one drop and some with
+two.
 
 The speaker reproduces nothing under about 300 Hz, so the bass note sits at 310–370 Hz and the
 harmonics with the moving filter do the talking; an actual sub would come out as silence. The kick
 is a 440→150 Hz drop with a click on the front, and the click is what carries it. The body bobs at
 half the song tempo, on the 1 and the 3, which is both the halftime feel and as fast as the neck
 wants to move. Saved songs from before the two kinds existed are stamped as drumline when they load.
+
+**Performing**: a song on its own is just a song — it sings its little song and is pleased with
+itself, a wiggle and a happy beep. But it watches the audience while it plays: a face in view with
+their head pointed at it counts as watching, and if more than half the song was watched it lines up
+another one after a short pause ("they're still watching! one more"). After the second, a third is
+a one-in-three rarity, so it stays special. Only a set of two or three earns the full house bow —
+turn 30° right, bow, 30° left, bow, centre, bow — which means that when you see the big routine, it
+means something. The Mind tab shows the set: which song it is on, what fraction of it is being
+watched, and when the encore lands.
+
+**Trading kandi (PLUR)**: at a festival, people will want to trade bracelets with it, so it knows
+the handshake. Finger poses are past what the pose model can give at across-the-tent distance, so
+it reads the four steps from arm positions instead, and the sequence is what makes it reliable:
+each step only counts after the one before, held half a second, with twelve seconds to get to the
+next one or the handshake lapses.
+
+| Step | You | It |
+|---|---|---|
+| **Peace** | both arms up in a V, hands well apart | antennas snap up into a V, excited chirp |
+| **Love** | hands together up at your chest, making a heart | antennas arc inward until the tips nearly meet, a coo |
+| **Unity** | hands clasped low in front of you | antennas fold in, it snuggles, content |
+| **Respect** | one arm held out to it, offering the bracelet | it stops dead |
+
+That last one is the point. For seven seconds it holds **completely still** — no breathing, no
+groove, no gestures, head dipped and antennas parked — so a bracelet can be threaded over an
+antenna without the thing squirming and dropping it. Then it looks at what it has been given, goes
+off with a ta-da and a little dance, and remembers who gave it: trades are counted per person and
+are worth a lot of affection, so a trader becomes a bestie fast. While a handshake is under way
+nothing else starts, and the wave and hug detectors stand down (a peace sign and a hug are nearly
+the same shape to a pair of arm angles). The Senses tab shows which step it is waiting for.
 
 **Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
 "Puppet it". Distinct calls: a rising two-note for "let's play mirror" (falling for "mirror

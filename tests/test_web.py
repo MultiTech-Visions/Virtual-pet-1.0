@@ -412,14 +412,16 @@ def test_singing_sings_bows_and_saves(tmp_path):
     pet.songs_file = tmp_path / "songs.json"
     app = FastAPI(); install_routes(app, pet); c = TestClient(app)
     assert c.post("/api/control", json={"cmd": "save_song"}).status_code == 400  # nothing sung yet
+    pet._watching = lambda obs: False  # nobody is looking: one song, no encore, no big bow
     song = pet.sing(1000.2)  # on the pet's own (fake) clock, so the step loop below is short
-    assert pet.last_song is song and pet.tap.bpm == song["bpm"]
+    assert pet.last_song is song and pet.tap.bpm == songs.body_bpm(song)
     assert c.get("/api/mind").json()["song"]["last"]["name"] == song["name"]
     t, end = 1000.2, pet._singing_until
-    assert end - 1000.2 < 40
+    assert end - 1000.2 < 45
     while t < end + 0.5:
         pet.step(t); t += 0.02
-    assert pet.p.composer._gesture is not None and pet.p.composer._gesture.name == "bow"
+    assert pet.p.composer._gesture.name in ("wiggle", "tada") and pet._songs_in_set == 0  # pleased with itself, no bow
+    assert not pet._next_song_at
     assert c.post("/api/control", json={"cmd": "save_song"}).status_code == 200
     assert json.loads(pet.songs_file.read_text())[0]["name"] == pet.last_song["name"]
     assert c.get("/api/mind").json()["song"]["last"]["saved"]
@@ -438,6 +440,50 @@ def test_singing_sings_bows_and_saves(tmp_path):
     assert c.post("/api/control", json={"cmd": "singing", "value": True}).status_code == 200
     assert c.get("/api/mind").json()["song"]["next_in_s"] is not None
     pet.stop(); pet2.stop()
+
+
+def test_watching_it_sing_earns_an_encore_and_a_proper_bow():
+    from festival_pet.behavior import FaceObs
+    from festival_pet.main import ENCORE_GAP_S, WATCHING_YAW_DEG
+
+    pet = _pet()
+    beh, comp = pet.p.behavior, pet.p.composer
+    # eye contact is their head pointed at it, not just a face in the frame
+    looking = FaceObs(1, 10.0, 0.0, 0.05, None, 0.0, head_yaw_deg=5.0, head_pitch_deg=-3.0)
+    away = FaceObs(1, 10.0, 0.0, 0.05, None, 0.0, head_yaw_deg=WATCHING_YAW_DEG + 10, head_pitch_deg=0.0)
+    assert pet._watching(Observation(face=looking))
+    assert not pet._watching(Observation(face=away)) and not pet._watching(Observation())
+
+    pet._watching = lambda obs: True  # somebody settles in to watch the whole thing
+    t = 1001.0
+    songs_sung = []
+    for _ in range(4):
+        if not (t < pet._singing_until or pet._next_song_at):
+            break
+        t += 0.02
+    pet.sing(t)
+    songs_sung.append(pet.last_song["name"])
+    seen_encore_gap = False
+    for _ in range(200000):
+        pet.step(t)
+        t += 0.02
+        if pet._next_song_at:
+            seen_encore_gap = True
+        if pet.last_song["name"] not in songs_sung:
+            songs_sung.append(pet.last_song["name"])
+        if not (t < pet._singing_until or pet._next_song_at):
+            break
+    assert seen_encore_gap and pet._songs_in_set == 0  # the set ran and then ended
+    assert 2 <= len(songs_sung) <= 3  # an encore, and sometimes a third
+    assert comp._gesture is not None and comp._gesture.name == "bow"  # the set earned the whole routine
+    assert any("thank you" in x[1] for x in beh.thoughts)
+    assert any(k == "song" and "encore" in n for _, k, n in pet.actions_log)
+    # the gap between songs still counts as performing, so the brain does not go and start something else
+    pet.sing(t + 1.0)
+    pet._singing_until = t + 1.07  # a step that lands in the last 20 ms of the song is the one that ends it
+    pet.step(t + 1.06)
+    assert pet._next_song_at and pet._last_obs.busy == "sing"
+    pet.stop()
 
 
 def test_manual_groove_on_cuts_a_song_and_a_game_and_keeps_the_brain_out_of_them():
@@ -504,6 +550,54 @@ def test_a_wave_gets_a_mirrored_wave_back_and_a_hug_gets_a_nuzzle():
     assert comp._gesture.name == "hug" and "a hug" in beh.thoughts[-1][1]
     assert [n for _, k, n in pet.actions_log if k == "sound"][-1] == "coo"
     assert pet.mind()["arms"]["watching"]
+    pet.stop()
+
+
+def test_the_plur_handshake_ends_with_it_holding_still_for_the_bracelet(tmp_path):
+    import numpy as np
+
+    from festival_pet.main import KANDI_STILL_S
+    from festival_pet.pose import PLUR_STEPS
+    from test_pose import PLUR_POSES
+
+    t = time.time()
+    pet = _pet(t - 1.0)
+    beh, comp = pet.p.behavior, pet.p.composer
+    pet.vision = ArmsVision()
+    mem = pet.p.memory
+    mem.path = tmp_path / "mem.json"  # this test enrols someone, so give it somewhere of its own to save
+    beh._engaged_person = mem.enroll(np.ones(4), t)
+    kandi_before = beh._engaged_person.kandi
+
+    now = t
+    for step in PLUR_STEPS:  # peace, love, unity, respect, each held for a beat
+        end = now + 1.2
+        while now < end:
+            pet.vision.arms = PLUR_POSES[step](now)
+            pet.step(now)
+            now += 0.05
+        now += 0.3
+    done = [n for _, k, n in pet.actions_log if k == "arms"]
+    assert [n for n in done if n.startswith("plur")] == [f"plur {s}" for s in PLUR_STEPS]
+    thoughts = " ".join(x[1] for x in beh.thoughts)
+    assert "peace" in thoughts and "love" in thoughts and "unity" in thoughts and "respect" in thoughts
+    assert pet._last_obs.busy == "kandi"  # nothing else gets started in the middle of this
+    # the finale: it stops dead so the bracelet can go on without a fight
+    assert comp.still_until > now and pet._kandi_at > now
+    for _ in range(40):
+        pet.step(now)
+        now += 0.05
+    head_a, _, _ = comp.sample(now, 0.02)
+    head_b, _, _ = comp.sample(now + 0.5, 0.02)
+    assert float(np.abs(head_a - head_b).max()) < 0.01  # not breathing, not drifting: holding it
+    # and when the time is up it has a look at what it was given, and remembers who gave it
+    while now < pet._kandi_at + 0.2:
+        pet.step(now)
+        now += 0.05
+    assert "kandi traded" in [n for _, k, n in pet.actions_log if k == "arms"]
+    assert beh._engaged_person.kandi == kandi_before + 1 and beh._engaged_person.affection > 0.2
+    assert beh._little_dance_until > now
+    assert pet._kandi_at == 0.0 and KANDI_STILL_S > 3.0
     pet.stop()
 
 

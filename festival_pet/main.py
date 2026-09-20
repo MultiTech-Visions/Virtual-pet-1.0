@@ -43,7 +43,7 @@ from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose, SOLO_
 from festival_pet import songs
 from festival_pet.senses import ImuRubDetector, LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
-from festival_pet.pose import ArmSigns
+from festival_pet.pose import PLUR_STEPS, ArmSigns
 from festival_pet.tap_tempo import TapTempo
 from festival_pet.visual_rhythm import DanceDetector
 
@@ -101,6 +101,14 @@ CUDDLE_STEPS = (
 )
 FLOURISH_EVERY_BEATS = 8  # dance-along: every two bars it stops copying and throws in two beats of its own
 FLOURISH_BEATS = 2
+# Performing: a song on its own is just a song. If someone actually watches one, it does another, and
+# maybe a third, and only then is it a performance worth a proper bow.
+WATCHING_YAW_DEG, WATCHING_PITCH_DEG = 30.0, 25.0  # their head is pointed at it within this: eye contact, near enough
+ENGAGED_FRAC = 0.55  # this much of the song watched, and it has an audience
+ENCORE_GAP_S = 1.6  # the pause between songs while it decides
+ENCORE_MAX = 3  # songs in one performance
+THIRD_SONG_CHANCE = 0.35  # the third is a rarity, so it stays special
+KANDI_STILL_S = 7.0  # how long it holds dead still at the end of a PLUR handshake, to be given the bracelet
 COMBO_TAPS = 4  # left right left right on the dancing layer...
 COMBO_WINDOW_S = 1.0  # ...this fast: stop dancing
 
@@ -406,6 +414,12 @@ class Pet:
         self.singing_enabled = False  # one of its idle activities when on
         self.songs: list[dict] = []  # the repertoire (saved songs)
         self.last_song: dict | None = None
+        # The performance: how much of the current song is being watched, and how many songs in we are
+        self._song_ticks = 0
+        self._song_watched = 0
+        self._songs_in_set = 0
+        self._next_song_at = 0.0
+        self._kandi_at = 0.0  # when the holding-still is over and it can look at what it has been given
         self._singing_until = 0.0
         self.songs_file: Path | None = None
         self.pose_history: PoseHistory | None = None  # set on the real robot; fed every tick for the vision thread
@@ -564,8 +578,10 @@ class Pet:
                         self.actions_log.append((now, "arms", " ".join(sign)))
                         if sign[0] == "wave":
                             obs.waved = sign[1]
-                        else:
+                        elif sign[0] == "hug":
                             obs.hugged = True
+                        else:
+                            self._plur_step(sign[1], now)
         if self.dance.state.dancing:
             obs.dance_bpm = self.dance.state.bpm
             if not self._dance_seen:  # seen dancing: hand the tempo to the tap clock so manual groove / "1" pick it up
@@ -611,6 +627,17 @@ class Pet:
         for action, t_ev in fired:
             self.key_action(action, t_ev, now)
 
+        if self._kandi_at and now >= self._kandi_at:  # it has been held still long enough: look at the new bracelet
+            self._kandi_at = 0.0
+            beh._think(now, "...is it on? IT'S ON. look at it. LOOK at it")
+            self._dispatch(Action("sound", "tada", 4), now)
+            self._dispatch(Action("gesture", "tada", 4), now)
+            beh._little_dance_until = now + 6.0
+            beh.mood.social = min(1.0, beh.mood.social + 0.2)
+            if beh._engaged_person is not None:
+                beh.memory.add_kandi(beh._engaged_person)
+            self.actions_log.append((now, "arms", "kandi traded"))
+
         # ---------------- Simon says (leads; the brain's own games and reactions wait)
         if self.mime.active:
             aim = obs.face if obs.face is not None else obs.body  # the arm game only needs to know where they are
@@ -628,13 +655,20 @@ class Pet:
             song = self.last_song
             comp.groove = (self.tap.phase(now), self.tap.bar_phase(now), 0.7 * self.groove_scale) if song else comp.groove
             beh._next_react = max(beh._next_react, now + 2.0)
+            self._song_ticks += 1
+            if self._watching(obs):
+                self._song_watched += 1
             if now >= self._singing_until - 0.02:
-                comp.request_gesture("bow", now, 4)  # take a bow
-                beh._think(now, "thank you, thank you")
+                self._song_over(now)
+        elif self._next_song_at and now >= self._next_song_at:
+            self._next_song_at = 0.0
+            self.sing(now, style=self.last_song["style"] if self.last_song else None)  # the encore: same kind of thing
 
         # ---------------- brain
         solo = comp._gesture is not None and comp._gesture.name in SOLO_GESTURES and comp.gesture_active(now)
-        obs.busy = "mime" if self.mime.active else "sing" if now < self._singing_until else "gesture" if solo else None
+        performing = now < self._singing_until or self._next_song_at > 0.0  # a gap between songs is still the act
+        trading = self.signs.plur_step > 0 or self._kandi_at > 0.0  # mid-handshake: nothing else starts
+        obs.busy = "mime" if self.mime.active else "sing" if performing else "kandi" if trading else "gesture" if solo else None
         # Manual groove with a tempo in: we are dancing. The brain treats it like a beat (no games, songs, mirror
         # or nod-copying start) and the tapped beat below wins over anything it heard or saw.
         grooving = self.manual_groove and self.tap.active and not self.asleep and beh.state not in ("HELD", "SLEEPING", "WAKING")
@@ -863,6 +897,8 @@ class Pet:
         dur = songs.duration(song)
         self.sound.request_buffer(buf, "song:" + song["name"], 2, now)
         self.last_song = song
+        self._songs_in_set += 1
+        self._song_ticks = self._song_watched = 0
         self._singing_until = now + dur
         # bob along; the page shows the tempo too. Bass music is counted in halftime, so the body moves on
         # the 1 and the 3 rather than on all four of the song's beats (which at 140 would rattle the neck).
@@ -871,6 +907,70 @@ class Pet:
         self.p.behavior._think(now, "a song! " + songs.describe(song))
         self.actions_log.append((now, "song", song["name"]))
         return song
+
+    def _plur_step(self, step: str, now: float) -> None:
+        """One step of the PLUR handshake landed: answer it in kind.
+
+        Peace, love, unity, respect. The last one is the one that matters: it stops dead and offers its
+        head, so a bracelet can be threaded over an antenna without the thing breathing and squirming,
+        and then it has a look at what it has been given.
+        """
+        beh = self.p.behavior
+        if step == "peace":
+            beh._think(now, "peace! (antennas up)")
+            self._dispatch(Action("sound", "excited", 3), now)
+            self._dispatch(Action("gesture", "peace", 3), now)
+        elif step == "love":
+            beh._think(now, "...love. aww")
+            self._dispatch(Action("sound", "coo", 3), now)
+            self._dispatch(Action("gesture", "heart", 3), now)
+        elif step == "unity":
+            beh._think(now, "...unity")
+            self._dispatch(Action("sound", "content", 3), now)
+            self._dispatch(Action("gesture", "snuggle", 3), now)
+        elif step == "respect":
+            beh._think(now, "...and respect. here: I'll hold still, put it on me")
+            self._dispatch(Action("sound", "happy", 3), now)
+            self.p.composer.hold_still(now, KANDI_STILL_S)
+            self._kandi_at = now + KANDI_STILL_S
+        else:
+            raise KeyError(f"unknown PLUR step '{step}'")
+        beh._last_interaction = now
+        beh.mood.boredom = max(0.0, beh.mood.boredom - 0.15)
+
+    def _watching(self, obs: Observation) -> bool:
+        """Is somebody actually watching this? A face in view with their head pointed at us: near enough
+        to eye contact for a robot with no eye tracker, and it does not false-fire on someone walking past."""
+        face = obs.face
+        return face is not None and abs(face.head_yaw_deg) < WATCHING_YAW_DEG and abs(face.head_pitch_deg) < WATCHING_PITCH_DEG
+
+    def _song_over(self, now: float) -> None:
+        """A song has finished. If it was watched, line up another; if the set is done, take the bow it earned.
+
+        Alone, it sings its little song and is pleased with itself. With an audience it does two or three
+        and then the full house bow, so the big routine means something when you see it.
+        """
+        beh = self.p.behavior
+        watched = self._song_ticks > 0 and self._song_watched / self._song_ticks >= ENGAGED_FRAC
+        frac = 0.0 if self._song_ticks == 0 else self._song_watched / self._song_ticks
+        self._song_ticks = self._song_watched = 0
+        more = watched and self._songs_in_set < ENCORE_MAX and (self._songs_in_set < 2 or self.p.composer.rng.random() < THIRD_SONG_CHANCE)
+        self.actions_log.append((now, "song", f"finished ({frac:.0%} watched){', encore' if more else ''}"))
+        if more:
+            self._next_song_at = now + ENCORE_GAP_S
+            beh._think(now, "they're still watching! one more" if self._songs_in_set == 1 else "okay, ONE more, this one's the good one")
+            self._dispatch(Action("sound", "excited", 3), now)
+            self._dispatch(Action("gesture", "perk", 3), now)
+            return
+        if self._songs_in_set >= 2:  # a real set, for a real audience: the whole bow, to the whole house
+            beh._think(now, f"thank you! thank you, you're too kind ({self._songs_in_set} songs)")
+            self._dispatch(Action("sound", "tada", 4), now)
+            self.p.composer.request_gesture("bow", now, 4)
+        else:  # nobody much was looking: pleased with itself anyway
+            beh._think(now, "...nailed it" if watched else "that was a good one, I thought")
+            self._dispatch(Action("sound", "happy" if watched else "content", 2), now)
+            self._dispatch(Action("gesture", "tada" if watched else "wiggle", 2), now)
+        self._songs_in_set = 0
 
     def save_last_song(self) -> dict:
         if self.last_song is None:
@@ -1051,10 +1151,13 @@ class Pet:
             "feeling": self._feeling(now),
             "mime": self.mime.status(now),
             "arms": None if o.arms is None else {"left": o.arms.left, "right": o.arms.right, "left_deg": round(o.arms.left_deg), "right_deg": round(o.arms.right_deg), "conf": round(o.arms.conf, 2), "shoulder_px": round(o.arms.shoulder_px),
-                                                "watching": self.signs.watching and now < self.signs.watching_until},
+                                                "watching": self.signs.watching and now < self.signs.watching_until,
+                                                "plur": None if not (self.signs.plur_step or self._kandi_at) else {"step": self.signs.plur_step, "next": PLUR_STEPS[self.signs.plur_step] if self.signs.plur_step else None, "holding_still_s": round(max(0.0, self._kandi_at - now), 1)}},
             "dance_along": {"on": self.dance_along, "copying": self._copying_arms, "flourish": self._copying_arms and now < self._flourish_until,
                             "antennas": None if comp.arms is None or now >= comp.arms_until else [round(comp.arms[0]), round(comp.arms[1])]},
-            "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "style": self.last_song["style"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs], "next_in_s": round(max(0.0, self.p.behavior._cool.get("sing", now) - now)) if self.singing_enabled else None},
+            "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "style": self.last_song["style"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs],
+                     "set": {"songs": self._songs_in_set, "watched": None if self._song_ticks == 0 else round(self._song_watched / self._song_ticks, 2), "encore_in_s": round(max(0.0, self._next_song_at - now), 1) if self._next_song_at else None},
+                     "next_in_s": round(max(0.0, self.p.behavior._cool.get("sing", now) - now)) if self.singing_enabled else None},
             "build": build_info(),
             "asleep": self.asleep,
             "transcript": [{"t": round(now - t, 1), "text": txt.split("|")[0], "intents": ints} for t, txt, ints in reversed(self.transcript)],

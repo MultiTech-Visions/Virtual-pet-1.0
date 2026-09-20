@@ -65,18 +65,35 @@ WAVE_MIN_DEG = 100.0  # an arm at least this far up can be waving
 WAVE_SWINGS = 3  # hand direction reversals...
 WAVE_WINDOW_S = 2.0  # ...within this long
 WAVE_MIN_SWING = 0.12  # each swing at least this fraction of the shoulder width (side to side, relative to the shoulder)
+# The PLUR handshake, done with arms instead of fingers: peace (both arms up in a V, hands apart),
+# love (hands together at chest or higher, making a heart), unity (hands clasped low in front), and
+# respect (one arm held out to it, offering the bracelet). Finger poses are beyond what the pose
+# model gives us at this distance, but these four read clearly from arm angles and where the wrists
+# are, and the sequence matters more than any one of them: each step only counts after the one before.
+PLUR_STEPS = ("peace", "love", "unity", "respect")
+PLUR_HOLD_S = 0.5  # hold a pose this long for it to count
+PLUR_STEP_WINDOW_S = 12.0  # ...and get to the next one within this, or the handshake lapses
+PEACE_MIN_DEG = 125.0  # both arms up, not just out (an out-to-the-sides pose is a hug)
+PEACE_MIN_SEP = 1.0  # wrists at least this far apart, in shoulder widths
+TOGETHER_SEP = 0.65  # wrists this close count as hands together
+HEART_MIN_ABOVE = -0.15  # hands at or above the shoulder line (in shoulder widths, + is up)
+CLASP_MAX_ABOVE = -0.5  # ...and clearly below it for a clasp
 HUG_HOLD_S = 2.5  # both arms held out this long: a hug
 HUG_REARM_S = 1.0  # the arms have to leave "out" for this long before another hug counts
 SIGN_WATCH_S = 1.5  # a raised or open arm seen this recently keeps the pose model reading every frame
 
 
 class ArmSigns:
-    """Waves and hugs, read from a run of arm readings. Feed every reading; get ("wave", side) once per wave
-    (side is the PERSON's hand, "left" or "right"), ("hug",) once per hug, or None.
+    """What someone is saying with their arms, read from a run of arm readings. Feed every reading; get
+    ("wave", side) once per wave (side is the PERSON's hand), ("hug",) once per hug, ("plur", step) as each
+    step of the handshake lands, or None.
 
     A wave is the hand swinging side to side relative to its shoulder, WAVE_SWINGS reversals in WAVE_WINDOW_S,
-    with the arm up. A hug is both arms out for HUG_HOLD_S. ``watching`` says the pose model should run every
-    frame right now (a raised or open arm was just seen); at the idle rate a wave cannot be told from a stretch.
+    with the arm up. A hug is both arms out for HUG_HOLD_S. The PLUR handshake is PLUR_STEPS in order, each
+    held PLUR_HOLD_S, the next one within PLUR_STEP_WINDOW_S; while one is under way the wave and hug
+    detectors stand down, because a peace sign and a hug are nearly the same shape to a pair of arm angles.
+    ``watching`` says the pose model should run every frame right now (a raised or open arm was just seen);
+    at the idle rate a wave cannot be told from a stretch.
     """
 
     def __init__(self) -> None:
@@ -88,6 +105,10 @@ class ArmSigns:
         self._hugged = False  # this hold has already been a hug
         self._out_last = 0.0
         self.watching_until = 0.0
+        self.plur_step = 0  # how many of PLUR_STEPS have landed in this handshake
+        self.plur_at = 0.0  # when the last one landed
+        self._pose: str | None = None  # the pose being held right now, and since when
+        self._pose_since = 0.0
 
     @property
     def watching(self) -> bool:
@@ -95,7 +116,11 @@ class ArmSigns:
 
     def feed(self, a: Arms, now: float) -> tuple | None:
         self.watching_until = 0.0
-        found: tuple | None = None
+        found = self._plur(a, now)
+        if self.plur_step:  # mid-handshake: hold the pose model open, and let the handshake have the arms
+            self.watching_until = now + SIGN_WATCH_S
+            self._out_since, self._hugged = 0.0, False
+            return found
         for hand, deg, ok in (("left", a.left_deg, a.points.get("l_wrist_ok", False)), ("right", a.right_deg, a.points.get("r_wrist_ok", False))):
             if deg < WAVE_MIN_DEG or not ok:
                 self._swings[hand].clear()
@@ -128,6 +153,55 @@ class ArmSigns:
                 self._hugged = True
                 found = ("hug",)
         return found
+
+    def _plur(self, a: Arms, now: float) -> tuple | None:
+        """Walk the handshake. Returns ("plur", step) as each one lands, else None."""
+        if self.plur_step and now - self.plur_at > PLUR_STEP_WINDOW_S:
+            self.plur_step = 0  # they wandered off mid-handshake
+        pose = plur_pose(a)
+        if pose != self._pose:
+            self._pose, self._pose_since = pose, now
+            return None
+        if pose is None or now - self._pose_since < PLUR_HOLD_S:
+            return None
+        if self.plur_step:
+            self.watching_until = now + SIGN_WATCH_S
+        if pose != PLUR_STEPS[self.plur_step]:
+            return None  # a pose, but not the one that comes next
+        self._pose, self._pose_since = None, now  # this one has landed: wait for a change before the next
+        self.plur_step += 1
+        self.plur_at = now
+        if self.plur_step >= len(PLUR_STEPS):
+            self.plur_step = 0
+        return ("plur", pose)
+
+
+def _mid(a, b) -> tuple[float, float]:
+    return ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+
+
+def plur_pose(a: Arms) -> str | None:
+    """Which PLUR pose the arms are making, if any. See PLUR_STEPS."""
+    p = a.points
+    scale = max(a.shoulder_px, 1e-6)
+    l_deg, r_deg = a.left_deg, a.right_deg
+    both_wrists = bool(p.get("l_wrist_ok")) and bool(p.get("r_wrist_ok"))
+    if both_wrists:
+        sep = math.dist(p["l_wrist"], p["r_wrist"]) / scale
+        shoulder_y = _mid(p["l_shoulder"], p["r_shoulder"])[1]
+        above = (shoulder_y - _mid(p["l_wrist"], p["r_wrist"])[1]) / scale  # + = hands above the shoulders
+        if min(l_deg, r_deg) >= PEACE_MIN_DEG and sep >= PEACE_MIN_SEP:
+            return "peace"
+        if sep <= TOGETHER_SEP:
+            if above >= HEART_MIN_ABOVE:
+                return "love"
+            if above <= CLASP_MAX_ABOVE and max(l_deg, r_deg) < ARM_UP_DEG:
+                return "unity"
+    # one arm held out to it, the other down: here, this is for you
+    out, down = sorted((l_deg, r_deg), reverse=True)
+    if 35.0 <= out <= 120.0 and down < 30.0:
+        return "respect"
+    return None
 
 
 class PoseReader:

@@ -51,6 +51,7 @@ def arm_rad(deg: float) -> float:
 
 ARM_LEVEL_DEG = {"down": 0.0, "out": 90.0, "up": 180.0}  # the three flag positions the arm game shows
 LEAN_FADE_S = 2.0  # a keypad groove nudge fades out over about this long (a few beats)
+STILL_PITCH = 10.0  # head dipped a little while it holds still: an offered head, and a stable antenna
 LEAN_BODY_DEG = 5.0  # how far the body leans into a full nudge (a lean, not a turn: the gaze stays on the person)
 
 
@@ -387,6 +388,21 @@ def g_hug(u: float) -> Offsets:
                    ant_r=-1.0 * e, ant_l=1.0 * e, body=5.0 * rock * e)
 
 
+def g_peace(u: float) -> Offsets:
+    """Peace: both antennas snap up into a V and hold there, with a small double bounce."""
+    up = _ease(min(1.0, u / 0.15)) * (1 - _ease(min(1.0, max(0.0, (u - 0.8) / 0.2))))
+    bounce = 0.12 * math.sin(2 * math.pi * 2.0 * u) * up
+    return Offsets(pitch=-6.0 * up, z=0.006 * up, ant_r=-1.0 * up + bounce, ant_l=1.0 * up - bounce)
+
+
+def g_heart(u: float) -> Offsets:
+    """Love: the antennas arc inward until their tips nearly meet over the head, and hold: a heart, near enough."""
+    e = _ease(min(1.0, u / 0.35)) * (1 - _ease(min(1.0, max(0.0, (u - 0.75) / 0.25))))
+    wobble = 0.05 * math.sin(2 * math.pi * 1.2 * u) * e
+    return Offsets(pitch=-4.0 * e, roll=3.0 * math.sin(2 * math.pi * 0.5 * u) * e,
+                   ant_r=1.35 * e + wobble, ant_l=-1.35 * e - wobble)
+
+
 def g_glance(u: float, side: float) -> Offsets:
     e = _pulse(u) ** 0.6
     return Offsets(yaw=side * 22.0 * e, pitch=-3.0 * e + 5.0 * math.sin(math.pi * u * 2) * e, roll=side * 4.0 * e)
@@ -420,6 +436,8 @@ GESTURES: dict[str, tuple[float, str]] = {
     "nuzzle": (3.2, "plain"),
     "boop": (0.7, "plain"),
     "wave": (WAVE_S, "sided"),
+    "peace": (1.8, "plain"),
+    "heart": (2.6, "plain"),
     "hug": (HUG_S, "plain"),
 }
 
@@ -431,7 +449,7 @@ _FUNCS = {
     "shake_off": g_shake_off, "search": g_search, "glance": g_glance,
     "shy": g_shy, "nod_off": g_nod_off, "sneeze": g_sneeze, "hiccup": g_hiccup, "tada": g_tada,
     "flinch": g_flinch, "lean": g_lean, "shake": g_shake, "point": g_point, "bow": g_bow,
-    "swat": g_swat, "nuzzle": g_nuzzle, "boop": g_boop, "wave": g_wave, "hug": g_hug,
+    "swat": g_swat, "nuzzle": g_nuzzle, "boop": g_boop, "wave": g_wave, "hug": g_hug, "peace": g_peace, "heart": g_heart,
 }
 
 
@@ -514,6 +532,8 @@ class MotionComposer:
         self._last_phrase = 0.0
         self.mirror_roll = 0.0  # degrees, follows the person's head tilt
         self._mirror = 0.0
+        self.still_until = 0.0  # holding dead still (someone is putting something on it)
+        self._still = 0.0
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
         self._reaiming = False  # mid-way through a big re-aim while grooving: the gaze hold is off until it lands
@@ -588,6 +608,12 @@ class MotionComposer:
         self.arms, self.arms_until = (float(left_deg), float(right_deg)), now + hold_s  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------ intent
+    def hold_still(self, now: float, seconds: float) -> None:
+        """Stop moving for ``seconds``: breathing, groove, gestures and all, head bowed a little and the
+        antennas parked. For someone threading a kandi bracelet over an antenna, a pet that keeps breathing
+        is a pet that drops it."""
+        self.still_until = max(self.still_until, now + seconds)
+
     def set_gaze(self, target: tuple[float, float] | None) -> None:
         self._gaze_target = target
 
@@ -799,6 +825,17 @@ class MotionComposer:
             z = z * (1 - s) - 0.015 * s
             ant_r = ant_r * (1 - s) + ANTENNA_DOWN[0] * s
             ant_l = ant_l * (1 - s) + ANTENNA_DOWN[1] * s
+
+        # holding still for a bracelet: everything fades toward one parked pose and stays there
+        self._still += ((1.0 if now < self.still_until else 0.0) - self._still) * min(1.0, dt * 2.5)
+        if self._still > 0.001:
+            k = self._still
+            yaw = yaw * (1 - k) + float(self._gaze[0]) * k
+            pitch = pitch * (1 - k) + STILL_PITCH * k
+            roll *= 1 - k
+            z *= 1 - k
+            ant_r = ant_r * (1 - k) + ANTENNA_NEUTRAL[0] * k
+            ant_l = ant_l * (1 - k) + ANTENNA_NEUTRAL[1] * k
 
         yaw = max(-YAW_LIMIT, min(YAW_LIMIT, yaw))
         pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, pitch))

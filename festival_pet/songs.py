@@ -5,10 +5,10 @@ interest is all in the playing — quarters, eighths, triplets, paradiddles, fla
 
 ``bass`` is the robot's idea of bass music, built the way the genre actually is: 140 bpm, a sparse
 halftime kit underneath (kick on the 1, snare on the 3, hats on the offbeats, a two-bar loop) so
-there is always something to count against, and a wobbling bass note on top. The arrangement is
-fixed rather than random, because that is what makes it followable: two bars of drums to find the
-beat, two bars of the A bass, a build bar whose snare roll speeds up into a silent gap, the drop on
-the downbeat of bar 5, then B and C sections, a fill, and a last hit left to ring.
+there is always something to count against, and a wobbling bass note on top. Arrangements are built
+from four-bar phrases by a small grammar, so the shape changes from song to song while staying
+followable: it always counts you in, every drop has a build in front of it and lands on a phrase
+line, and it always has an ending.
 
 The speaker reproduces nothing under ~300 Hz, so the bass is implied by a harmonic-rich note up
 where the speaker works, with the filter doing the talking, and the kick leans on its click.
@@ -65,14 +65,30 @@ DRUM_KITS: dict[str, dict[str, str]] = {
 }
 # Bass voices: how the note wobbles. The number is wobbles per beat, so they are all locked to the grid.
 BASS_VOICES = ("wub1", "wub2", "wub3", "wahs", "pews", "stabs")
-# The arrangement, one move per bar. Voices A, B and C are filled in by compose.
-# Four-bar phrases throughout, so the drop lands on a downbeat you can feel coming: two bars of kit to
-# find the beat, a bar of A, a build; then the drop, two of B, a fill; then two of C, a last B, and out.
-BASS_ARRANGEMENT = ("intro", "intro", "A", "build", "drop", "B", "B", "fill", "C", "C", "B", "out")
-BASS_STRUCTURE = ("intro", "build", "drop", "fill", "out")
+BASS_STRUCTURE = ("intro", "build", "drop", "fill", "break", "out")
 BASS_MOVES = BASS_VOICES + BASS_STRUCTURE
-# Where the bass note sits, per bar, as semitones off the root: it moves, so a phrase has somewhere to go.
-BASS_DEGREES = (0, 0, 0, 0, 0, 0, 0, 0, 3, 3, -2, 0)
+
+# Four-bar phrases. The grammar is fixed so a song is always followable — every drop has a build in
+# front of it and lands on a phrase line, every song counts you in and has an ending — but which
+# phrases it strings together, how many, and where the bass sits are all made up per song. Four days
+# of festival is a lot of songs to sit through, so no two should have the same shape.
+#   A, B, C  the song's three bass voices      V  any of them, picked per bar
+PHRASES: dict[str, tuple[str, ...]] = {
+    "count_in": ("intro", "intro", "A", "build"),  # kit alone, then a taste of A, then the build
+    "count_in_long": ("intro", "A", "A", "build"),
+    "drop": ("drop", "B", "B", "fill"),  # the pay-off phrase
+    "drop_long": ("drop", "drop", "B", "fill"),  # two bars of the big one
+    "ride": ("V", "V", "V", "fill"),  # a verse of its own
+    "ride_easy": ("A", "A", "C", "C"),  # no fill: it just rolls on
+    "breakdown": ("break", "break", "C", "build"),  # the floor drops out, then back up into another drop
+    "half_break": ("break", "C", "C", "build"),
+    "outro": ("B", "B", "C", "out"),
+    "outro_quiet": ("break", "C", "A", "out"),
+}
+MAX_PHRASES = 6  # 24 bars, about 41 s: long enough to have a shape, short enough to watch
+MIDDLES = ("ride", "ride_easy", "ride", "ride_easy", "breakdown", "half_break")  # what can sit between the drops
+# Where the bass sits per phrase, in semitones off the root: minor-ish, and it moves.
+BASS_RIFFS = ((0, 0, 0, 0), (0, 0, 3, 3), (0, 3, 0, -2), (0, 0, -2, -4), (0, 5, 3, 0), (0, -4, 0, 3), (3, 3, 0, 0))
 STYLES = ("drumline", "bass")
 
 
@@ -100,18 +116,49 @@ def compose(rng: random.Random, style: str | None = None) -> dict:
     }
 
 
-def _compose_bass(rng: random.Random) -> dict:
-    """Halftime at 140 with a fixed arrangement: what varies is the kit, the three bass voices and the pitch."""
-    voices = rng.sample(BASS_VOICES, 3)  # A, B, C: three different ones, so the sections are telling apart
+def _bass_arrangement(rng: random.Random) -> tuple[list[str], list[int]]:
+    """String four-bar phrases into a song, and pick where the bass sits in each. Returns (bars, degrees).
+
+    Always: a count-in phrase, a drop phrase, an outro. In between, one to three middles, and after a
+    breakdown there is always another drop (that is what a breakdown is for). 12 to 24 bars, so some
+    songs are a quick 20 seconds and others run a minute-ish with two drops.
+    """
+    plan = [rng.choice(("count_in", "count_in_long")), rng.choice(("drop", "drop", "drop_long"))]
+    for _ in range(rng.choices((0, 1, 2, 3), weights=(2, 5, 3, 2))[0]):
+        if len(plan) >= MAX_PHRASES - 1:
+            break  # room for the outro: nothing here runs past about 40 seconds
+        middle = rng.choice(MIDDLES)
+        plan.append(middle)
+        if middle in ("breakdown", "half_break") and len(plan) < MAX_PHRASES - 1:
+            plan.append(rng.choice(("drop", "drop_long")))  # a breakdown builds, so it has to land on something
+    plan.append(rng.choice(("outro", "outro_quiet")))
+
+    voices = rng.sample(BASS_VOICES, 3)
     parts = dict(zip("ABC", voices))
+    bars: list[str] = []
+    degrees: list[int] = []
+    for name in plan:
+        riff = rng.choice(BASS_RIFFS)
+        for k, move in enumerate(PHRASES[name]):
+            bars.append(parts[move] if move in parts else rng.choice(voices) if move == "V" else move)
+            degrees.append(riff[k])
+    return bars, degrees
+
+
+def _compose_bass(rng: random.Random) -> dict:
+    """Halftime at 140. The kit, the three bass voices, the arrangement and the riff are all made up."""
+    bars, degrees = _bass_arrangement(rng)
+    adjective = rng.choice(["wub", "filthy", "heavy", "sub", "wonky", "grimy", "polite", "tiny"])
+    noun = rng.choice(["study", "business", "situation", "o'clock", "sandwich", "weather", "energy", "face"])
     return {
         "style": "bass",
         "bpm": BASS_BPM,
-        "bars": [parts.get(m, m) for m in BASS_ARRANGEMENT],
+        "bars": bars,
+        "degrees": degrees,
         "kit": rng.choice(sorted(DRUM_KITS)),
         "hi": rng.choice([1800, 2100, 2400]),  # the lasers
         "lo": rng.choice([310, 330, 350, 370]),  # the "bass": as low as the speaker can still carry
-        "name": rng.choice(["wub study", "the drop", "bass face", "wa-wah", "pew pew pew", "filthy (politely)", "sub sandwich"]) + f" #{rng.randint(10, 99)}",
+        "name": f"{adjective} {noun} #{rng.randint(10, 99)}",
     }
 
 
@@ -172,6 +219,10 @@ def _render_drums(out: np.ndarray, song: dict, bar: int, t0: float, step: float,
             _mix(out, sounds.snare(sample_rate, rng, dur=0.06 + 0.03 * u), t, sample_rate, 0.35 + 0.5 * u)
         _mix(out, sounds.kick(sample_rate, rng), t0, sample_rate, 1.0)
         return
+    if move == "break":  # the floor drops out: hats only, so the bar still has a pulse to hold on to
+        for k in range(0, STEPS_PER_BAR, 4):
+            _mix(out, sounds.hat(sample_rate, rng, open_=(k == 8)), t0 + k * step, sample_rate, 0.4)
+        return
     kit = DRUM_KITS[song["kit"]]
     off = (bar % 2) * STEPS_PER_BAR  # the loop is two bars long
     for k in range(STEPS_PER_BAR):
@@ -191,7 +242,7 @@ def _render_bass(out: np.ndarray, song: dict, bar: int, t0: float, step: float, 
     move = song["bars"][bar]
     beat = 4 * step  # a beat is four sixteenths
     bar_s = STEPS_PER_BAR * step
-    root = float(song["lo"]) * 2 ** (BASS_DEGREES[bar % len(BASS_DEGREES)] / 12.0)
+    root = float(song["lo"]) * 2 ** (song["degrees"][bar] / 12.0)
     hi = float(song["hi"])
     per_beat = 60.0 / song["bpm"]  # seconds per beat: a wobble rate of n per beat is n / per_beat Hz
     if move == "intro":
@@ -204,6 +255,9 @@ def _render_bass(out: np.ndarray, song: dict, bar: int, t0: float, step: float, 
         return
     if move == "drop":  # the big one: lands on the downbeat, held for the bar, wobbling once a beat
         _mix(out, sounds.wub(bar_s * 0.98, root * 0.92, rate=1.0 / per_beat, sample_rate=sample_rate, depth=1.3), t0, sample_rate, 0.8)
+        return
+    if move == "break":  # one long note with the filter creeping open: the calm before it comes back
+        _mix(out, sounds.wah(bar_s * 0.95, root * 1.15, sample_rate, up=True), t0, sample_rate, 0.45)
         return
     if move == "fill":
         for k in range(4):

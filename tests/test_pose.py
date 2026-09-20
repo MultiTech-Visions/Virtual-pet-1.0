@@ -140,3 +140,73 @@ def test_no_person_or_arms_out_of_the_picture_reads_as_nothing():
     r = _reader(FakeNet(crop, 0.9, presence_logit=-3.0))  # confident there is a person, but the shoulders are out of frame
     assert r.read_arms(frame, np.array([200.0, 300.0]), np.array([200.0, 200.0]), 1.0) is None
     assert r.roi is not None  # still tracking them, though
+
+
+def _plur_arms(ts, l_deg, r_deg, l_wrist, r_wrist, shoulder=50.0, shoulder_y=100.0):
+    from festival_pet.pose import Arms
+
+    pts = {"l_shoulder": (100.0, shoulder_y), "r_shoulder": (100.0 + shoulder, shoulder_y),
+           "l_elbow": (100.0, shoulder_y + 20), "r_elbow": (100.0 + shoulder, shoulder_y + 20),
+           "l_wrist": l_wrist, "r_wrist": r_wrist, "l_wrist_ok": True, "r_wrist_ok": True}
+    return Arms(ts, l_deg, r_deg, arm_level(l_deg), arm_level(r_deg), 0.9, shoulder, pts)
+
+
+PLUR_POSES = {
+    "peace": lambda t: _plur_arms(t, 150.0, 150.0, (60.0, 40.0), (190.0, 40.0)),  # both arms up in a V, hands apart
+    "love": lambda t: _plur_arms(t, 100.0, 100.0, (120.0, 85.0), (133.0, 85.0)),  # hands together, up at the chest
+    "unity": lambda t: _plur_arms(t, 30.0, 30.0, (120.0, 160.0), (133.0, 160.0)),  # hands clasped, low
+    "respect": lambda t: _plur_arms(t, 80.0, 10.0, (160.0, 95.0), (150.0, 180.0)),  # one arm out to it
+}
+
+
+def test_plur_poses_are_told_apart_and_only_count_in_order():
+    from festival_pet.pose import PLUR_STEPS, ArmSigns, plur_pose
+
+    for name, make in PLUR_POSES.items():
+        assert plur_pose(make(0.0)) == name, name
+    # arms hanging down, or out to the sides for a hug, are none of them
+    assert plur_pose(_plur_arms(0.0, 10.0, 10.0, (95.0, 180.0), (155.0, 180.0))) is None
+    assert plur_pose(_plur_arms(0.0, 90.0, 90.0, (40.0, 100.0), (210.0, 100.0))) is None
+
+    def run(signs, order, t0=0.0, hold=1.2):
+        got, t = [], t0
+        for name in order:
+            end = t + hold
+            while t < end:
+                r = signs.feed(PLUR_POSES[name](t), t)
+                if r is not None:
+                    got.append(r)
+                t += 0.1
+            t += 0.3
+        return got, t
+
+    signs = ArmSigns()
+    got, t = run(signs, PLUR_STEPS)
+    assert got == [("plur", s) for s in PLUR_STEPS]
+    assert signs.plur_step == 0  # the handshake is complete, ready for the next one
+
+    # out of order: only the poses that come next count, and a hug is not started mid-handshake
+    signs = ArmSigns()
+    got, t = run(signs, ("love", "unity", "peace", "love"))
+    assert got == [("plur", "peace"), ("plur", "love")]
+    # ...and wandering off mid-handshake lets it lapse
+    from festival_pet.pose import PLUR_STEP_WINDOW_S
+
+    signs = ArmSigns()
+    run(signs, ("peace",))
+    assert signs.plur_step == 1
+    signs.feed(PLUR_POSES["unity"](100.0 + PLUR_STEP_WINDOW_S), 100.0 + PLUR_STEP_WINDOW_S)
+    assert signs.plur_step == 0
+
+
+def test_a_peace_sign_does_not_read_as_a_hug():
+    from festival_pet.pose import HUG_HOLD_S, ArmSigns
+
+    signs = ArmSigns()
+    t, got = 0.0, []
+    while t < HUG_HOLD_S * 2:  # holding the peace pose for much longer than a hug needs
+        r = signs.feed(PLUR_POSES["peace"](t), t)
+        if r is not None:
+            got.append(r)
+        t += 0.1
+    assert ("hug",) not in got and ("plur", "peace") in got
