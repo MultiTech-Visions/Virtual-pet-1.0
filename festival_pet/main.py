@@ -864,7 +864,9 @@ class Pet:
         self.sound.request_buffer(buf, "song:" + song["name"], 2, now)
         self.last_song = song
         self._singing_until = now + dur
-        self.tap.set_bpm(song["bpm"], beat_at=now + 0.08)  # bob along; the page shows the tempo too
+        # bob along; the page shows the tempo too. Bass music is counted in halftime, so the body moves on
+        # the 1 and the 3 rather than on all four of the song's beats (which at 140 would rattle the neck).
+        self.tap.set_bpm(songs.body_bpm(song), beat_at=now + 0.08)
         self.audio.deaf_until = max(self.audio.deaf_until, now + dur + 0.5)
         self.p.behavior._think(now, "a song! " + songs.describe(song))
         self.actions_log.append((now, "song", song["name"]))

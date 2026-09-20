@@ -194,12 +194,33 @@ Play tab plays one on demand, and "jingle" is in the lexicon.
 **Songs** come in two kinds, and it picks one when it decides to sing (or you pick with the
 Drumline / Bass buttons). *Drumline* is rhythm, not melody: two "hands" on two pitches playing
 quarters, eighths, triplets, paradiddles, flams, rolls and rests through an AABA-ish form, with a
-roll to finish. *Bass* is the robot's idea of bass music at a halftime tempo: wubs (one note whose
-filter opens and shuts, two or three times a beat), wah-wahs, lasers, a riser and exactly one drop
-per song, then a last bar and a breath. The speaker reproduces nothing under about 300 Hz, so the
-bass is implied by a harmonic-rich note up where the speaker works, with the filter doing the
-talking, rather than by an actual low note. Saved songs from before the two kinds existed are
-stamped as drumline ones when they load.
+roll to finish.
+
+*Bass* is built the way the genre is, because without that there is nothing to follow. 140 bpm with
+a sparse halftime kit underneath — kick on the 1, snare on the 3, hats on the offbeats, over a
+two-bar loop, in one of three kits — so there is always a backbeat to count against while the bass
+does the strange part. On top of it, a held note whose filter opens and shuts a fixed number of
+times per beat (one, two or three, always locked to the grid), or wahs, lasers or offbeat stabs.
+
+The arrangement is fixed rather than random, in four-bar phrases:
+
+| Bars | |
+|---|---|
+| 1–2 | kit alone, so you have the count before anything else happens |
+| 3 | the A bass |
+| 4 | build: a snare roll doubling up, then a quarter-note of dead silence |
+| 5 | **the drop**, on the downbeat |
+| 6–7 | the B bass |
+| 8 | fill, into another gap |
+| 9–10 | the C bass, a minor third up |
+| 11 | B again, a step down |
+| 12 | last hit, left to ring |
+
+The speaker reproduces nothing under about 300 Hz, so the bass note sits at 310–370 Hz and the
+harmonics with the moving filter do the talking; an actual sub would come out as silence. The kick
+is a 440→150 Hz drop with a click on the front, and the click is what carries it. The body bobs at
+half the song tempo, on the 1 and the 3, which is both the halftime feel and as fast as the neck
+wants to move. Saved songs from before the two kinds existed are stamped as drumline when they load.
 
 **Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
 "Puppet it". Distinct calls: a rising two-note for "let's play mirror" (falling for "mirror

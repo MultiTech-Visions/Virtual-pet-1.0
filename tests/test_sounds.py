@@ -77,9 +77,12 @@ def test_songs_compose_render_and_describe():
             assert song["bars"][-1] == "roll_and_stop" and 4 <= len(song["bars"]) <= 9
             assert len(songs.hits(song)) >= 4 * len(song["bars"]) - 4
         else:
-            assert song["bars"].count("drop") == 1 and song["bars"].index("riser") == song["bars"].index("drop") - 1
+            assert song["bpm"] == songs.BASS_BPM and songs.body_bpm(song) == songs.BASS_BPM / 2  # halftime for the body
+            assert song["bars"].count("drop") == 1 and song["bars"].index("build") == song["bars"].index("drop") - 1
+            assert song["bars"][:2] == ["intro", "intro"] and song["bars"][-1] == "out"  # a count-in, and an ending
+            assert song["bars"].index("drop") % 4 == 0  # the drop lands on a four-bar phrase boundary
             assert song["lo"] >= 300  # the speaker carries nothing lower: the bass is implied, not played
-            assert all(m in songs.BASS_MOVES for m in song["bars"])
+            assert all(m in songs.BASS_MOVES for m in song["bars"]) and song["kit"] in songs.DRUM_KITS
     assert len(seen) > 3 and styles == {"drumline", "bass"}  # variety
     # a paradiddle bar has 16 hits with accents on each group of four
     assert [a for _, _, a in songs.PATTERNS["paradiddle"]] == [1, 0, 0, 0] * 4
@@ -90,6 +93,41 @@ def test_songs_compose_render_and_describe():
         except ValueError:
             continue
         raise AssertionError("expected ValueError")
+
+
+def test_bass_songs_have_a_kit_to_count_against():
+    """The wobble needs a backbeat or there is nothing to hear it against: kick on the 1, snare on the 3."""
+    import numpy as np
+
+    from festival_pet import songs
+
+    sr = 16000
+    for kit_name, kit in songs.DRUM_KITS.items():
+        for voice, pattern in kit.items():
+            assert len(pattern) == 2 * songs.STEPS_PER_BAR and set(pattern) <= {"x", "."}, (kit_name, voice)
+        assert kit["kick"][0] == "x" and kit["snare"][8] == "x", kit_name  # the 1 and the 3, in both bars
+        assert kit["kick"][songs.STEPS_PER_BAR] == "x" and kit["snare"][songs.STEPS_PER_BAR + 8] == "x", kit_name
+        assert kit["snare"].count("x") <= 4, kit_name  # sparse: halftime is mostly room
+
+    song = songs.compose(random.Random(1), "bass")
+    period = 60.0 / song["bpm"]
+    drums = np.zeros(int(songs.duration(song) * sr), dtype=np.float32)
+    rng = random.Random(song["name"])
+    for b in range(len(song["bars"])):
+        songs._render_drums(drums, song, b, b * 4 * period, period / 4, sr, rng)
+    peak_at = lambda t: float(np.abs(drums[int(t * sr):int((t + 0.1) * sr)]).max())  # noqa: E731
+    for b, move in enumerate(song["bars"]):
+        t0 = b * 4 * period
+        assert peak_at(t0) > 0.3, f"bar {b} ({move}) has no downbeat"
+        if move not in ("build", "fill", "out"):
+            assert peak_at(t0 + 2 * period) > 0.3, f"bar {b} ({move}) has no backbeat on the 3"
+    # the build ends in a gap: the last eighth of the bar before the drop is silent
+    drop = song["bars"].index("drop")
+    gap = drop * 4 * period - period * 0.6  # the last three sixteenths before the drop
+    assert float(np.abs(drums[int(gap * sr):int(drop * 4 * period * sr)]).max()) < 0.05
+    # and the drums are actually audible against the bass, not buried under it
+    full = songs.render(song)
+    assert float(np.sqrt((drums**2).mean())) > 0.3 * float(np.sqrt((full**2).mean()))
 
 
 def test_jingles_are_short_made_up_melodies_on_a_scale():

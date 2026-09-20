@@ -113,6 +113,62 @@ def purr(
     return (wave * _envelope(len(t), 0.15, 0.3)).astype(np.float32)
 
 
+def _highpass(x: np.ndarray, times: int = 1) -> np.ndarray:
+    """Crude but cheap: each pass is a one-sample difference, which tilts the noise brighter."""
+    for _ in range(times):
+        x = np.diff(x, prepend=np.float32(x[0]))
+    return x
+
+
+def _decay(n: int, tau: float, sample_rate: int, attack: float = 0.002) -> np.ndarray:
+    """Percussive envelope: near-instant attack, exponential tail. What every drum here wears."""
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    env = np.exp(-t / max(tau, 1e-4))
+    a = max(1, int(attack * sample_rate))
+    env[:a] *= np.linspace(0.0, 1.0, a, dtype=np.float32)
+    return env.astype(np.float32)
+
+
+def kick(sample_rate: int = SAMPLE_RATE, rng: random.Random | None = None) -> np.ndarray:
+    """The "one". A pitch drop with a click on the front.
+
+    A real kick lives at 50 Hz, which this speaker turns into silence, so the drop starts up at
+    440 Hz and the click carries the transient: on a small speaker that is what reads as a kick.
+    """
+    r = rng if rng is not None else random.Random()
+    dur = 0.13
+    n = int(dur * sample_rate)
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    f = 150.0 + (r.uniform(400.0, 480.0) - 150.0) * np.exp(-t / 0.018)  # the drop
+    body = np.sin(np.cumsum(f) * (_TWO_PI / sample_rate)).astype(np.float32) * _decay(n, 0.055, sample_rate)
+    click = _highpass(np.random.default_rng(r.randrange(1 << 30)).standard_normal(int(0.006 * sample_rate)).astype(np.float32), 2)
+    out = body
+    out[: len(click)] += click * 0.5
+    return (out / max(float(np.max(np.abs(out))), 1e-6)).astype(np.float32)
+
+
+def snare(sample_rate: int = SAMPLE_RATE, rng: random.Random | None = None, dur: float = 0.17) -> np.ndarray:
+    """The backbeat: bright noise over a short ring, so it cuts through the wobble."""
+    r = rng if rng is not None else random.Random()
+    n = int(dur * sample_rate)
+    noise = np.random.default_rng(r.randrange(1 << 30)).standard_normal(n).astype(np.float32)
+    body = _highpass(noise, 2) * _decay(n, dur * 0.35, sample_rate)
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    ring = np.sin(_TWO_PI * r.uniform(310.0, 350.0) * t).astype(np.float32) * _decay(n, dur * 0.18, sample_rate)
+    out = body * 0.8 + ring * 0.35
+    return (out / max(float(np.max(np.abs(out))), 1e-6)).astype(np.float32)
+
+
+def hat(sample_rate: int = SAMPLE_RATE, rng: random.Random | None = None, open_: bool = False) -> np.ndarray:
+    """The tick that keeps the time between the kick and the snare."""
+    r = rng if rng is not None else random.Random()
+    dur = 0.11 if open_ else 0.028
+    n = int(dur * sample_rate)
+    noise = np.random.default_rng(r.randrange(1 << 30)).standard_normal(n).astype(np.float32)
+    out = _highpass(noise, 4) * _decay(n, dur * 0.3, sample_rate, attack=0.0008)
+    return (out / max(float(np.max(np.abs(out))), 1e-6)).astype(np.float32)
+
+
 def _moving_filter(
     duration: float,
     base: float,
