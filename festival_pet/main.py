@@ -111,7 +111,17 @@ THIRD_SONG_CHANCE = 0.35  # the third is a rarity, so it stays special
 # The end of a PLUR handshake: it offers an antenna as a post to slide a bracelet onto, and waits.
 KANDI_OFFER_S = 10.0  # how long it holds the antenna out before giving up (they may be digging in a bag)
 KANDI_SETTLE_S = 2.0  # after something lands on the antenna, stay frozen this long before moving again
-KANDI_CAREFUL_S = 45.0  # ...then move gently, and keep that antenna upright, for this long
+KANDI_GENTLE_S = 20.0  # ...then move smaller for this long while it settles (the upright gate stays on for good)
+# Giving one back: it points the ear it is wearing one on, tilts that ear's base down to the low point,
+# and lowers the antenna until the bracelet slides off the tip into their hand.
+KANDI_GIVE_POINT_S = 0.9  # raise the chosen antenna and look at them
+KANDI_GIVE_TILT_S = 1.2  # roll the head over so that antenna's base is the lowest part of it
+KANDI_GIVE_LOWER_S = 2.0  # lower it, slowly, until the bracelet runs off the end
+KANDI_GIVE_CATCH_S = 1.2  # hold it down there while they take it
+KANDI_GIVE_BACK_S = 1.0  # and back up to normal
+KANDI_GIVE_S = KANDI_GIVE_POINT_S + KANDI_GIVE_TILT_S + KANDI_GIVE_LOWER_S + KANDI_GIVE_CATCH_S + KANDI_GIVE_BACK_S
+KANDI_GIVE_PITCH = 14.0  # it looks down at where the bracelet is going while it sheds it
+ANTENNA_UP_DEG, ANTENNA_SHED_DEG = 175.0, 5.0  # the antenna as an "arm": up is vertical, down is laid right back
 COMBO_TAPS = 4  # left right left right on the dancing layer...
 COMBO_WINDOW_S = 1.0  # ...this fast: stop dancing
 
@@ -433,10 +443,12 @@ class Pet:
         self._songs_in_set = 0
         self._next_song_at = 0.0
         # The kandi trade: which antenna is out (or wearing one), and the clocks for each stage
+        self.kandi_on = [False, False]  # antennas wearing a bracelet (right, left): what it can trade away
         self.kandi_side: int | None = None  # 0 right, 1 left
         self._kandi_offer_until = 0.0
         self._kandi_got_at = 0.0  # when something landed on the offered antenna (0 = still waiting)
-        self.kandi_until = 0.0  # being careful with a bracelet until this
+        self._kandi_give_t0 = 0.0  # when the giving-one-back routine started (0 = not running)
+        self.kandi_roll_deg = 25.0  # how far to tilt the head to shed a bracelet; flip the sign if it leans the wrong way
         self._singing_until = 0.0
         self.songs_file: Path | None = None
         self.pose_history: PoseHistory | None = None  # set on the real robot; fed every tick for the vision thread
@@ -644,11 +656,10 @@ class Pet:
         for action, t_ev in fired:
             self.key_action(action, t_ev, now)
 
-        if self._kandi_offer_until:
+        if self._kandi_give_t0:
+            self._kandi_give(now)
+        elif self._kandi_offer_until:
             self._kandi_wait(obs, now)
-        elif self.kandi_until and now >= self.kandi_until:  # long enough: it can move normally again
-            self.set_bracelet(None, now)
-            beh._think(now, "(the bracelet must be safe by now)")
 
                 # ---------------- Simon says (leads; the brain's own games and reactions wait)
         if self.mime.active:
@@ -679,7 +690,7 @@ class Pet:
         # ---------------- brain
         solo = comp._gesture is not None and comp._gesture.name in SOLO_GESTURES and comp.gesture_active(now)
         performing = now < self._singing_until or self._next_song_at > 0.0  # a gap between songs is still the act
-        trading = self.signs.plur_step > 0 or self._kandi_offer_until > 0.0  # mid-handshake: nothing else starts
+        trading = self.signs.plur_step > 0 or self._kandi_offer_until > 0.0 or self._kandi_give_t0 > 0.0  # mid-trade: nothing else starts
         obs.busy = "mime" if self.mime.active else "sing" if performing else "kandi" if trading else "gesture" if solo else None
         # Manual groove with a tempo in: we are dancing. The brain treats it like a beat (no games, songs, mirror
         # or nod-copying start) and the tapped beat below wins over anything it heard or saw.
@@ -943,17 +954,69 @@ class Pet:
         elif step == "respect":
             beh._think(now, "...and respect")
             self._dispatch(Action("sound", "happy", 3), now)
-            self.start_kandi(now)
+            self.trade_kandi(now)
         else:
             raise KeyError(f"unknown PLUR step '{step}'")
         beh._last_interaction = now
         beh.mood.boredom = max(0.0, beh.mood.boredom - 0.15)
 
+    def trade_kandi(self, now: float, side: int | None = None) -> None:
+        """The whole exchange: give one of its own away, then hold the same ear out for one back.
+
+        If it is not wearing one there is nothing to give, so it goes straight to asking.
+        """
+        loaded = [i for i in (0, 1) if self.kandi_on[i]]
+        if side is not None and side not in (0, 1):
+            raise ValueError(f"antenna side must be 0 (right) or 1 (left), not {side}")
+        give = side if side is not None and self.kandi_on[side] else (loaded[0] if loaded else None)
+        if give is None:
+            self.start_kandi(now, side)
+            return
+        self.kandi_side = give
+        self._kandi_give_t0 = now
+        self.p.composer.loaded[give] = False  # the upright gate has to be open by the time the antenna comes down
+        self._kandi_offer_until = self._kandi_got_at = 0.0
+        self.p.behavior._think(now, f"here — this one's for you, off my {'left' if give else 'right'} ear")
+        self._dispatch(Action("sound", "curious", 3), now)
+        self.actions_log.append((now, "kandi", f"giving the one on the {'left' if give else 'right'} antenna"))
+
+    def _kandi_give(self, now: float) -> None:
+        """Shed a bracelet off an antenna, a step at a time, by tilting that ear's base down to be the
+        lowest part of the head and then lowering the antenna until the bracelet runs off the tip.
+
+        Driven frame by frame through the two overrides that already exist: ``hold`` for the head pose
+        (Simon says shows poses with it) and ``show_arms`` for absolute antenna angles (the arm game).
+        """
+        beh, comp = self.p.behavior, self.p.composer
+        side = self.kandi_side
+        u = now - self._kandi_give_t0
+        aim = beh.gaze[0] if beh.gaze is not None else 0.0
+        roll = self.kandi_roll_deg * (-1.0 if side else 1.0)  # toward the giving side, whichever way that is
+        tilt = max(0.0, min(1.0, (u - KANDI_GIVE_POINT_S) / KANDI_GIVE_TILT_S))
+        back = max(0.0, (u - (KANDI_GIVE_S - KANDI_GIVE_BACK_S)) / KANDI_GIVE_BACK_S)
+        ease = max(0.0, tilt - back)
+        comp.hold = (aim, KANDI_GIVE_PITCH * ease, roll * ease, now + 0.3)
+        drop = max(0.0, min(1.0, (u - KANDI_GIVE_POINT_S - KANDI_GIVE_TILT_S) / KANDI_GIVE_LOWER_S)) * (1.0 - back)
+        deg = ANTENNA_UP_DEG + (ANTENNA_SHED_DEG - ANTENNA_UP_DEG) * drop
+        comp.show_arms(deg if side == 1 else ANTENNA_UP_DEG, deg if side == 0 else ANTENNA_UP_DEG, now, 0.3)
+        if self.kandi_on[side] and u >= KANDI_GIVE_POINT_S + KANDI_GIVE_TILT_S + KANDI_GIVE_LOWER_S:
+            self.kandi_on[side] = False  # it should have run off the end by now
+            beh._think(now, "...there you go!")
+            self._dispatch(Action("sound", "giggle", 3), now)
+            self.actions_log.append((now, "kandi", "gave one away"))
+        if u < KANDI_GIVE_S:
+            return
+        self._kandi_give_t0 = 0.0
+        comp.hold = None
+        comp.show_arms(None)
+        beh._think(now, "...your turn?")
+        self.start_kandi(now, side)  # and hold the same ear out for one back
+
     def start_kandi(self, now: float, side: int | None = None) -> int:
-        """Hold out an antenna for a bracelet and freeze. ``side`` 0 right, 1 left; by default the one
-        that is not already wearing something. Returns the side offered."""
+        """Hold out an antenna for a bracelet and freeze. ``side`` 0 right, 1 left; by default an empty
+        one. Returns the side offered."""
         if side is None:
-            side = 1 if self.kandi_side == 0 and self.p.composer.careful_side == 0 else 0
+            side = 0 if not self.kandi_on[0] else 1
         if side not in (0, 1):
             raise ValueError(f"antenna side must be 0 (right) or 1 (left), not {side}")
         self.kandi_side = side
@@ -965,20 +1028,27 @@ class Pet:
         return side
 
     def cancel_kandi(self, now: float) -> None:
-        """Stop offering (it was started by mistake, or nobody came)."""
-        self._kandi_offer_until = self._kandi_got_at = 0.0
+        """Stop mid-trade (it was started by mistake, or nobody came)."""
+        self._kandi_offer_until = self._kandi_got_at = self._kandi_give_t0 = 0.0
         self.signs.plur_step = 0
+        self.p.composer.hold = None
+        self.p.composer.show_arms(None)
         self.p.composer.release_still()
-        self.actions_log.append((now, "kandi", "offer cancelled"))
+        self.actions_log.append((now, "kandi", "trade cancelled"))
 
-    def set_bracelet(self, side: int | None, now: float) -> None:
-        """Say whether an antenna is wearing a bracelet. While one is, it moves gently and keeps that
-        antenna upright; ``None`` clears it (you took the bracelet off and put it on the body)."""
-        if side is not None and side not in (0, 1):
-            raise ValueError(f"antenna side must be 0 (right), 1 (left) or none, not {side}")
-        self.p.composer.careful_side = side
-        self.kandi_until = now + KANDI_CAREFUL_S if side is not None else 0.0
-        self.actions_log.append((now, "kandi", "bracelet off" if side is None else f"bracelet on the {'left' if side else 'right'} antenna"))
+    def set_bracelets(self, sides: list[int], now: float, gentle: bool = False) -> None:
+        """Say which antennas are wearing a bracelet (0 right, 1 left). A loaded antenna is held near
+        vertical whatever else it does, which is all a bracelet needs to stay on; ``gentle`` also makes
+        it move smaller for a moment, which is worth it right after one has been put on."""
+        for i in sides:
+            if i not in (0, 1):
+                raise ValueError(f"antenna side must be 0 (right) or 1 (left), not {i}")
+        self.kandi_on = [0 in sides, 1 in sides]
+        self.p.composer.loaded = list(self.kandi_on)
+        if gentle:
+            self.p.composer.gentle_until = now + KANDI_GENTLE_S
+        worn = [n for i, n in enumerate(("right", "left")) if self.kandi_on[i]]
+        self.actions_log.append((now, "kandi", "wearing: " + (", ".join(worn) if worn else "nothing")))
 
     def _kandi_wait(self, obs: Observation, now: float) -> None:
         """Waiting with an antenna out. The bracelet going on is felt as that antenna being pushed off
@@ -1007,7 +1077,7 @@ class Pet:
             return  # let it settle before anything moves
         self._kandi_offer_until = 0.0
         comp.release_still()  # the antenna and head ease back to normal, slowly
-        self.set_bracelet(self.kandi_side, now)
+        self.set_bracelets(sorted({*[i for i in (0, 1) if self.kandi_on[i]], self.kandi_side}), now, gentle=True)
         beh._think(now, f"I'm wearing it. on my {'left' if self.kandi_side else 'right'} ear. careful now")
         self._dispatch(Action("sound", "tada", 3), now)
         self._dispatch(Action("gesture", "nod", 2), now)  # a nod, not a dance: there is a bracelet on there
@@ -1234,8 +1304,9 @@ class Pet:
             "kandi": {"offering": self._kandi_offer_until > 0.0, "side": None if self.kandi_side is None else ("left" if self.kandi_side else "right"),
                       "waiting_s": round(max(0.0, self._kandi_offer_until - now), 1) if self._kandi_offer_until else None,
                       "got_it": self._kandi_got_at > 0.0, "step": self.signs.plur_step,
-                      "bracelet": None if comp.careful_side is None else ("left" if comp.careful_side else "right"),
-                      "careful_s": round(max(0.0, self.kandi_until - now), 1) if self.kandi_until else None},
+                      "giving": self._kandi_give_t0 > 0.0, "roll_deg": self.kandi_roll_deg,
+                      "wearing": [n for i, n in enumerate(("right", "left")) if self.kandi_on[i]],
+                      "settling_s": round(max(0.0, comp.gentle_until - now), 1) if comp.gentle_until > now else None},
             "dance_along": {"on": self.dance_along, "copying": self._copying_arms, "flourish": self._copying_arms and now < self._flourish_until,
                             "antennas": None if comp.arms is None or now >= comp.arms_until else [round(comp.arms[0]), round(comp.arms[1])]},
             "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "style": self.last_song["style"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs],
@@ -1262,7 +1333,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "dance_along": self.dance_along, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.layers, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "dance_along": self.dance_along, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.layers, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "kandi_roll": self.kandi_roll_deg, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "imu_calibration": self.imu_rub.calibration,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
@@ -1337,21 +1408,22 @@ class Pet:
                     raise ValueError(f"Simon says kind must be head or arms, not '{value}'")
                 if self.start_simon(kind, now) is None:
                     raise ValueError("nobody in view to play Simon says with" + (" (and no arms to read)" if kind == "arms" else ""))
-        elif cmd == "kandi":  # value: true to offer an antenna now, "left"/"right" to pick one, false to stop
+        elif cmd == "kandi":  # value: true for the whole trade, "left"/"right" to pick an ear, false to stop
             if value in (False, 0, None, "off"):
                 self.cancel_kandi(now)
             else:
-                self.start_kandi(now, _side_arg(value))
-        elif cmd == "bracelet":  # value: "left"/"right" (or true for whichever was offered), false when you take it off
-            if value in (False, 0, None, "off"):
-                self.set_bracelet(None, now)
-            else:
-                side = _side_arg(value)
-                if side is None:
-                    side = self.kandi_side
-                if side is None:
-                    raise ValueError("say which antenna has the bracelet: left or right")
-                self.set_bracelet(side, now)
+                self.trade_kandi(now, _side_arg(value))
+        elif cmd == "ask_kandi":  # just the asking half: hold an ear out, give nothing away
+            self.start_kandi(now, _side_arg(value))
+        elif cmd == "bracelet":  # which antennas are wearing one: "none", "right", "left" or "both"
+            sides = {"none": [], "off": [], "right": [0], "left": [1], "both": [0, 1]}.get(str(value).lower() if value is not True else "both")
+            if sides is None:
+                raise ValueError(f"bracelets must be none, left, right or both, not '{value}'")
+            self.set_bracelets(sides, now)
+        elif cmd == "kandi_roll":  # how far the head tilts to shed one; negative if it leans the wrong way
+            self.kandi_roll_deg = float(value)
+            if abs(self.kandi_roll_deg) > 40.0:
+                raise ValueError("a shed tilt beyond 40 degrees will not get the head back level nicely")
         elif cmd == "dance_along":
             self.dance_along = bool(value)
         elif cmd == "singing":
@@ -1425,7 +1497,7 @@ class Pet:
         return {"ok": True}
 
     # ------------------------------------------------------------------ settings persistence
-    _SETTING_KEYS = ("voice", "muted", "pickup", "ears", "dance_along", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+    _SETTING_KEYS = ("voice", "muted", "pickup", "ears", "dance_along", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "kandi_roll", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
         c = self.mind()["controls"]

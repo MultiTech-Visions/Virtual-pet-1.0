@@ -555,10 +555,10 @@ def test_a_wave_gets_a_mirrored_wave_back_and_a_hug_gets_a_nuzzle():
     pet.stop()
 
 
-def test_the_plur_handshake_offers_an_antenna_and_feels_the_bracelet_land(tmp_path):
+def test_the_plur_handshake_trades_a_bracelet_both_ways(tmp_path):
     import numpy as np
 
-    from festival_pet.main import KANDI_CAREFUL_S, KANDI_OFFER_S, KANDI_SETTLE_S
+    from festival_pet.main import KANDI_GIVE_S, KANDI_OFFER_S, KANDI_SETTLE_S
     from festival_pet.motion import CAREFUL_ANTENNA_RAD, OFFER_RAD
     from festival_pet.pose import PLUR_STEPS
     from test_pose import PLUR_POSES
@@ -570,6 +570,8 @@ def test_the_plur_handshake_offers_an_antenna_and_feels_the_bracelet_land(tmp_pa
     mem = pet.p.memory
     mem.path = tmp_path / "mem.json"  # this test enrols someone, so give it somewhere of its own to save
     beh._engaged_person = mem.enroll(np.ones(4), t)
+    pet.set_bracelets([0], t)  # it is wearing one on its right ear, ready to trade away
+    assert comp.loaded == [True, False]
 
     now = t
     for step in PLUR_STEPS:  # peace, love, unity, respect, each held for a beat
@@ -580,11 +582,27 @@ def test_the_plur_handshake_offers_an_antenna_and_feels_the_bracelet_land(tmp_pa
             now += 0.05
         now += 0.3
     assert [n for _, k, n in pet.actions_log if k == "arms" and n.startswith("plur")] == [f"plur {s}" for s in PLUR_STEPS]
-    thoughts = " ".join(x[1] for x in beh.thoughts)
-    assert "peace" in thoughts and "love" in thoughts and "unity" in thoughts and "respect" in thoughts
     assert pet._last_obs.busy == "kandi"  # nothing else gets started in the middle of this
 
-    # it holds an antenna out, just past vertical, and freezes
+    # it gives first: the loaded ear tilts down and the antenna lowers until the bracelet runs off
+    assert pet._kandi_give_t0 > 0.0 and pet.kandi_side == 0
+    give_t0, rolls, antenna = pet._kandi_give_t0, [], []
+    while pet._kandi_give_t0:
+        pet.step(now)
+        _, ants, _ = comp.sample(now, 0.02)
+        rolls.append(comp._hold_roll)
+        antenna.append(ants[0])
+        now += 0.05
+    assert max(rolls) > 10.0  # the head really did lean over
+    assert max(abs(x) for x in antenna) > 1.5  # ...and the antenna came right down, past the upright gate
+    assert not pet.kandi_on[0] and not comp.loaded[0]  # that one is gone
+    assert "gave one away" in [n for _, k, n in pet.actions_log if k == "kandi"]
+    gave_at = [t for t, k, n in pet.actions_log if k == "kandi" and n == "gave one away"][0]
+    assert gave_at - give_t0 > KANDI_GIVE_S * 0.5  # it lets go near the end, not the moment it starts
+    assert [n for _, k, n in pet.actions_log if k == "sound"][-3:].count("giggle") == 1  # and giggles as it goes
+    assert abs((now - give_t0) - KANDI_GIVE_S) < 0.4  # the whole thing takes about six seconds
+
+    # ...then asks for one back, on the same ear, and freezes
     assert pet._kandi_offer_until > now and pet.kandi_side == 0 and comp.offer_side == 0
     for _ in range(40):
         pet.step(now)
@@ -593,7 +611,7 @@ def test_the_plur_handshake_offers_an_antenna_and_feels_the_bracelet_land(tmp_pa
     assert abs(ants[0] - OFFER_RAD) < 0.02 and ants[1] > 0.5  # right one offered, left one out of the way
     head_a, _, _ = comp.sample(now, 0.02)
     head_b, _, _ = comp.sample(now + 0.5, 0.02)
-    assert float(np.abs(head_a - head_b).max()) < 0.01  # dead still while they thread it on
+    assert float(np.abs(head_a - head_b).max()) < 0.01  # dead still while they thread one on
 
     # the bracelet landing is felt as that antenna being pushed: no flinch, no ear-tickle giggle
     pet.touch.update = lambda *a, **k: True  # type: ignore[assignment]
@@ -601,57 +619,59 @@ def test_the_plur_handshake_offers_an_antenna_and_feels_the_bracelet_land(tmp_pa
     pet.step(now)
     now += 0.05
     pet.touch.update = lambda *a, **k: False  # type: ignore[assignment]
-    assert pet._kandi_got_at > 0.0 and not pet._last_obs.touched  # the touch was swallowed, not reacted to
-    # the touch was swallowed and answered as the bracelet, not passed to the brain as an ear tickle
+    assert pet._kandi_got_at > 0.0 and not pet._last_obs.touched
     assert "that's mine now" in beh.thoughts[-1][1]
 
-    # two seconds of settling, then it eases back and starts being careful
-    assert comp.careful_side is None
+    # two seconds of settling, then it eases back and is wearing the new one
     while now < pet._kandi_got_at + KANDI_SETTLE_S + 0.2:
         pet.step(now)
         now += 0.05
-    assert comp.careful_side == 0 and comp.offer_side is None
-    assert pet.kandi_until > now and abs(pet.kandi_until - (now + KANDI_CAREFUL_S)) < 1.0
+    assert pet.kandi_on == [True, False] and comp.loaded == [True, False] and comp.offer_side is None
+    assert comp.gentle_until > now
     assert beh._engaged_person.kandi == 1 and beh._engaged_person.affection > 0.2
     assert "kandi traded" in [n for _, k, n in pet.actions_log if k == "kandi"]
-    # ...which means that antenna stays upright whatever else it does
+    # ...and it rides out anything from here, because the gate keeps that antenna upright
     worst = 0.0
-    for k in range(400):
+    for k in range(600):
         comp.request_gesture("bounce", now + k * 0.02, 3)
+        comp.groove = ((k * 0.02 / 0.5) % 1.0, 0.0, 1.0)
         _, ants, _ = comp.sample(now + k * 0.02, 0.02)
         worst = max(worst, abs(ants[0]))
     assert worst <= CAREFUL_ANTENNA_RAD + 1e-6
-    # and after a while it can move normally again
-    pet.step(pet.kandi_until + 0.1)
-    assert comp.careful_side is None and pet.kandi_until == 0.0
     assert KANDI_OFFER_S >= 10.0  # long enough to dig one out of a bag
     pet.stop()
 
 
-def test_the_offer_times_out_and_can_be_driven_from_the_page(tmp_path):
+def test_kandi_falls_back_to_asking_and_can_be_driven_from_the_page():
     from festival_pet.main import KANDI_OFFER_S
 
     pet = _pet()
     app = FastAPI(); install_routes(app, pet); c = TestClient(app)
-    t = 1001.0
-    # nobody had one ready: it gives up after the timeout and goes back to normal
+    # wearing nothing: there is nothing to give, so the trade is just the asking half
+    assert not any(pet.kandi_on)
     assert c.post("/api/control", json={"cmd": "kandi", "value": "left"}).status_code == 200
-    assert pet.kandi_side == 1 and pet.p.composer.offer_side == 1
+    assert not pet._kandi_give_t0 and pet.kandi_side == 1 and pet.p.composer.offer_side == 1
     m = c.get("/api/mind").json()["kandi"]
-    assert m["offering"] and m["side"] == "left" and m["waiting_s"] > 0
+    assert m["offering"] and m["side"] == "left" and m["waiting_s"] > 0 and m["wearing"] == []
+    # nobody had one ready: it gives up after the timeout and goes back to normal
     pet.step(time.time() + KANDI_OFFER_S + 0.1)
     assert not pet._kandi_offer_until and pet.p.composer.offer_side is None
     assert "nothing came" in " ".join(n for _, k, n in pet.actions_log if k == "kandi")
     # started by mistake: cancel it
     assert c.post("/api/control", json={"cmd": "kandi", "value": True}).status_code == 200
     assert c.post("/api/control", json={"cmd": "kandi", "value": False}).status_code == 200
-    assert not pet._kandi_offer_until and pet.signs.plur_step == 0
-    # and the bracelet toggle, for when you move it onto the body
-    assert c.post("/api/control", json={"cmd": "bracelet", "value": "right"}).status_code == 200
-    assert pet.p.composer.careful_side == 0 and c.get("/api/mind").json()["kandi"]["bracelet"] == "right"
-    assert c.post("/api/control", json={"cmd": "bracelet", "value": False}).status_code == 200
-    assert pet.p.composer.careful_side is None and c.get("/api/mind").json()["kandi"]["bracelet"] is None
+    assert not pet._kandi_offer_until and not pet._kandi_give_t0 and pet.signs.plur_step == 0
+    # saying which ears are loaded, for when you move a bracelet onto the body
+    assert c.post("/api/control", json={"cmd": "bracelet", "value": "both"}).status_code == 200
+    assert pet.p.composer.loaded == [True, True] and c.get("/api/mind").json()["kandi"]["wearing"] == ["right", "left"]
+    assert c.post("/api/control", json={"cmd": "bracelet", "value": "none"}).status_code == 200
+    assert pet.p.composer.loaded == [False, False]
+    assert c.post("/api/control", json={"cmd": "bracelet", "value": "elbow"}).status_code == 400
     assert c.post("/api/control", json={"cmd": "kandi", "value": "sideways"}).status_code == 400
+    # the shed tilt is tunable, because which way it has to lean is a fact about the real head
+    assert c.post("/api/control", json={"cmd": "kandi_roll", "value": -25}).status_code == 200
+    assert pet.kandi_roll_deg == -25.0 and c.get("/api/mind").json()["controls"]["kandi_roll"] == -25.0
+    assert c.post("/api/control", json={"cmd": "kandi_roll", "value": 80}).status_code == 400
     pet.stop()
 
 

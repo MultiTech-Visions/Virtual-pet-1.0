@@ -243,24 +243,37 @@ A hug is the same hands-apart shape as peace but with the arms straight out at s
 the height of the wrists separates them; while a handshake is under way the wave and hug detectors
 stand down anyway.
 
-**The bracelet.** On *respect* it offers one antenna as a post: that antenna goes to just past
-vertical and tipped toward you, the other leans out of the way, the head tips a little toward the
-offered side, and then it **freezes** — no breathing, no groove, no gestures — so you can slide a
-bracelet down over the wire and let gravity take it to the head. It knows when the bracelet lands
-because the antenna gets pushed off its commanded angle, which is the same detector that feels an
-ear tickle; that touch is swallowed rather than passed to the brain, or it would flinch at exactly
-the wrong moment. It waits ten seconds in case you are digging one out of a bag, then gives up
-gently. Two seconds after the bracelet lands it eases the antenna and head back to normal, slowly,
-and looks at you.
+**The exchange.** On *respect* it trades, both ways. It is wearing bracelets on its antennas (tell
+it which ears are loaded on the Controls tab), so first it gives one:
 
-For the next 45 seconds it **wears** it: that antenna is clamped to within 26° of vertical whatever
-gesture is playing, so the bracelet cannot slide off, and the head's pitch, roll and lift all drop
-to 40 % so nothing gets flung about. The celebration is a nod and a ta-da, not a dance. Trades are
-counted per person and are worth a lot of affection, so a trader becomes a bestie fast.
+1. It raises the loaded ear and looks at you.
+2. It rolls its head over until that ear's base is the lowest part of the head.
+3. It lowers that antenna, slowly, until the bracelet runs off the tip into your hand, and giggles.
+4. It holds there a moment while you take it, then comes back up level.
 
-The **Kandi trading** card on the Controls tab has the manual overrides: offer an antenna now (or
-pick left / right), cancel one that started by mistake, and a bracelet toggle to turn off the
-careful mode when you have moved the bracelet onto the body.
+Then it asks for one back on the same ear: that antenna goes to just past vertical and tipped
+toward you, the other leans out of the way, and it **freezes** — no breathing, no groove, no
+gestures — so you can slide one down the wire and let gravity take it to the head. It knows the
+bracelet landed because the antenna gets pushed off its commanded angle, which is the same detector
+that feels an ear tickle; that touch is swallowed rather than passed to the brain, or it would
+flinch at exactly the wrong moment. It waits ten seconds in case you are digging one out of a bag,
+then gives up gently. Two seconds after one lands it eases the antenna and head back to normal.
+
+Wearing one is not a special mode: a **loaded antenna is simply held within 26° of vertical** for as
+long as it is loaded, whatever else the robot is doing, which is all a bracelet needs to stay on
+through a whole dance. Only the twenty seconds right after a trade also take the size out of the
+head's movement, to settle. Trades are counted per person and are worth a lot of affection, so a
+trader becomes a bestie fast.
+
+Both the give and the ask are driven through overrides that already existed — `hold` for the head
+pose (Simon says shows poses with it) and `show_arms` for absolute antenna angles (the arm game) —
+so there is no third way of moving the head to keep in step with the rest.
+
+The **Kandi trading** card on the Controls tab has: trade now (or from a named ear), just ask for
+one without giving, cancel a trade that started by mistake, a per-ear loaded toggle, and a **shed
+tilt** slider. Which way the head has to lean to make a given ear the low point is a fact about the
+real robot, so it is a signed number you can set from the page: if it tilts the wrong ear down, use
+a negative value.
 
 **Lexicon**: every sound with what it means**Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
 "Puppet it". Distinct calls: a rising two-note for "let's play mirror" (falling for "mirror

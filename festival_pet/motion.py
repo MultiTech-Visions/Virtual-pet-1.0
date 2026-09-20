@@ -55,8 +55,8 @@ STILL_PITCH = 10.0  # head dipped a little while it holds still: an offered head
 OFFER_RAD = 0.14  # the offered antenna: just past vertical, tipped toward them so a bracelet slides down it
 OFFER_AWAY_RAD = 0.9  # ...and the other one leans out of the way
 OFFER_ROLL = 7.0  # the head tips a little toward the offered side, to present it
-CAREFUL_ANTENNA_RAD = 0.45  # with a bracelet on, that antenna never leaves this much of vertical, or it slides off
-CAREFUL_SCALE = 0.4  # ...and everything else moves this much of normal, so nothing gets flung
+CAREFUL_ANTENNA_RAD = 0.45  # a bracelet rides safely as long as its antenna stays this close to vertical
+CAREFUL_SCALE = 0.4  # for a little while after a trade it also moves this much of normal, to settle
 LEAN_BODY_DEG = 5.0  # how far the body leans into a full nudge (a lean, not a turn: the gaze stays on the person)
 
 
@@ -540,8 +540,10 @@ class MotionComposer:
         self.still_until = 0.0  # holding dead still (someone is putting something on it)
         self._still = 0.0
         self.offer_side: int | None = None  # 0 right, 1 left: the antenna held out for a bracelet while still
-        self.careful_side: int | None = None  # ...and the one with a bracelet on it now: keep it upright, move gently
-        self._careful = 0.0
+        self.loaded = [False, False]  # antennas wearing a bracelet (right, left): held near vertical so it cannot slide off
+        self.gentle_until = 0.0  # ...and for a moment after a trade, everything moves smaller
+        self._gentle = 0.0
+        self._gate = [0.0, 0.0]  # how closed each antenna's upright gate is: it shuts and opens smoothly
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
         self._reaiming = False  # mid-way through a big re-aim while grooving: the gaze hold is off until it lands
@@ -862,20 +864,23 @@ class MotionComposer:
             ant_r = ant_r * (1 - k) + want_r * k
             ant_l = ant_l * (1 - k) + want_l * k
 
-        # a bracelet is hanging on one antenna: keep it upright so it cannot slide off, and take
-        # the size out of everything else so it is not swung about
-        self._careful += ((1.0 if self.careful_side is not None else 0.0) - self._careful) * min(1.0, dt * 1.5)
-        if self._careful > 0.001:
-            c = self._careful
-            gentle = 1.0 - c * (1.0 - CAREFUL_SCALE)
-            pitch *= gentle
-            roll *= gentle
-            z *= gentle
-            lim = CAREFUL_ANTENNA_RAD + (1.0 - c) * math.pi  # the clamp closes as the care comes on
-            if self.careful_side == 0:
-                ant_r = max(-lim, min(lim, ant_r))
-            elif self.careful_side == 1:
-                ant_l = max(-lim, min(lim, ant_l))
+        # Bracelets ride on the antennas. Upright, they stay put through anything — dancing included —
+        # so the gate is simply always on for a loaded antenna rather than a special careful mode. Only
+        # the settling right after a trade takes the size out of everything else.
+        self._gentle += ((1.0 if now < self.gentle_until else 0.0) - self._gentle) * min(1.0, dt * 1.5)
+        if self._gentle > 0.001:
+            small = 1.0 - self._gentle * (1.0 - CAREFUL_SCALE)
+            pitch *= small
+            roll *= small
+            z *= small
+        for i in (0, 1):
+            self._gate[i] += ((1.0 if self.loaded[i] else 0.0) - self._gate[i]) * min(1.0, dt * 1.5)
+            if self._gate[i] > 0.001:
+                lim = CAREFUL_ANTENNA_RAD + (1.0 - self._gate[i]) * math.pi  # the clamp closes (and opens) smoothly
+                if i == 0:
+                    ant_r = max(-lim, min(lim, ant_r))
+                else:
+                    ant_l = max(-lim, min(lim, ant_l))
 
         yaw = max(-YAW_LIMIT, min(YAW_LIMIT, yaw))
         pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, pitch))
