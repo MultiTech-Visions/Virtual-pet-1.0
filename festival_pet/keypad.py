@@ -7,7 +7,7 @@ Devices that come and go (a keypad going to sleep, a fresh pairing) are picked u
 rescan. The pet's user must be able to read ``/dev/input`` (group ``input``; the restore
 script adds it).
 
-``KeyMap`` turns key names into pet actions: three layers of four fixed actions (``LAYERS``), and
+``KeyMap`` turns key names into pet actions: two layers of four fixed actions (``LAYERS``), and
 the key code each layer sends for each slot. One tap = one action. Other keys are ignored.
 """
 
@@ -52,11 +52,10 @@ LAYERS: dict[str, tuple[str, str, str, str]] = {
     # in the pad's layer order: one press of its mode key from dancing lands on petting
     "dancing": ("groove_left", "tap", "downbeat", "groove_right"),
     "petting": ("head_pat", "chin_scratch", "ear_rub", "belly_rub"),
-    "caring": ("snack", "mushroom", "pet", "boop"),
 }
 ACTIONS = tuple(a for acts in LAYERS.values() for a in acts)
-# The MK424 sends A B C D from the factory on its first layer; the other two are whatever you programmed them to.
-DEFAULT_LAYER_KEYS: dict[str, list[str]] = {"dancing": ["A", "B", "C", "D"], "petting": ["E", "F", "G", "H"], "caring": ["I", "J", "K", "L"]}
+# The MK424 sends A B C D from the factory on its first layer; the second is whatever you programmed it to.
+DEFAULT_LAYER_KEYS: dict[str, list[str]] = {"dancing": ["A", "B", "C", "D"], "petting": ["E", "F", "G", "H"]}
 
 
 @dataclass

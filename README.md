@@ -205,9 +205,10 @@ Controls tab, **Keypad** card:
 - *Scan for keyboards* lists what is discoverable; *pair* pairs, trusts (auto-reconnect) and
   connects with the PIN in the box. Paired devices are listed with a *forget* button. Needs
   `bluetoothctl` on the robot (`apt install bluez` while online if the card says it is missing).
-- Layers: the MK424 has three layers (its LED colour shows which is on), four keys each. One
-  tap = one action (set the pad not to auto-repeat); there are no hold actions. The actions
-  are fixed per layer; type the key code each key sends (press it, read "last key").
+- Layers: the MK424 has three layers (its LED colour shows which is on), four keys each; the
+  pet uses the first two and ignores the third. One tap = one action (set the pad not to
+  auto-repeat); there are no hold actions. The actions are fixed per layer; type the key code
+  each key sends (press it, read "last key").
   1. **Dancing**: groove left · tap the beat · tap the "1" · groove right. Any key on this
      layer turns manual groove on. Left / right say which way to groove, they do not point it:
      it leans that way (head roll and yaw, one antenna forward and one back, about 5° of body)
@@ -226,11 +227,6 @@ Controls tab, **Keypad** card:
      closer together than 2.5 s: a curious perk, a contented lean, a purring snuggle, and
      melted. It ebbs away over about 6 s once you stop, and a gap of 3 s starts a fresh
      session. Every press counts toward being its friend (at most one every 2 s).
-  3. **Caring**: snack (a little energy; five in 15 s and it hiccups, nine and it has a tummy
-     ache and refuses snacks for a minute) · mushroom (dizzy, then two minutes of extra energy,
-     maxed curiosity and a groove half as big again; a second one adds a minute; a third
-     sneezes it all out; coming down costs some energy) · pet (a head pat) · boop (boop its
-     nose; seven in a row earns a little dance, thirteen a bow to the house).
 - Any key counts as interaction, so the pet does not get lonely while someone plays with it.
 
 The restore script adds the `pollen` user to the `input` and `bluetooth` groups (needed to read

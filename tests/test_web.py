@@ -255,11 +255,12 @@ def test_keypad_actions_reach_the_pet_and_the_map_persists(tmp_path):
     app = FastAPI()
     install_routes(app, pet)
     c = TestClient(app)
-    assert c.post("/api/control", json={"cmd": "keymap", "value": "caring:0:F1"}).status_code == 200
-    assert c.post("/api/control", json={"cmd": "keymap", "value": "caring:0:BANANA"}).status_code == 400
+    assert c.post("/api/control", json={"cmd": "keymap", "value": "petting:0:F1"}).status_code == 200
+    assert c.post("/api/control", json={"cmd": "keymap", "value": "petting:0:BANANA"}).status_code == 400
+    assert c.post("/api/control", json={"cmd": "keymap", "value": "caring:0:A"}).status_code == 400  # gone
     assert c.post("/api/control", json={"cmd": "keymap", "value": "sleeping:0:A"}).status_code == 400
     m = c.get("/api/mind").json()
-    assert m["controls"]["keymap"]["caring"] == ["F1", "J", "K", "L"]
+    assert m["controls"]["keymap"]["petting"] == ["F1", "F", "G", "H"] and "caring" not in m["controls"]["keymap"]
     assert m["senses"]["keypad"]["devices"] == [] and c.get("/api/catalog").json()["keypad"]["dancing"][1] == "tap"
     # a tapped beat from the keypad lands in the tap clock with the key's own timestamp, and turns manual groove on
     assert not pet.manual_groove
@@ -268,13 +269,21 @@ def test_keypad_actions_reach_the_pet_and_the_map_persists(tmp_path):
     pet.step(1000.6)
     assert pet.tap.downbeat_known and pet.tap.phase(1000.5) == 0.0 and pet.manual_groove
     assert any(k == "key" and n == "downbeat" for _, k, n in pet.actions_log)
-    assert c.post("/api/control", json={"cmd": "key", "value": "boop"}).status_code == 200
-    assert pet.p.composer._gesture.name == "boop"
+    assert c.post("/api/control", json={"cmd": "key", "value": "chin_scratch"}).status_code == 200
+    assert pet._cuddle > 0.0
+    assert c.post("/api/control", json={"cmd": "key", "value": "snack"}).status_code == 400  # the caring layer is gone
     # persisted and restored; a pre-0.7.2 press/hold map is left alone
     pet2 = _pet()
     pet2.settings_file = pet.settings_file
     pet2.load_settings()
-    assert pet2.keymap.layers["caring"] == ["F1", "J", "K", "L"]
+    assert pet2.keymap.layers["petting"] == ["F1", "F", "G", "H"]
+    # a saved 0.7.x map with the dropped caring layer: that layer is skipped, the rest still loads
+    pet.settings_file.write_text(json.dumps({"keymap": {"petting": ["Z", "F", "G", "H"], "caring": ["I", "J", "K", "L"]}, "groove_scale": 1.4}))
+    pet4 = _pet()
+    pet4.settings_file = pet.settings_file
+    pet4.load_settings()
+    assert pet4.keymap.layers["petting"][0] == "Z" and pet4.groove_scale == 1.4 and "caring" not in pet4.keymap.layers
+    pet4.stop()
     pet.settings_file.write_text(json.dumps({"keymap": {"A": {"press": "tilt_left", "hold": "none"}}}))
     pet3 = _pet()
     pet3.settings_file = pet.settings_file
@@ -334,56 +343,6 @@ def test_dance_layer_nudges_lean_harder_and_tilt_but_never_turn_away():
     for k, a in enumerate(("groove_left", "groove_right", "groove_left", "groove_right")):
         pet.key_action(a, t + 30.0 + k * 0.5, t + 30.0 + k * 0.5)
     assert pet.manual_groove
-    pet.stop()
-
-
-def test_caring_layer_snacks_mushroom_pet_and_boops():
-    from festival_pet.main import BOOP_BOW_AT, BOOP_DANCE_AT, SNACK_ACHE_AT, SNACK_HICCUP_AT, TRIP_CRASH, TRIP_ENERGY, TRIP_S
-
-    pet = _pet()
-    comp, beh = pet.p.composer, pet.p.behavior
-    beh.mood.energy = 0.5
-    t = 1001.0
-    sounds = lambda: [n for _, k, n in pet.actions_log if k == "sound"]  # noqa: E731
-    for i in range(SNACK_HICCUP_AT - 1):
-        pet.key_action("snack", t + i, t + i)
-    assert abs(beh.mood.energy - (0.5 + 0.04 * (SNACK_HICCUP_AT - 1))) < 1e-9 and "hiccup" not in sounds()
-    pet.key_action("snack", t + 5, t + 5)
-    assert sounds()[-1] == "hiccup" and comp._gesture.name == "hiccup"
-    for i in range(SNACK_HICCUP_AT, SNACK_ACHE_AT):
-        pet.key_action("snack", t + i, t + i)
-    assert sounds()[-1] == "sad" and pet._ache_until > t + 9  # tummy ache
-    pet.key_action("snack", t + 10, t + 10)
-    assert sounds()[-1] == "huff" and comp._gesture.name == "shake"  # refused
-    # the mushroom: dizzy now, a boost for two minutes, a crash after
-    e0 = beh.mood.energy
-    pet.key_action("mushroom", t + 20, t + 20)
-    assert sounds()[-1] == "dizzy" and comp._gesture.name == "dizzy" and abs(beh.mood.energy - min(1.0, e0 + TRIP_ENERGY)) < 1e-9 and beh.mood.curiosity == 1.0
-    pet.manual_groove = True
-    pet.tap.set_bpm(120)
-    pet.step(t + 21)
-    assert comp.groove is not None and abs(comp.groove[2] - 0.6 * 1.5) < 1e-9  # grooving harder
-    pet.key_action("mushroom", t + 30, t + 30)
-    assert pet._trip_doses == 2 and pet._trip_until > t + 20 + TRIP_S
-    pet.key_action("mushroom", t + 40, t + 40)  # a third: sneezes it all out, trip over
-    assert comp._gesture.name == "sneeze" and pet._trip_until == 0.0
-    # and a trip that runs its course ends in a crash
-    pet.key_action("mushroom", t + 60, t + 60)
-    e1 = beh.mood.energy
-    n_before = len(sounds())
-    pet.step(t + 60 + TRIP_S + 1.0)
-    assert pet._trip_until == 0.0 and beh.mood.energy < e1 - TRIP_CRASH + 0.02 and "yawn" in sounds()[n_before:]
-    # pet: a virtual head pat this tick, the brain leans in
-    pet._last_obs = Observation()
-    pet.key_action("pet", t + 200, t + 200)
-    assert pet._last_obs.petted
-    # boops: a boop gesture, then the easter eggs
-    for i in range(BOOP_DANCE_AT):
-        pet.key_action("boop", t + 300 + i * 0.2, t + 300 + i * 0.2)
-    assert beh._little_dance_until > t + 300 and sounds()[-1] == "excited"
-    for i in range(BOOP_DANCE_AT, BOOP_BOW_AT):
-        pet.key_action("boop", t + 300 + i * 0.2, t + 300 + i * 0.2)
-    assert comp._gesture.name == "bow" and sounds()[-1] == "tada"
     pet.stop()
 
 
