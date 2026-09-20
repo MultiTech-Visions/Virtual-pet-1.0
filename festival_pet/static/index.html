@@ -267,10 +267,13 @@
   </div>
   <div class="card">
     <h2>Singing</h2>
-    <div class="sub">Drumline-style rhythms on its "sing" blip: quarters, eighths, triplets, paradiddles, flams, rolls; two pitches for the two hands. With singing on it makes up a song every few minutes when it is idle or hanging out with someone, bobs along, and takes a bow. Save the good ones: it mixes saved songs with new ideas.</div>
+    <div class="sub">Two kinds. <b>Drumline</b> is rhythm on its "sing" blip: quarters, eighths, triplets, paradiddles, flams, rolls, two pitches for the two hands. <b>Bass</b> is its idea of bass music: wubs, wah-wahs, lasers, a riser and one drop, at halftime. (The speaker carries nothing under ~300 Hz, so the bass is implied by the harmonics rather than played low.) With singing on it makes up a song every few minutes when it is idle or hanging out with someone, bobs along, and takes a bow. Save the good ones: it mixes saved songs with new ideas. Separately, it hums a made-up little jingle to itself now and then while pottering about, which no switch turns off.</div>
     <div class="btns" style="margin:8px 0">
       <button class="act" id="sing-btn" onclick="toggleSinging()">Singing: off</button>
       <button class="act" onclick="ctl('sing')">Sing now</button>
+      <button class="act" onclick="ctl('sing', 'drumline')">Drumline</button>
+      <button class="act" onclick="ctl('sing', 'bass')">Bass</button>
+      <button class="act" onclick="ctl('sound', 'jingle')">Jingle</button>
       <button class="act" onclick="ctl('save_song')">Save last song</button>
     </div>
     <div class="kv" id="song"></div>
@@ -431,12 +434,12 @@ async function refresh() {
     $('state').textContent = (STATE_EMOJI[m.state] || '') + ' ' + m.state + (m.dizzy ? ' 😵' : '') + (m.mimicking ? ' 🪞' : '') + (d.mime.active ? (d.mime.kind === 'arms' ? ' 🚩' : ' 🎭') : '') + (d.song.singing ? ' 🎵' : '') + (s.dance.dancing ? ' 🕺' : '') + (d.dance_along.copying ? ' 💃' : '');
     $('state-sub').textContent = `for ${m.state_for_s}s` + (m.engaged_person ? ` · with person #${m.engaged_person} (${m.engaged_tier})` : '') + (m.dizzy ? ' · dizzy' : '') + (m.mimicking ? ' · mirror game' : '');
     const FEEL = {nod: '👍', tilt: '🤨', wiggle: '😆', bounce: '🤩', perk: '👀', droop: '😞', startle: '😳', snuggle: '🥰', dizzy: '😵‍💫', shake_off: '😤', search: '🔍', glance: '👀', shy: '☺️', nod_off: '😴', sneeze: '🤧', hiccup: '😮', tada: '🎉', flinch: '😖', lean: '😌', shake: '🙅', point: '👉', bow: '🙇',
-      hello_new: '👋', hello_friend: '😄', hello_bestie: '🥳', curious: '🧐', happy: '😊', excited: '🤩', content: '😌', purr: '😻', giggle: '🤭', surprised: '😲', confused: '😕', sad: '😢', lonely: '🥺', sleepy: '😪', yawn: '🥱', wake: '🌅', annoyed: '😠', low_battery: '🪫', name: '❓', ticklish: '😂', sing: '🎵', mirror_start: '🪞', mirror_end: '🪞', mime_start: '🎭', mime_end: '🎭', mime_cue: '👁️', yes: '✅', huff: '😤', no_no: '🙅'};
+      hello_new: '👋', hello_friend: '😄', hello_bestie: '🥳', curious: '🧐', happy: '😊', excited: '🤩', content: '😌', purr: '😻', giggle: '🤭', surprised: '😲', confused: '😕', sad: '😢', lonely: '🥺', sleepy: '😪', yawn: '🥱', wake: '🌅', annoyed: '😠', low_battery: '🪫', name: '❓', ticklish: '😂', sing: '🎵', jingle: '🎶', coo: '🥰', wave: '👋', hug: '🤗', mirror_start: '🪞', mirror_end: '🪞', mime_start: '🎭', mime_end: '🎭', mime_cue: '👁️', yes: '✅', huff: '😤', no_no: '🙅'};
     const f = d.feeling, fe = x => x ? `${FEEL[x.name.split(':')[0]] || ''} <b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
     $('feeling').innerHTML = `feeling: ${fe(f.motion)} · sounding: ${fe(f.sound)}`;
     $('energy').style.width = (m.energy * 100) + '%'; $('social').style.width = (m.social * 100) + '%';
     const sg = d.song;
-    const songRows = sg.next_in_s === null ? {} : {'song': sg.singing ? `singing ${sg.last.name} (${sg.last.bpm} bpm) 🎵` : (sg.last ? `last: ${sg.last.name}${sg.last.saved ? ' (saved)' : ''}` : 'none yet'), 'next song': sg.singing ? '—' : (sg.next_in_s > 0 ? `not for ${sg.next_in_s} s` : 'when it feels like one')};
+    const songRows = sg.next_in_s === null ? {} : {'song': sg.singing ? `singing ${sg.last.name} (${sg.last.style}, ${sg.last.bpm} bpm) 🎵` : (sg.last ? `last: ${sg.last.name} (${sg.last.style})${sg.last.saved ? ' (saved)' : ''}` : 'none yet'), 'next song': sg.singing ? '—' : (sg.next_in_s > 0 ? `not for ${sg.next_in_s} s` : 'when it feels like one')};
     $('curiosity').style.width = (m.drives.curiosity * 100) + '%'; $('boredom').style.width = (m.drives.boredom * 100) + '%';
     const ACT = {hangout: '🫧 hanging out', watch: '👀 watching them', look_around: '🔭 looking around', mirror: '🪞 mirror game', mime: '🎭 Simon says', sing: '🎵 singing', rest: '😪 resting', ask_attention: '🥺 wants attention'};
     const scores = Object.entries(m.scores || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace('_', ' ')} ${v.toFixed(2)}`).join(' · ');

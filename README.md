@@ -182,6 +182,25 @@ the pose model read every frame for a moment (a wave cannot be told from a stret
 rate); the Play tab's "your arms" row shows "watching" then. One wave back per six seconds, one
 hug per twenty.
 
+**Jingles**: now and then while it is pottering about (looking around, watching someone, hanging
+out) it hums a little tune it just made up: three to five bright, near-pure console blips on a
+pentatonic scale, hard attack and quick decay, landing on a grid so they come out as a phrase
+rather than as beeping. Two thirds of the time there is an answering phrase that repeats the
+rhythm a step or two away and resolves onto the root. In the spirit of the console beeps that
+answer Data's "life forms" song. Every 25–70 s, never mid-performance, mid-dance, while being
+held, or when it is flat out. No switch: it is just something it does. The Jingle button on the
+Play tab plays one on demand, and "jingle" is in the lexicon.
+
+**Songs** come in two kinds, and it picks one when it decides to sing (or you pick with the
+Drumline / Bass buttons). *Drumline* is rhythm, not melody: two "hands" on two pitches playing
+quarters, eighths, triplets, paradiddles, flams, rolls and rests through an AABA-ish form, with a
+roll to finish. *Bass* is the robot's idea of bass music at a halftime tempo: wubs (one note whose
+filter opens and shuts, two or three times a beat), wah-wahs, lasers, a riser and exactly one drop
+per song, then a last bar and a breath. The speaker reproduces nothing under about 300 Hz, so the
+bass is implied by a harmonic-rich note up where the speaker works, with the filter doing the
+talking, rather than by an actual low note. Saved songs from before the two kinds existed are
+stamped as drumline ones when they load.
+
 **Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
 "Puppet it". Distinct calls: a rising two-note for "let's play mirror" (falling for "mirror
 over"), the fanfare for Simon says, a double blip before each shown move, a bright "yes", a

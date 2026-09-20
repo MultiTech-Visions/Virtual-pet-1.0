@@ -425,6 +425,16 @@ def test_singing_sings_bows_and_saves(tmp_path):
     assert c.get("/api/mind").json()["song"]["last"]["saved"]
     pet2 = _pet(); pet2.songs_file = pet.songs_file; pet2.load_songs()
     assert pet2.songs == pet.songs
+    # a style can be asked for by name, and only a real one
+    for style in ("drumline", "bass"):
+        assert c.post("/api/control", json={"cmd": "sing", "value": style}).status_code == 200
+        assert pet.last_song["style"] == style and c.get("/api/mind").json()["song"]["last"]["style"] == style
+    assert c.post("/api/control", json={"cmd": "sing", "value": "polka"}).status_code == 400
+    # a repertoire saved before styles existed still loads: those songs are drumline ones
+    pet.songs_file.write_text(json.dumps([{"bpm": 100, "bars": ["quarters", "roll_and_stop"], "hi": 1500, "lo": 1000, "name": "old one"}]))
+    pet5 = _pet(); pet5.songs_file = pet.songs_file; pet5.load_songs()
+    assert pet5.songs[0]["style"] == "drumline" and songs.render(pet5.songs[0]).size > 0
+    pet5.stop()
     assert c.post("/api/control", json={"cmd": "singing", "value": True}).status_code == 200
     assert c.get("/api/mind").json()["song"]["next_in_s"] is not None
     pet.stop(); pet2.stop()

@@ -63,19 +63,53 @@ def test_songs_compose_render_and_describe():
     from festival_pet import songs
 
     rng = random.Random(7)
-    seen = set()
-    for _ in range(10):
+    seen, styles = set(), set()
+    for _ in range(14):
         song = songs.compose(rng)
         seen.add(tuple(song["bars"]))
-        assert song["bars"][-1] == "roll_and_stop" and 4 <= len(song["bars"]) <= 9
+        styles.add(song["style"])
         buf = songs.render(song)
         assert buf.dtype == np.float32 and np.max(np.abs(buf)) <= 0.8001 and np.isfinite(buf).all()
         assert abs(len(buf) / 16000 - songs.duration(song)) < 0.01
-        assert len(songs.hits(song)) >= 4 * len(song["bars"]) - 4
-        assert song["name"] in songs.describe(song)
-    assert len(seen) > 3  # variety
+        assert 5.0 < songs.duration(song) < 40.0
+        assert song["name"] in songs.describe(song) and song["style"] in songs.describe(song)
+        if song["style"] == "drumline":
+            assert song["bars"][-1] == "roll_and_stop" and 4 <= len(song["bars"]) <= 9
+            assert len(songs.hits(song)) >= 4 * len(song["bars"]) - 4
+        else:
+            assert song["bars"].count("drop") == 1 and song["bars"].index("riser") == song["bars"].index("drop") - 1
+            assert song["lo"] >= 300  # the speaker carries nothing lower: the bass is implied, not played
+            assert all(m in songs.BASS_MOVES for m in song["bars"])
+    assert len(seen) > 3 and styles == {"drumline", "bass"}  # variety
     # a paradiddle bar has 16 hits with accents on each group of four
     assert [a for _, _, a in songs.PATTERNS["paradiddle"]] == [1, 0, 0, 0] * 4
+    # an unknown style is an error, not a quiet fallback
+    for bad in (lambda: songs.compose(rng, "polka"), lambda: songs.render({**songs.compose(rng, "bass"), "style": "polka"})):
+        try:
+            bad()
+        except ValueError:
+            continue
+        raise AssertionError("expected ValueError")
+
+
+def test_jingles_are_short_made_up_melodies_on_a_scale():
+    from festival_pet.sounds import JINGLE_BASES, JINGLE_SCALE, jingle_notes, phrase_duration, render_phrase
+
+    pitches, lengths = set(), set()
+    for seed in range(12):
+        notes = jingle_notes(random.Random(seed))
+        assert 3 <= len(notes) <= 14
+        starts = [t for t, _, _ in notes]
+        assert starts == sorted(starts) and starts[0] == 0.0
+        lengths.add(len(notes))
+        for _, f, d in notes:
+            assert 0.03 < d < 0.2
+            # every note is a scale degree of one of the bases: a tune, not a random beep
+            assert any(abs(f - base * 2 ** (s / 12.0)) < 0.5 for base in JINGLE_BASES for s in JINGLE_SCALE)
+            pitches.add(round(f))
+        buf = render_phrase("jingle", random.Random(seed))
+        assert 0.3 < phrase_duration(buf) < 2.6
+    assert len(pitches) > 8 and len(lengths) > 2  # it does make them up, it is not one tune on repeat
 
 
 def test_huff_has_a_real_puff():

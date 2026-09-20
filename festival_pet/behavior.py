@@ -45,6 +45,8 @@ EAR_TUCK_AFTER = 4  # the tickle that ends the game
 EAR_TUCK_S = 26.0  # how long the sulk lasts, left alone (matches MotionComposer.EAR_TUCK_S)
 EAR_SWAT_S = 1.3  # one swat (GESTURES["swat"]): pokes during it are covered by its taps
 EAR_MAKEUP_S = 3.0  # after the last poke, the nuzzle: keep poking and it keeps batting
+JINGLE_MIN_S, JINGLE_MAX_S = 25.0, 70.0  # how often it hums a made-up little tune to itself while pottering about
+JINGLE_ACTIVITIES = ("look_around", "watch", "hangout")  # scanning, or keeping someone company: the Data-at-the-console moments
 WAVE_COOLDOWN_S = 6.0  # one wave back per wave, not one per swing
 HUG_COOLDOWN_S = 20.0
 BODY_CONFIRM_S = 1.0  # a torso must be seen this long before it is worth looking up at
@@ -212,6 +214,7 @@ class Behavior:
     _next_sneeze: float = 0.0
     _sneeze_show_until: float = 0.0
     _next_sing: float = 0.0
+    _next_jingle: float = 0.0
     _nodding_off: bool = False
     _music_since: float = 0.0
     _music_greeted: bool = False
@@ -249,6 +252,7 @@ class Behavior:
         self._last_face_time = now
         self._next_glance = now + self.rng.uniform(self.timers.idle_glance_min, self.timers.idle_glance_max)
         self._next_sneeze = now + self.rng.uniform(self.timers.sneeze_min, self.timers.sneeze_max)
+        self._next_jingle = now + self.rng.uniform(JINGLE_MIN_S, JINGLE_MAX_S)
         self._activity_since = now
 
     # ------------------------------------------------------------------ the activity layer
@@ -483,6 +487,15 @@ class Behavior:
                 self.mood.energy += 0.03
                 if self._engaged_person is not None:
                     self.memory.add_pet(self._engaged_person)
+
+        # A little tune to itself while it potters about: a few console blips that happen to be a melody,
+        # made up on the spot. Not while it is performing, dancing or being handled.
+        if now >= self._next_jingle:
+            self._next_jingle = now + self.rng.uniform(JINGLE_MIN_S, JINGLE_MAX_S)
+            if (awake and self.state != "HELD" and obs.busy is None and not obs.grooving and obs.dance_bpm == 0
+                    and obs.music_bpm == 0 and not self.mimicking and self.activity in JINGLE_ACTIVITIES and self.mood.energy > 0.25):
+                self._think(now, "*hums a little something*")
+                actions.append(Action("sound", "jingle", 1))
 
         if obs.waved is not None and awake and self.state != "HELD" and now - self._last_wave > WAVE_COOLDOWN_S:
             self._last_wave = now

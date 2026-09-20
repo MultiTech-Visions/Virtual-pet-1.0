@@ -397,3 +397,26 @@ def test_ear_played_with_while_petted_is_enjoyed_not_flinched():
     assert ("gesture", "lean") in names and not any(n.startswith("flinch") for k, n in names if k == "gesture")
     acts = b.tick(Observation(touched=True, touched_side=1), 10.0, 0.05)
     assert any(k == "gesture" and n.startswith("flinch") for k, n in [(a.kind, a.name) for a in acts])
+
+
+def test_it_hums_a_made_up_jingle_while_pottering_about_but_not_mid_performance():
+    from festival_pet.behavior import JINGLE_MAX_S
+
+    b, _ = _brain()
+    b.activity = "look_around"
+    b.mood.energy = 0.8
+    jingles = lambda acts: [a for a in acts if a.kind == "sound" and a.name == "jingle"]  # noqa: E731
+    acts = _run(b, lambda t: Observation(), 0.0, JINGLE_MAX_S * 3, dt=0.5)
+    assert jingles(acts), "nothing hummed in three windows"
+    assert len(jingles(acts)) <= 4  # now and then, not chattering
+    # not while it is performing, dancing, grooving, held or flat out
+    b._next_jingle = 0.0
+    for obs in (Observation(busy="mime"), Observation(busy="sing"), Observation(grooving=True),
+                Observation(music_bpm=120.0, music_confidence=0.7), Observation(dance_bpm=120.0), Observation(held=True)):
+        b._next_jingle = 0.0
+        assert not jingles(b.tick(obs, 500.0, 0.5))
+    # nor while it is busy with a game as its activity, or too tired
+    b.activity, b._next_jingle = "mime", 0.0
+    assert not jingles(b.tick(Observation(), 600.0, 0.5))
+    b.activity, b.mood.energy, b._next_jingle = "watch", 0.1, 0.0
+    assert not jingles(b.tick(Observation(), 700.0, 0.5))

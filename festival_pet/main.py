@@ -852,11 +852,13 @@ class Pet:
             self.transcript.append((now, act.name, act.name.split("|")[1:]))
 
     # ------------------------------------------------------------------ singing
-    def sing(self, now: float, song: dict | None = None) -> dict:
-        """Sing ``song``, or a saved one (half the time, if any), or make one up. Returns the song."""
+    def sing(self, now: float, song: dict | None = None, style: str | None = None) -> dict:
+        """Sing ``song``, or a saved one (half the time, if any), or make one up. ``style`` ("drumline" /
+        "bass") forces what it makes up, and rules out saved songs of the other kind. Returns the song."""
         rng = self.p.composer.rng
         if song is None:
-            song = rng.choice(self.songs) if self.songs and rng.random() < 0.5 else songs.compose(rng)
+            saved = [s for s in self.songs if style is None or s["style"] == style]
+            song = rng.choice(saved) if saved and rng.random() < 0.5 else songs.compose(rng, style)
         buf = songs.render(song)
         dur = songs.duration(song)
         self.sound.request_buffer(buf, "song:" + song["name"], 2, now)
@@ -879,8 +881,14 @@ class Pet:
         return self.last_song
 
     def load_songs(self) -> None:
-        if self.songs_file is not None and self.songs_file.exists():
-            self.songs = json.loads(self.songs_file.read_text())
+        if self.songs_file is None or not self.songs_file.exists():
+            return
+        self.songs = json.loads(self.songs_file.read_text())
+        old = [s for s in self.songs if "style" not in s]
+        for s in old:  # saved before there was more than one style: they are all drumline ones
+            s["style"] = "drumline"
+        if old:
+            logger.info("songs: stamped %d saved song(s) from before styles as drumline", len(old))
 
     def start_simon(self, kind: str | None, now: float) -> str | None:
         """Start Simon says. ``kind`` "arms" or "head", or None to pick: the arm game when their arms can be
@@ -1044,7 +1052,7 @@ class Pet:
                                                 "watching": self.signs.watching and now < self.signs.watching_until},
             "dance_along": {"on": self.dance_along, "copying": self._copying_arms, "flourish": self._copying_arms and now < self._flourish_until,
                             "antennas": None if comp.arms is None or now >= comp.arms_until else [round(comp.arms[0]), round(comp.arms[1])]},
-            "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs], "next_in_s": round(max(0.0, self.p.behavior._cool.get("sing", now) - now)) if self.singing_enabled else None},
+            "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "style": self.last_song["style"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs], "next_in_s": round(max(0.0, self.p.behavior._cool.get("sing", now) - now)) if self.singing_enabled else None},
             "build": build_info(),
             "asleep": self.asleep,
             "transcript": [{"t": round(now - t, 1), "text": txt.split("|")[0], "intents": ints} for t, txt, ints in reversed(self.transcript)],
@@ -1145,10 +1153,13 @@ class Pet:
             self.dance_along = bool(value)
         elif cmd == "singing":
             self.singing_enabled = bool(value)  # the brain picks songs when it feels like one (drives.py)
-        elif cmd == "sing":
+        elif cmd == "sing":  # value: true (its own choice), or a style name
             if self.asleep:
                 raise ValueError("asleep")
-            self.sing(now)
+            style = None if value in (True, None, "") else str(value)
+            if style is not None and style not in songs.STYLES:
+                raise ValueError(f"song style must be one of {', '.join(songs.STYLES)}, not '{value}'")
+            self.sing(now, style=style)
         elif cmd == "save_song":
             self.save_last_song()
         elif cmd == "imu_rub_gyro":
