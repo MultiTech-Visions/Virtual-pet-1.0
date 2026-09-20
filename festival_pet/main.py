@@ -657,6 +657,7 @@ class Pet:
             self.key_action(action, t_ev, now)
 
         if self._kandi_give_t0:
+            obs.touched = False  # its own antenna is being driven down: that is not someone tickling its ear
             self._kandi_give(now)
         elif self._kandi_offer_until:
             self._kandi_wait(obs, now)
@@ -983,6 +984,8 @@ class Pet:
     def _kandi_give(self, now: float) -> None:
         """Shed a bracelet off an antenna, a step at a time, by tilting that ear's base down to be the
         lowest part of the head and then lowering the antenna until the bracelet runs off the tip.
+        (The caller swallows this tick's ear-touch: the antenna moving under its own command would
+        otherwise read as being tickled, and it would flinch in the middle of handing something over.)
 
         Driven frame by frame through the two overrides that already exist: ``hold`` for the head pose
         (Simon says shows poses with it) and ``show_arms`` for absolute antenna angles (the arm game).

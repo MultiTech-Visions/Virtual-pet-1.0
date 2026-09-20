@@ -539,6 +539,7 @@ class MotionComposer:
         self._mirror = 0.0
         self.still_until = 0.0  # holding dead still (someone is putting something on it)
         self._still = 0.0
+        self._still_yaw = 0.0  # where it was looking when it froze: held there, rather than tracking a moving target
         self.offer_side: int | None = None  # 0 right, 1 left: the antenna held out for a bracelet while still
         self.loaded = [False, False]  # antennas wearing a bracelet (right, left): held near vertical so it cannot slide off
         self.gentle_until = 0.0  # ...and for a moment after a trade, everything moves smaller
@@ -848,8 +849,10 @@ class MotionComposer:
             ant_l = ant_l * (1 - s) + ANTENNA_DOWN[1] * s
 
         # holding still for a bracelet: everything fades toward one parked pose and stays there
+        if now < self.still_until and self._still < 0.05:
+            self._still_yaw = float(self._gaze[0])  # latch it at the moment of freezing: still means still, even
         self._still += ((1.0 if now < self.still_until else 0.0) - self._still) * min(1.0, dt * 2.5)
-        if self._still > 0.001:
+        if self._still > 0.001:                     # if whoever it is looking at wanders off
             k = self._still
             want_r, want_l = ANTENNA_NEUTRAL
             want_roll = 0.0
@@ -857,7 +860,7 @@ class MotionComposer:
                 want_r, want_l, want_roll = OFFER_RAD, OFFER_AWAY_RAD, -OFFER_ROLL
             elif self.offer_side == 1:
                 want_r, want_l, want_roll = -OFFER_AWAY_RAD, -OFFER_RAD, OFFER_ROLL
-            yaw = yaw * (1 - k) + float(self._gaze[0]) * k
+            yaw = yaw * (1 - k) + self._still_yaw * k
             pitch = pitch * (1 - k) + STILL_PITCH * k
             roll = roll * (1 - k) + want_roll * k
             z *= 1 - k
@@ -875,6 +878,10 @@ class MotionComposer:
             z *= small
         for i in (0, 1):
             self._gate[i] += ((1.0 if self.loaded[i] else 0.0) - self._gate[i]) * min(1.0, dt * 1.5)
+            if self._gate[i] > 0.995:
+                self._gate[i] = 1.0  # snap: once shut, the limit is exactly CAREFUL_ANTENNA_RAD, not almost
+            elif self._gate[i] < 0.005:
+                self._gate[i] = 0.0
             if self._gate[i] > 0.001:
                 lim = CAREFUL_ANTENNA_RAD + (1.0 - self._gate[i]) * math.pi  # the clamp closes (and opens) smoothly
                 if i == 0:
@@ -893,7 +900,7 @@ class MotionComposer:
         # turn is asked for: then the body goes there, at the far rate, groove or not.
         if self.held:
             self.body_yaw = 0.0
-        elif self.body_follow and s < 0.5:
+        elif self.body_follow and s < 0.5 and self._still < 0.5:  # frozen for a bracelet: the body does not creep either
             band = BODY_DEADBAND if not grooving else BODY_DEADBAND_GROOVE
             off_body = float(self._gaze[0]) - self.body_yaw
             if abs(off_body) > band:

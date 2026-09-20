@@ -599,7 +599,7 @@ def test_the_plur_handshake_trades_a_bracelet_both_ways(tmp_path):
     assert "gave one away" in [n for _, k, n in pet.actions_log if k == "kandi"]
     gave_at = [t for t, k, n in pet.actions_log if k == "kandi" and n == "gave one away"][0]
     assert gave_at - give_t0 > KANDI_GIVE_S * 0.5  # it lets go near the end, not the moment it starts
-    assert [n for _, k, n in pet.actions_log if k == "sound"][-3:].count("giggle") == 1  # and giggles as it goes
+    assert any(k == "sound" and n == "giggle" and abs(t - gave_at) < 0.3 for t, k, n in pet.actions_log)  # giggles as it goes
     assert abs((now - give_t0) - KANDI_GIVE_S) < 0.4  # the whole thing takes about six seconds
 
     # ...then asks for one back, on the same ear, and freezes
@@ -631,6 +631,10 @@ def test_the_plur_handshake_trades_a_bracelet_both_ways(tmp_path):
     assert beh._engaged_person.kandi == 1 and beh._engaged_person.affection > 0.2
     assert "kandi traded" in [n for _, k, n in pet.actions_log if k == "kandi"]
     # ...and it rides out anything from here, because the gate keeps that antenna upright
+    for k in range(200):  # the gate eases shut over a few seconds on a bracelet that has just gone on
+        pet.step(now + k * 0.02)
+    now += 4.0
+    assert comp._gate[0] == 1.0
     worst = 0.0
     for k in range(600):
         comp.request_gesture("bounce", now + k * 0.02, 3)
