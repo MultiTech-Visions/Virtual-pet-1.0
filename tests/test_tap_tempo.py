@@ -18,6 +18,22 @@ def test_tap_tempo_locks_and_free_wheels():
     assert t.phase(60.0) == pytest.approx(0.0)  # keeps time long after the last tap
 
 
+def test_fast_tempos_groove_at_halftime_on_the_one_and_three():
+    from festival_pet.tap_tempo import HALFTIME_ABOVE_BPM
+
+    t = TapTempo()
+    for i in range(6):
+        t.tap(10.0 + i * 0.3, downbeat=(i == 0))  # 200 bpm, "1" on the first tap
+    assert abs(t.bpm - 200.0) < 0.01 and t.bpm > HALFTIME_ABOVE_BPM and t.halftime
+    assert t.groove_period == pytest.approx(0.6)
+    on_beat = lambda p: min(p, 1.0 - p) < 1e-6  # noqa: E731  (a phase of 0.99999 is on the beat too)
+    assert on_beat(t.phase(10.0 + 8 * 0.3))  # a groove beat on the "1" of the next bar...
+    assert t.phase(10.0 + 9 * 0.3) == pytest.approx(0.5)  # ...not on the "2"
+    assert on_beat(t.bar_phase(10.0 + 8 * 0.3)) and t.bar_phase(10.0 + 12 * 0.3) == pytest.approx(0.5)  # a bar is 8 tapped beats
+    t.set_bpm(120)
+    assert not t.halftime and t.groove_period == pytest.approx(0.5)
+
+
 def test_one_sloppy_tap_does_not_move_the_tempo_and_a_pause_restarts():
     t = TapTempo()
     for i in range(6):

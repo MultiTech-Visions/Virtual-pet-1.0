@@ -61,6 +61,75 @@ class Arms:
     points: dict  # name -> (x, y) in the detection frame, for the preview overlay
 
 
+WAVE_MIN_DEG = 100.0  # an arm at least this far up can be waving
+WAVE_SWINGS = 3  # hand direction reversals...
+WAVE_WINDOW_S = 2.0  # ...within this long
+WAVE_MIN_SWING = 0.12  # each swing at least this fraction of the shoulder width (side to side, relative to the shoulder)
+HUG_HOLD_S = 2.5  # both arms held out this long: a hug
+HUG_REARM_S = 1.0  # the arms have to leave "out" for this long before another hug counts
+SIGN_WATCH_S = 1.5  # a raised or open arm seen this recently keeps the pose model reading every frame
+
+
+class ArmSigns:
+    """Waves and hugs, read from a run of arm readings. Feed every reading; get ("wave", side) once per wave
+    (side is the PERSON's hand, "left" or "right"), ("hug",) once per hug, or None.
+
+    A wave is the hand swinging side to side relative to its shoulder, WAVE_SWINGS reversals in WAVE_WINDOW_S,
+    with the arm up. A hug is both arms out for HUG_HOLD_S. ``watching`` says the pose model should run every
+    frame right now (a raised or open arm was just seen); at the idle rate a wave cannot be told from a stretch.
+    """
+
+    def __init__(self) -> None:
+        self._swings: dict[str, list[float]] = {"left": [], "right": []}  # times of direction reversals per hand
+        self._last_dx: dict[str, float | None] = {"left": None, "right": None}  # last hand offset from its shoulder (px)
+        self._turn_dx: dict[str, float | None] = {"left": None, "right": None}  # hand offset at the last reversal
+        self._dir: dict[str, int] = {"left": 0, "right": 0}
+        self._out_since = 0.0  # both arms out since (0 = not out)
+        self._hugged = False  # this hold has already been a hug
+        self._out_last = 0.0
+        self.watching_until = 0.0
+
+    @property
+    def watching(self) -> bool:
+        return self.watching_until > 0.0
+
+    def feed(self, a: Arms, now: float) -> tuple | None:
+        self.watching_until = 0.0
+        found: tuple | None = None
+        for hand, deg, ok in (("left", a.left_deg, a.points.get("l_wrist_ok", False)), ("right", a.right_deg, a.points.get("r_wrist_ok", False))):
+            if deg < WAVE_MIN_DEG or not ok:
+                self._swings[hand].clear()
+                self._last_dx[hand], self._turn_dx[hand], self._dir[hand] = None, None, 0
+                continue
+            self.watching_until = now + SIGN_WATCH_S
+            dx = a.points[hand[0] + "_wrist"][0] - a.points[hand[0] + "_shoulder"][0]
+            last = self._last_dx[hand]
+            self._last_dx[hand] = dx
+            if last is None:
+                self._turn_dx[hand] = dx
+                continue
+            step = 1 if dx > last else -1 if dx < last else 0
+            if step and step != self._dir[hand]:
+                # moving the other way now: the swing that just ended counts if it was big enough
+                ref = self._turn_dx[hand]
+                if self._dir[hand] and ref is not None and abs(last - ref) >= WAVE_MIN_SWING * a.shoulder_px:
+                    self._swings[hand] = [t for t in self._swings[hand] if now - t <= WAVE_WINDOW_S] + [now]
+                self._turn_dx[hand] = last
+                self._dir[hand] = step
+            if len(self._swings[hand]) >= WAVE_SWINGS and found is None:
+                self._swings[hand].clear()
+                found = ("wave", hand)
+        if a.left == "out" and a.right == "out":
+            self.watching_until = now + SIGN_WATCH_S
+            if self._out_since == 0.0 or now - self._out_last >= HUG_REARM_S:
+                self._out_since, self._hugged = now, False  # a fresh hold (a short gap in the readings is the same hold)
+            self._out_last = now
+            if not self._hugged and now - self._out_since >= HUG_HOLD_S:
+                self._hugged = True
+                found = ("hug",)
+        return found
+
+
 class PoseReader:
     """MediaPipe pose landmarker (OpenCV Zoo, Apache-2), fed a region of interest from the person
     detector's keypoints or from its own last confident pose."""

@@ -325,6 +325,19 @@ def test_dance_layer_nudges_lean_then_turn_and_come_back_without_a_regreeting():
     for k in range(3):
         pet.key_action("groove_right", t + 10.0 + k * 0.3, t + 10.0 + k * 0.3)
     assert pet._turn is None and comp.groove_lean == -1.0
+    comp.held = False
+    # the stop combo: left right left right within a second ends the dancing
+    assert pet.manual_groove and pet.tap.active
+    for k, a in enumerate(("groove_left", "groove_right", "groove_left")):
+        pet.key_action(a, t + 20.0 + k * 0.2, t + 20.0 + k * 0.2)
+    assert pet.manual_groove  # three is not the combo
+    pet.key_action("groove_right", t + 20.6, t + 20.6)
+    assert not pet.manual_groove and not pet.tap.active and comp.groove_lean == 0.0 and pet._turn is None
+    assert "done dancing" in beh.thoughts[-1][1] and comp._gesture.name == "shake_off"
+    # too slow is just nudging (and the first tap turns the groove back on)
+    for k, a in enumerate(("groove_left", "groove_right", "groove_left", "groove_right")):
+        pet.key_action(a, t + 30.0 + k * 0.5, t + 30.0 + k * 0.5)
+    assert pet.manual_groove
     pet.stop()
 
 
@@ -473,6 +486,41 @@ def test_manual_groove_on_cuts_a_song_and_a_game_and_keeps_the_brain_out_of_them
     assert pet.start_simon("head", t + 10) == "head" and pet.mime.active
     pet.key_action("groove_left", t + 10.5, t + 10.5)
     assert pet.manual_groove and not pet.mime.active
+    pet.stop()
+
+
+def test_a_wave_gets_a_mirrored_wave_back_and_a_hug_gets_a_nuzzle():
+    from festival_pet.pose import Arms, HUG_HOLD_S
+
+    def arms(ts, l_deg, r_deg, r_dx=0.0):
+        pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0), "l_wrist": (100.0, 40.0), "r_wrist": (150.0 + r_dx, 40.0), "l_wrist_ok": True, "r_wrist_ok": True}
+        from festival_pet.pose import arm_level
+        return Arms(ts, l_deg, r_deg, arm_level(l_deg), arm_level(r_deg), 0.9, 50.0, pts)
+
+    t = time.time()
+    pet = _pet(t - 1.0)
+    comp, beh = pet.p.composer, pet.p.behavior
+    pet.vision = ArmsVision()
+    # their RIGHT hand waves: three swings; the pose runs live while the arm is up, and it waves back with its LEFT antenna
+    for k in range(8):
+        now = t + k * 0.15
+        pet.vision.arms = arms(now, 20.0, 160.0, r_dx=15.0 if k % 2 else -15.0)
+        pet.step(now)
+    assert pet.vision.pose_live
+    assert any(k == "arms" and n == "wave right" for _, k, n in pet.actions_log)
+    assert comp._gesture.name == "wave" and comp._gesture.side == 1.0 and "waving their right hand" in beh.thoughts[-1][1]
+    assert not pet.mime.active
+    # a hug: both arms out for a while
+    t2 = t + 10.0
+    now = t2
+    while now < t2 + HUG_HOLD_S + 0.5:
+        pet.vision.arms = arms(now, 90.0, 90.0)
+        pet.step(now)
+        now += 0.1
+    assert any(k == "arms" and n == "hug" for _, k, n in pet.actions_log)
+    assert comp._gesture.name == "hug" and "a hug" in beh.thoughts[-1][1]
+    assert [n for _, k, n in pet.actions_log if k == "sound"][-1] == "coo"
+    assert pet.mind()["arms"]["watching"]
     pet.stop()
 
 

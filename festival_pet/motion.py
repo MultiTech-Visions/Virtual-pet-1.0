@@ -357,6 +357,33 @@ def g_boop(u: float) -> Offsets:
     return Offsets(pitch=-6.0 * snap, z=0.006 * snap, x=-0.012 * snap, yaw=shake, ant_r=0.7 * cross, ant_l=-0.7 * cross)
 
 
+WAVE_S = 2.0
+HUG_S = 4.0
+
+
+def g_wave(u: float, side: float) -> Offsets:
+    """Waving back with one antenna: it comes forward and up, waggles three times, and settles, while the
+    head tips toward that side and lifts a little. ``side`` +1 = the left antenna, -1 = the right.
+    (Antenna offsets: forward is + on the right and - on the left, as in g_swat.)"""
+    up = _ease(min(1.0, u / 0.2)) * (1 - _ease(min(1.0, max(0.0, (u - 0.8) / 0.2))))
+    wag = 0.45 * math.sin(2 * math.pi * 3.0 * min(1.0, max(0.0, (u - 0.2) / 0.6))) * up
+    off = Offsets(roll=side * 8.0 * up, pitch=-5.0 * up, yaw=side * 3.0 * up)
+    if side > 0:
+        off.ant_l = -(0.9 * up + wag)
+    else:
+        off.ant_r = 0.9 * up + wag
+    return off
+
+
+def g_hug(u: float) -> Offsets:
+    """A hug: both antennas open wide (back, like a perk), the head lowers and turns aside to nuzzle in,
+    and the body rocks gently side to side (about five degrees) for the whole of it."""
+    e = _ease(min(1.0, u / 0.25)) * (1 - _ease(min(1.0, max(0.0, (u - 0.8) / 0.2))))
+    rock = math.sin(2 * math.pi * 0.7 * u * HUG_S)
+    return Offsets(pitch=12.0 * e, roll=14.0 * e, yaw=10.0 * e, z=-0.008 * e, x=0.012 * e,
+                   ant_r=-1.0 * e, ant_l=1.0 * e, body=5.0 * rock * e)
+
+
 def g_glance(u: float, side: float) -> Offsets:
     e = _pulse(u) ** 0.6
     return Offsets(yaw=side * 22.0 * e, pitch=-3.0 * e + 5.0 * math.sin(math.pi * u * 2) * e, roll=side * 4.0 * e)
@@ -389,6 +416,8 @@ GESTURES: dict[str, tuple[float, str]] = {
     "swat": (1.3, "sided"),
     "nuzzle": (3.2, "plain"),
     "boop": (0.7, "plain"),
+    "wave": (WAVE_S, "sided"),
+    "hug": (HUG_S, "plain"),
 }
 
 SOLO_GESTURES = frozenset({"sneeze", "bow"})  # the whole body is the gesture: no groove, mimic, mirror or beep sway on top
@@ -399,7 +428,7 @@ _FUNCS = {
     "shake_off": g_shake_off, "search": g_search, "glance": g_glance,
     "shy": g_shy, "nod_off": g_nod_off, "sneeze": g_sneeze, "hiccup": g_hiccup, "tada": g_tada,
     "flinch": g_flinch, "lean": g_lean, "shake": g_shake, "point": g_point, "bow": g_bow,
-    "swat": g_swat, "nuzzle": g_nuzzle, "boop": g_boop,
+    "swat": g_swat, "nuzzle": g_nuzzle, "boop": g_boop, "wave": g_wave, "hug": g_hug,
 }
 
 

@@ -45,6 +45,8 @@ EAR_TUCK_AFTER = 4  # the tickle that ends the game
 EAR_TUCK_S = 26.0  # how long the sulk lasts, left alone (matches MotionComposer.EAR_TUCK_S)
 EAR_SWAT_S = 1.3  # one swat (GESTURES["swat"]): pokes during it are covered by its taps
 EAR_MAKEUP_S = 3.0  # after the last poke, the nuzzle: keep poking and it keeps batting
+WAVE_COOLDOWN_S = 6.0  # one wave back per wave, not one per swing
+HUG_COOLDOWN_S = 20.0
 BODY_CONFIRM_S = 1.0  # a torso must be seen this long before it is worth looking up at
 BODY_GIVE_UP_S = 6.0  # looking up at a torso this long without finding a face: not a person
 BODY_IGNORE_S = 120.0  # ...and that spot is ignored for this long
@@ -96,6 +98,8 @@ class Observation:
     grooving: bool = False  # manual groove with a tempo tapped in: we are dancing, nothing else starts
     busy: str | None = None  # what the robot layer is running: "mime", "sing", "gesture" (a solo one) or "turn" (keypad groove turn)
     arms: object | None = None  # pose.Arms: the person's arms are readable this tick (the arm games need this)
+    waved: str | None = None  # they waved a hand this tick (edge): the PERSON's "left" or "right"
+    hugged: bool = False  # arms held out wide at it for a while (edge): a hug
 
 
 @dataclass
@@ -172,6 +176,8 @@ class Behavior:
     _ear_tucked: int | None = None  # which antenna is parked over the head (not in the mood)
     _ear_seq_at: float = 0.0  # when the swatting is over and the make-up nuzzle starts (pushed back by every poke)
     _last_swat: float = -1e9
+    _last_wave: float = -1e9
+    _last_hug: float = -1e9
     _body_first: float = 0.0  # a torso has been in view since (0 = none)
     _body_last: float = -1e9  # a torso was last in view at
     _last_sleepy: float = -1e9  # the sleepy noise is rationed
@@ -477,6 +483,29 @@ class Behavior:
                 self.mood.energy += 0.03
                 if self._engaged_person is not None:
                     self.memory.add_pet(self._engaged_person)
+
+        if obs.waved is not None and awake and self.state != "HELD" and now - self._last_wave > WAVE_COOLDOWN_S:
+            self._last_wave = now
+            self._last_interaction = now
+            # wave back with the mirrored antenna: their right hand is on our left
+            self._think(now, f"they're waving their {obs.waved} hand at me! *waves back*")
+            actions.append(Action("sound", "hello_friend" if self._engaged_person is not None else "happy", 3))
+            actions.append(Action("gesture", f"wave:{'+' if obs.waved == 'right' else '-'}", 3))
+            self.mood.social += 0.05
+            self.mood.clamp()
+            if self._engaged_person is not None:
+                self.memory.add_attention(self._engaged_person, 2.0)
+
+        if obs.hugged and awake and self.state != "HELD" and now - self._last_hug > HUG_COOLDOWN_S:
+            self._last_hug = now
+            self._last_interaction = now
+            self._think(now, "arms out... a hug! *nuzzles in*")
+            actions.append(Action("sound", "coo", 3))
+            actions.append(Action("gesture", "hug", 3))
+            self.mood.social += 0.15
+            self.mood.clamp()
+            if self._engaged_person is not None:
+                self.memory.add_pet(self._engaged_person)
 
         if obs.name_heard:
             self._last_interaction = now

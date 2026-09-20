@@ -18,6 +18,53 @@ def test_arm_angle_and_levels():
     assert arm_angle(s, s, s, True) == 0.0  # degenerate: no crash
 
 
+def _arms_at(ts, l_deg, r_deg, l_wrist_dx=0.0, r_wrist_dx=0.0, shoulder=50.0):
+    from festival_pet.pose import Arms
+
+    pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (100.0 + shoulder, 100.0), "l_wrist": (100.0 + l_wrist_dx, 40.0), "r_wrist": (100.0 + shoulder + r_wrist_dx, 40.0),
+           "l_wrist_ok": True, "r_wrist_ok": True}
+    return Arms(ts, l_deg, r_deg, arm_level(l_deg), arm_level(r_deg), 0.9, shoulder, pts)
+
+
+def test_a_wave_is_three_swings_of_a_raised_hand_and_a_hug_is_arms_out_held():
+    from festival_pet.pose import HUG_HOLD_S, ArmSigns
+
+    s = ArmSigns()
+    assert not s.watching
+    # arm down and swinging: nothing (a walk); arm up and still: nothing but it watches
+    assert s.feed(_arms_at(0.0, 20.0, 20.0, l_wrist_dx=10.0), 0.0) is None and not s.watching
+    assert s.feed(_arms_at(0.1, 160.0, 20.0, l_wrist_dx=0.0), 0.1) is None and s.watching
+    # the left hand swings +-15 px about its shoulder (shoulder width 50): a reversal every 0.2 s
+    found = []
+    t = 0.2
+    for k in range(12):
+        dx = 15.0 if k % 2 == 0 else -15.0
+        found.append(s.feed(_arms_at(t, 160.0, 20.0, l_wrist_dx=dx), t))
+        t += 0.2
+    waves = [f for f in found if f is not None]
+    assert waves and waves[0] == ("wave", "left") and found.index(waves[0]) >= 3  # three full swings before the first (the brain rate-limits the rest)
+    # tiny jitters do not count as swings
+    s2 = ArmSigns()
+    for k in range(12):
+        assert s2.feed(_arms_at(k * 0.1, 160.0, 20.0, l_wrist_dx=2.0 if k % 2 else -2.0), k * 0.1) is None
+    # a hug: both arms out for HUG_HOLD_S, once; arms must leave "out" for a moment before another counts
+    s3 = ArmSigns()
+    t = 10.0
+    got = []
+    while t < 10.0 + HUG_HOLD_S + 1.0:
+        got.append(s3.feed(_arms_at(t, 90.0, 90.0), t))
+        t += 0.1
+    assert got.count(("hug",)) == 1 and got[0] is None and s3.watching
+    assert s3.feed(_arms_at(t, 90.0, 90.0), t) is None  # still held: not again
+    assert s3.feed(_arms_at(t + 0.1, 10.0, 10.0), t + 0.1) is None  # arms dropped...
+    t2 = t + 0.1 + 1.5
+    got2 = []
+    while t2 < t + 0.1 + 1.5 + HUG_HOLD_S + 0.3:
+        got2.append(s3.feed(_arms_at(t2, 90.0, 90.0), t2))
+        t2 += 0.1
+    assert got2.count(("hug",)) == 1  # ...and back out long enough: a second hug
+
+
 class FakeNet:
     """Answers like the OpenCV Zoo pose model: landmarks (1, 195) in crop pixels, conf (1, 1), and the rest."""
 

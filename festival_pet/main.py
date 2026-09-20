@@ -43,6 +43,7 @@ from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose, SOLO_
 from festival_pet import songs
 from festival_pet.senses import ImuRubDetector, LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
+from festival_pet.pose import ArmSigns
 from festival_pet.tap_tempo import TapTempo
 from festival_pet.visual_rhythm import DanceDetector
 
@@ -97,6 +98,8 @@ BOOP_WINDOW_S = 3.0
 BOOP_DANCE_AT, BOOP_BOW_AT = 7, 13  # boop it that many times in a row: a little dance; a bow to the house
 FLOURISH_EVERY_BEATS = 8  # dance-along: every two bars it stops copying and throws in two beats of its own
 FLOURISH_BEATS = 2
+COMBO_TAPS = 4  # left right left right on the dancing layer...
+COMBO_WINDOW_S = 1.0  # ...this fast: stop dancing
 
 
 class RobotIO(Protocol):
@@ -432,8 +435,11 @@ class Pet:
         self._beats = 0
         self._last_phase = 0.0
         self._copy_last = 0.0
+        self.signs = ArmSigns()  # waves and hugs, read from the arm readings
+        self._signs_last = 0.0  # ts of the last arm reading fed to it (each reading counts once)
         # Keypad state: direction nudges, snacks, the trip, boops (see key_action)
         self._nudge: list[tuple[float, float]] = []  # (time, side) of recent direction taps
+        self._combo: list[tuple[float, float]] = []  # (time, side) of ALL recent direction taps, for the stop combo
         self._turn: tuple[float, float] | None = None  # (world yaw to dance facing, until) after repeated nudges
         self._snacks: list[float] = []
         self._ache_until = 0.0
@@ -537,6 +543,16 @@ class Pet:
             arms = vision.latest_arms()
             if arms is not None and now - arms.ts <= ARMS_MAX_AGE_S:
                 obs.arms = arms
+                # waves and hugs, but not while raised arms mean something else (a game move, dancing)
+                if arms.ts != self._signs_last and not self.mime.active and not self._copying_arms:
+                    self._signs_last = arms.ts
+                    sign = self.signs.feed(arms, now)
+                    if sign is not None:
+                        self.actions_log.append((now, "arms", " ".join(sign)))
+                        if sign[0] == "wave":
+                            obs.waved = sign[1]
+                        else:
+                            obs.hugged = True
         if self.dance.state.dancing:
             obs.dance_bpm = self.dance.state.bpm
             if not self._dance_seen:  # seen dancing: hand the tempo to the tap clock so manual groove / "1" pick it up
@@ -643,7 +659,7 @@ class Pet:
             comp.groove = (comp.groove[0], comp.groove[1], comp.groove[2] * TRIP_GROOVE)  # tripping: everything grooves harder
         self._dance_along(obs, now)
         if vision is not None:
-            vision.pose_live = self._copying_arms or (self.mime.active and self.mime.kind == "arms")
+            vision.pose_live = self._copying_arms or (self.mime.active and self.mime.kind == "arms") or (self.signs.watching and now < self.signs.watching_until)
 
         # ---------------- body
         if self.move is not None:
@@ -716,7 +732,7 @@ class Pet:
         if phase < self._last_phase - 0.5:
             self._beats += 1
             if now >= self._flourish_until and self._beats % FLOURISH_EVERY_BEATS == 0:
-                period = 60.0 / (self.tap.bpm if self.tap.active else self.dance.state.bpm if self.dance.state.dancing else FREE_DANCE_BPM)
+                period = self.tap.groove_period if self.tap.active else 60.0 / (self.dance.state.bpm if self.dance.state.dancing else FREE_DANCE_BPM)
                 self._flourish_len = FLOURISH_BEATS * period
                 self._flourish_until = now + self._flourish_len
                 self._flourish_riff = comp.rng.randrange(3)
@@ -933,7 +949,21 @@ class Pet:
             elif action == "downbeat":
                 self.tap.tap(t_ev, downbeat=True)
             else:
-                self._nudge_groove(1.0 if action == "groove_left" else -1.0, now)
+                side = 1.0 if action == "groove_left" else -1.0
+                self._combo = [(t, s) for t, s in self._combo if now - t <= COMBO_WINDOW_S] + [(now, side)]
+                if len(self._combo) >= COMBO_TAPS and all(a[1] == -b[1] for a, b in zip(self._combo[-COMBO_TAPS:], self._combo[-COMBO_TAPS + 1:])):
+                    # left right left right, fast: that's enough dancing
+                    self._combo.clear()
+                    self._nudge.clear()
+                    self._turn = None
+                    comp.groove_lean = 0.0
+                    self.control("manual_groove", False)
+                    self.tap.clear()
+                    beh._think(now, "okay, okay! done dancing. phew")
+                    self._dispatch(Action("sound", "content", 3), now)
+                    self._dispatch(Action("gesture", "shake_off", 3), now)
+                    return
+                self._nudge_groove(side, now)
         elif action == "snack":
             self._snack(now)
         elif action == "mushroom":
@@ -967,7 +997,7 @@ class Pet:
         if len(self._nudge) < NUDGE_TURN_TAPS or comp.held:
             return
         self._nudge.clear()
-        period = 60.0 / self.tap.bpm if self.tap.active else 60.0 / FREE_DANCE_BPM
+        period = self.tap.groove_period if self.tap.active else 60.0 / FREE_DANCE_BPM
         here = self._turn[0] if self._turn is not None else (beh.gaze[0] if beh.gaze is not None else comp.body_yaw)
         yaw = max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, here + side * NUDGE_TURN_DEG))
         self._turn = (yaw, now + NUDGE_TURN_BEATS * period)
@@ -1070,7 +1100,8 @@ class Pet:
             "mind": self.p.behavior.mind(now),
             "feeling": self._feeling(now),
             "mime": self.mime.status(now),
-            "arms": None if o.arms is None else {"left": o.arms.left, "right": o.arms.right, "left_deg": round(o.arms.left_deg), "right_deg": round(o.arms.right_deg), "conf": round(o.arms.conf, 2), "shoulder_px": round(o.arms.shoulder_px)},
+            "arms": None if o.arms is None else {"left": o.arms.left, "right": o.arms.right, "left_deg": round(o.arms.left_deg), "right_deg": round(o.arms.right_deg), "conf": round(o.arms.conf, 2), "shoulder_px": round(o.arms.shoulder_px),
+                                                "watching": self.signs.watching and now < self.signs.watching_until},
             "dance_along": {"on": self.dance_along, "copying": self._copying_arms, "flourish": self._copying_arms and now < self._flourish_until,
                             "antennas": None if comp.arms is None or now >= comp.arms_until else [round(comp.arms[0]), round(comp.arms[1])]},
             "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs], "next_in_s": round(max(0.0, self.p.behavior._cool.get("sing", now) - now)) if self.singing_enabled else None},
@@ -1087,7 +1118,7 @@ class Pet:
                            "lean": round(comp.groove_lean, 2), "turn": None if self._turn is None else {"yaw": round(self._turn[0]), "for_s": round(self._turn[1] - now, 1)},
                            "snacks": len([t for t in self._snacks if now - t <= SNACK_WINDOW_S]), "tummy_ache_s": round(max(0.0, self._ache_until - now)), "trip_s": round(max(0.0, self._trip_until - now)), "trip_doses": self._trip_doses,
                            "boops": len([t for t in self._boops if now - t <= BOOP_WINDOW_S])},
-                "tap": {"bpm": round(self.tap.bpm, 1), "beat": self.tap.beat_in_bar(now) if self.tap.active else 0, "bar": self.tap.bar_in_phrase(now) if self.tap.active else 0, "downbeat_known": self.tap.downbeat_known},
+                "tap": {"bpm": round(self.tap.bpm, 1), "beat": self.tap.beat_in_bar(now) if self.tap.active else 0, "bar": self.tap.bar_in_phrase(now) if self.tap.active else 0, "downbeat_known": self.tap.downbeat_known, "halftime": self.tap.active and self.tap.halftime},
                 "dance": {"dancing": self.dance.state.dancing, "bpm": round(self.dance.state.bpm, 1), "confidence": round(self.dance.state.confidence, 2), "amplitude": round(self.dance.state.amplitude, 3), "holds_for_s": round(max(0.0, self.dance.locked_for - now), 1) if self.dance.state.dancing else 0.0},
                 "mimic": None if comp.mimic is None else {"yaw": round(comp.mimic[0], 1), "pitch": round(comp.mimic[1], 1), "roll": round(comp.mimic[2], 1)},
                 "listening": self.audio.stats["listening"], "voice_yaw": self.audio.last_voice_yaw,

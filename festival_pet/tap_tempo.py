@@ -13,6 +13,7 @@ from statistics import median
 
 MIN_TAP_BPM, MAX_TAP_BPM = 40.0, 220.0
 RESET_GAP_S = 2.5  # a pause longer than this between taps starts a new count
+HALFTIME_ABOVE_BPM = 150.0  # tapped faster than this, the groove goes on every other beat (the daemon does not smooth our 50 Hz targets)
 BEATS_PER_BAR = 4
 BARS_PER_PHRASE = 4
 
@@ -31,6 +32,16 @@ class TapTempo:
     @property
     def period(self) -> float:
         return 60.0 / self.bpm
+
+    @property
+    def halftime(self) -> bool:
+        """Above HALFTIME_ABOVE_BPM the body grooves on every other beat: a full bob each 0.4 s rattles the hardware."""
+        return self.bpm > HALFTIME_ABOVE_BPM
+
+    @property
+    def groove_period(self) -> float:
+        """Seconds per groove beat: the tapped beat, or two of them at halftime."""
+        return self.period * (2.0 if self.halftime else 1.0)
 
     def tap(self, now: float, downbeat: bool = False) -> float:
         """Register a tap; returns the current bpm (0 until two taps are in)."""
@@ -70,18 +81,20 @@ class TapTempo:
         return self._bar_anchor is not None
 
     def phase(self, now: float) -> float:
-        """0..1 within the beat (0 = on the beat)."""
-        return ((now - self._anchor) / self.period) % 1.0
+        """0..1 within the groove beat (0 = on the beat). At halftime that is every other tapped beat, the
+        "1" and "3" when the "1" is known (the bar anchor sits on a whole beat, so it fixes which ones)."""
+        origin = self._bar_anchor if self._bar_anchor is not None else self._anchor
+        return ((now - origin) / self.groove_period) % 1.0
 
     def bar_phase(self, now: float) -> float:
-        """0..1 over a 4-beat bar; counted from the last "1" if given, else from the last tap."""
+        """0..1 over a 4-beat bar (8 tapped beats at halftime); counted from the last "1" if given, else from the last tap."""
         origin = self._bar_anchor if self._bar_anchor is not None else self._anchor
-        return ((now - origin) / (BEATS_PER_BAR * self.period)) % 1.0
+        return ((now - origin) / (BEATS_PER_BAR * self.groove_period)) % 1.0
 
     def phrase_phase(self, now: float) -> float:
         """0..1 over a 4-bar (16-beat) phrase, from the last "1"."""
         origin = self._bar_anchor if self._bar_anchor is not None else self._anchor
-        return ((now - origin) / (BEATS_PER_BAR * BARS_PER_PHRASE * self.period)) % 1.0
+        return ((now - origin) / (BEATS_PER_BAR * BARS_PER_PHRASE * self.groove_period)) % 1.0
 
     def beat_in_bar(self, now: float) -> int:
         """1..4"""

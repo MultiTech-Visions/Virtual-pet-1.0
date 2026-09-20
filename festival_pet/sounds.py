@@ -171,6 +171,7 @@ EMOTIONS = (
     "yes",  # "you did it": bright double blip
     "no_no",  # nuh-uh-uh: not in the mood (ears)
     "huff",  # "no? like THIS": a short exasperated puff
+    "coo",  # a warm, low coo: being hugged
 )
 
 # What each sound means, for the lexicon on the Play tab.
@@ -184,6 +185,7 @@ MEANINGS = {
     "mirror_start": "let's play mirror: I'll copy you", "mirror_end": "mirror game over",
     "mime_start": "Simon says: do what I do", "mime_end": "Simon says is over", "mime_cue": "watch this move",
     "yes": "you did it!", "huff": "no? like THIS. again", "no_no": "nuh-uh-uh: leave my ears alone",
+    "coo": "aww... a hug",
 }
 
 
@@ -370,6 +372,15 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
         out = concat(tone(j(420, 480), 0.08, sr, harmonics=0.5, attack=0.02, release=0.3), noise_burst(j(0.22, 0.28), sr))
     elif emotion == "hiccup":
         out = concat(tone(j(500, 600), 0.03, sr, attack=0.02, release=0.3), chirp(j(900, 1100), j(1500, 1900), 0.06, sr, curve=1.8))
+    elif emotion == "coo":
+        # a warm "ooo-oo": two slow, low, gently sliding notes with a soft wobble, then a purr that trails off
+        f0 = j(380, 440)
+        out = concat(
+            chirp(f0, f0 * 1.12, j(0.5, 0.7), sr, curve=0.8, attack=0.2, release=0.4),
+            silence(0.05, sr),
+            warble(f0 * 0.95, j(0.6, 0.8), rate=5, depth=0.03, sample_rate=sr),
+            purr(j(0.8, 1.1), base=f0 * 0.9, pulse_rate=j(18, 22), sample_rate=sr) * np.float32(0.6),
+        )
     elif emotion == "sing":
         out = tone(j(1100, 1700), j(0.06, 0.09), sr, harmonics=0.3)
     elif emotion == "tada":

@@ -173,6 +173,15 @@ work is skipped). Every eight beats it takes two beats for a riff of its own (al
 or a wave), then goes back to copying. Off during Simon says, library moves and sleep; switch it
 off on the Play tab.
 
+**Waves and hugs** (from the same arm reading, whenever no game or dance-along is using the
+arms): wave a hand above shoulder height, three swings side to side within two seconds, and it
+waves back with the mirrored antenna (your right hand, its left), tipping its head that way. Hold
+both arms out wide at it for 2.5 s and that is a hug: antennas open wide, head lowered and turned
+aside to nuzzle in, body rocking about five degrees, with a warm coo. A raised or open arm makes
+the pose model read every frame for a moment (a wave cannot be told from a stretch at the idle
+rate); the Play tab's "your arms" row shows "watching" then. One wave back per six seconds, one
+hug per twenty.
+
 **Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
 "Puppet it". Distinct calls: a rising two-note for "let's play mirror" (falling for "mirror
 over"), the fanfare for Simon says, a double blip before each shown move, a bright "yes", a
@@ -204,7 +213,10 @@ Controls tab, **Keypad** card:
      leans the groove that way (head tilt, one antenna forward, one back, fading over a couple
      of seconds); three taps within 2.5 s and the body turns 60° that way and dances facing
      there for 8 beats, then comes back to whoever it was with, mid-groove, no re-greeting.
-     Never turns when held in a hand.
+     Never turns when held in a hand. Left-right-left-right within a second (a fighting-game
+     combo) stops the dancing: manual groove off, the tempo cleared. A tempo tapped faster
+     than 150 bpm grooves at halftime (every other beat, on the "1" and "3" once the "1" is
+     known): the daemon does not smooth the 50 Hz targets, and a full bob every 0.4 s rattles.
   2. **Caring**: snack (a little energy; five in 15 s and it hiccups, nine and it has a tummy
      ache and refuses snacks for a minute) · mushroom (dizzy, then two minutes of extra energy,
      maxed curiosity and a groove half as big again; a second one adds a minute; a third
