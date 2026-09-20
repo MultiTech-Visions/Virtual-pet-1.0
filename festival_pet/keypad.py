@@ -49,13 +49,14 @@ KEYNAMES = {v: k for k, v in KEYCODES.items()}
 # order they sit on the pad. Each layer is one idea; the actions are fixed, only the key codes are set
 # on the page (a layer sends whatever codes it was programmed with).
 LAYERS: dict[str, tuple[str, str, str, str]] = {
+    # in the pad's layer order: one press of its mode key from dancing lands on petting
     "dancing": ("groove_left", "tap", "downbeat", "groove_right"),
-    "caring": ("snack", "mushroom", "pet", "boop"),
     "petting": ("head_pat", "chin_scratch", "ear_rub", "belly_rub"),
+    "caring": ("snack", "mushroom", "pet", "boop"),
 }
 ACTIONS = tuple(a for acts in LAYERS.values() for a in acts)
 # The MK424 sends A B C D from the factory on its first layer; the other two are whatever you programmed them to.
-DEFAULT_LAYER_KEYS: dict[str, list[str]] = {"dancing": ["A", "B", "C", "D"], "caring": ["E", "F", "G", "H"], "petting": ["I", "J", "K", "L"]}
+DEFAULT_LAYER_KEYS: dict[str, list[str]] = {"dancing": ["A", "B", "C", "D"], "petting": ["E", "F", "G", "H"], "caring": ["I", "J", "K", "L"]}
 
 
 @dataclass

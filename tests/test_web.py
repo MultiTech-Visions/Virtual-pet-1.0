@@ -259,7 +259,7 @@ def test_keypad_actions_reach_the_pet_and_the_map_persists(tmp_path):
     assert c.post("/api/control", json={"cmd": "keymap", "value": "caring:0:BANANA"}).status_code == 400
     assert c.post("/api/control", json={"cmd": "keymap", "value": "sleeping:0:A"}).status_code == 400
     m = c.get("/api/mind").json()
-    assert m["controls"]["keymap"]["caring"] == ["F1", "F", "G", "H"]
+    assert m["controls"]["keymap"]["caring"] == ["F1", "J", "K", "L"]
     assert m["senses"]["keypad"]["devices"] == [] and c.get("/api/catalog").json()["keypad"]["dancing"][1] == "tap"
     # a tapped beat from the keypad lands in the tap clock with the key's own timestamp, and turns manual groove on
     assert not pet.manual_groove
@@ -274,7 +274,7 @@ def test_keypad_actions_reach_the_pet_and_the_map_persists(tmp_path):
     pet2 = _pet()
     pet2.settings_file = pet.settings_file
     pet2.load_settings()
-    assert pet2.keymap.layers["caring"] == ["F1", "F", "G", "H"]
+    assert pet2.keymap.layers["caring"] == ["F1", "J", "K", "L"]
     pet.settings_file.write_text(json.dumps({"keymap": {"A": {"press": "tilt_left", "hold": "none"}}}))
     pet3 = _pet()
     pet3.settings_file = pet.settings_file
@@ -397,16 +397,16 @@ def test_petting_layer_reaches_the_brain_as_the_real_touches_do():
     pet = _pet()
     beh = pet.p.behavior
     t = 1001.0
-    pet.keypad.events.put(KeyEvent("I", True, t, "test"))  # head pat
+    pet.keypad.events.put(KeyEvent("E", True, t, "test"))  # head pat
     pet.step(t + 0.05)
     assert "head pets" in beh.thoughts[-1][1] and any(n == "lean" for _, k, n in pet.actions_log if k == "gesture")
-    pet.keypad.events.put(KeyEvent("J", True, t + 5, "test"))  # chin scratch
+    pet.keypad.events.put(KeyEvent("F", True, t + 5, "test"))  # chin scratch
     pet.step(t + 5.05)
     assert "chin" in beh.thoughts[-1][1] and any(n == "snuggle" for _, k, n in pet.actions_log if k == "gesture")
-    pet.keypad.events.put(KeyEvent("K", True, t + 10, "test"))  # ear rub
+    pet.keypad.events.put(KeyEvent("G", True, t + 10, "test"))  # ear rub
     pet.step(t + 10.05)
     assert "ear" in beh.thoughts[-1][1] and "keep going" in beh.thoughts[-1][1]
-    pet.keypad.events.put(KeyEvent("L", True, t + 15, "test"))  # belly rub
+    pet.keypad.events.put(KeyEvent("H", True, t + 15, "test"))  # belly rub
     pet.step(t + 15.05)
     assert "tickles" in beh.thoughts[-1][1]
     assert not pet.manual_groove  # only the dancing layer touches the groove

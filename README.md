@@ -217,13 +217,14 @@ Controls tab, **Keypad** card:
      combo) stops the dancing: manual groove off, the tempo cleared. A tempo tapped faster
      than 150 bpm grooves at halftime (every other beat, on the "1" and "3" once the "1" is
      known): the daemon does not smooth the 50 Hz targets, and a full bob every 0.4 s rattles.
-  2. **Caring**: snack (a little energy; five in 15 s and it hiccups, nine and it has a tummy
+  2. **Petting** (one press of the pad's mode key from dancing lands here): head pat · chin
+     scratch · ear rub · belly rub. Each gets the reaction the real touch gets, and counts as
+     a pet for whoever it is with.
+  3. **Caring**: snack (a little energy; five in 15 s and it hiccups, nine and it has a tummy
      ache and refuses snacks for a minute) · mushroom (dizzy, then two minutes of extra energy,
      maxed curiosity and a groove half as big again; a second one adds a minute; a third
      sneezes it all out; coming down costs some energy) · pet (a head pat) · boop (boop its
      nose; seven in a row earns a little dance, thirteen a bow to the house).
-  3. **Petting**: head pat · chin scratch · ear rub · belly rub. Each gets the reaction the
-     real touch gets, and counts as a pet for whoever it is with.
 - Any key counts as interaction, so the pet does not get lonely while someone plays with it.
 
 The restore script adds the `pollen` user to the `input` and `bluetooth` groups (needed to read
