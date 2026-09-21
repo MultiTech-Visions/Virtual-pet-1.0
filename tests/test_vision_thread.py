@@ -206,7 +206,7 @@ def test_the_face_is_framed_higher_once_the_arms_are_in_play():
     v.body_enabled = False
     v.recognizer = None
     v.preview = False
-    v.pose_live = True  # skip the close-up rotation search: it needs a real detector
+    v.pose_live = False  # nothing needs the arms yet
     v._track = None
     v._next_track_id = 1
     v._roll_prev = 0.0
@@ -215,6 +215,7 @@ def test_the_face_is_framed_higher_once_the_arms_are_in_play():
     row[:4] = (140.0, 40.0, 40.0, 40.0)  # a face box in the 320 px detection frame
     row[4:14] = (150, 50, 170, 50, 160, 60, 152, 70, 168, 70)
     v.detector = type("D", (), {"detect": staticmethod(lambda small: row[np.newaxis])})()
+    v.refiner = v.detector  # its score is 0, so the close-up search finds nothing and the coarse row stands
     frame = np.zeros((720, 1280, 3), dtype=np.uint8)
     scale = DETECT_WIDTH / frame.shape[1]
 
@@ -222,12 +223,25 @@ def test_the_face_is_framed_higher_once_the_arms_are_in_play():
     plain = v.process_frame(frame, np.eye(4), 100.0)
     assert abs(plain.v - (40.0 + 40.0 * 0.45) / scale) < 1e-6  # between the eyes, as before
 
+    # arms being read is NOT enough on its own: dropping the aim puts the face up near the top of the
+    # frame where it is harder to detect, so it only happens while something actually needs the arms
     v._arms = Arms(100.0, 30.0, 100.0, "down", "out", 0.9, 40.0, {})
+    assert v.process_frame(frame, np.eye(4), 100.0).v == plain.v
+
+    v.pose_live = True  # a game, the handshake, teaching it a pose, the dance-along
     framed = v.process_frame(frame, np.eye(4), 100.0)
     assert framed.u == plain.u  # left and right are unchanged: only the aim height moves
-    assert framed.v - plain.v == (0.5 - FACE_TOP_FRAC) * frame.shape[0]
+    assert abs((framed.v - plain.v) - (0.5 - FACE_TOP_FRAC) * frame.shape[0]) < 1e-3
     # aiming at that point puts the face a quarter of the way down the frame instead of halfway
-    assert abs((plain.v - framed.v) / frame.shape[0] + 0.5 - FACE_TOP_FRAC) < 1e-9
+    assert abs((plain.v - framed.v) / frame.shape[0] + 0.5 - FACE_TOP_FRAC) < 1e-6
 
     v._arms = Arms(90.0, 30.0, 100.0, "down", "out", 0.9, 40.0, {})  # a stale read is nobody's arms
     assert v.process_frame(frame, np.eye(4), 100.0).v == plain.v
+
+    # and the aim never leaves the picture: unprojecting a pixel outside the frame is making it up
+    from festival_pet.vision import FACE_AIM_MAX_FRAC
+
+    row[:4] = (140.0, 140.0, 36.0, 36.0)  # a face low in the frame
+    v._track = None  # they moved right across it: a fresh lock, not the same track
+    v._arms = Arms(100.0, 30.0, 100.0, "down", "out", 0.9, 40.0, {})
+    assert v.process_frame(frame, np.eye(4), 100.0).v <= FACE_AIM_MAX_FRAC * frame.shape[0]

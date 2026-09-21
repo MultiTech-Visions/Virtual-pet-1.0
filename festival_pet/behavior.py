@@ -51,7 +51,7 @@ WAVE_COOLDOWN_S = 6.0  # one wave back per wave, not one per swing
 HUG_COOLDOWN_S = 20.0
 BODY_CONFIRM_S = 1.0  # a torso must be seen this long before it is worth looking up at
 BODY_GIVE_UP_S = 6.0  # looking up at a torso this long without finding a face: not a person
-BODY_IGNORE_S = 120.0  # ...and that spot is ignored for this long
+BODY_IGNORE_S = 45.0  # ...and that spot is ignored for this long — but never a spot a face has come from
 BODY_IGNORE_DEG = 25.0
 
 
@@ -127,6 +127,7 @@ class Spot:
     pitch: float
     at: float
     seen: int = 1
+    faces: int = 0  # how many of those sightings were an actual face, not just a torso-shaped thing
 
 
 @dataclass
@@ -143,14 +144,15 @@ class SeenSpots:
 
     spots: list = field(default_factory=list)
 
-    def note(self, yaw: float, pitch: float, now: float) -> None:
+    def note(self, yaw: float, pitch: float, now: float, face: bool = False) -> None:
         for spot in self.spots:
             if abs(spot.yaw - yaw) <= SPOT_MERGE_DEG:
                 spot.yaw = spot.yaw * 0.7 + yaw * 0.3  # drift with them rather than snapping about
                 spot.pitch, spot.at, spot.seen = pitch, now, spot.seen + 1
+                spot.faces += int(face)
                 self.spots.sort(key=lambda x: -x.at)
                 return
-        self.spots.insert(0, Spot(yaw, pitch, now))
+        self.spots.insert(0, Spot(yaw, pitch, now, faces=int(face)))
         del self.spots[SPOT_KEEP:]
 
     def recent(self, now: float) -> list:
@@ -160,7 +162,7 @@ class SeenSpots:
         return max((x.at for x in self.spots), default=-1e9)
 
     def as_dicts(self, now: float) -> list[dict]:
-        return [{"yaw": round(x.yaw, 1), "pitch": round(x.pitch, 1), "s_ago": round(now - x.at, 1), "seen": x.seen}
+        return [{"yaw": round(x.yaw, 1), "pitch": round(x.pitch, 1), "s_ago": round(now - x.at, 1), "seen": x.seen, "faces": x.faces}
                 for x in self.recent(now)]
 
 
@@ -428,6 +430,11 @@ class Behavior:
     def _body_ignored(self, yaw: float, now: float) -> bool:
         self._body_ignore = [(y, until) for y, until in self._body_ignore if until > now]
         return any(abs(yaw - y) < BODY_IGNORE_DEG for y, _ in self._body_ignore)
+
+    def _known_person_spot(self, yaw: float, now: float) -> bool:
+        """Has a FACE actually come from about here? Then it is a place where a person stands, and a torso
+        there with no face on it right now means the detector is struggling, not that it is furniture."""
+        return any(spot.faces and abs(spot.yaw - yaw) <= SPOT_MERGE_DEG for spot in self.seen_spots.recent(now))
 
     def _nag(self, obs: Observation, now: float) -> list[Action]:
         """ask_attention: complain alone, beg when someone is near, every 20 s or so."""
@@ -741,7 +748,7 @@ class Behavior:
             face = obs.face
             if face is not None:
                 self._last_seen_yaw, self._last_seen_pitch = face.yaw_deg, face.pitch_deg
-                self.seen_spots.note(face.yaw_deg, face.pitch_deg, now)
+                self.seen_spots.note(face.yaw_deg, face.pitch_deg, now, face=True)
                 if now >= self._voice_lock_until:
                     self.gaze = (face.yaw_deg, face.pitch_deg)
                     self.attention.looked(face.yaw_deg, now)
@@ -875,7 +882,12 @@ class Behavior:
                     self.gaze = (obs.body.yaw_deg, obs.body.pitch_deg)
                     self._look_until = max(self._look_until, now + 1.5)
                     self._next_glance = max(self._next_glance, now + 1.5)
-                elif now - self._body_since > BODY_GIVE_UP_S and self._body_since != 0.0:
+                elif (now - self._body_since > BODY_GIVE_UP_S and self._body_since != 0.0
+                      and not self._known_person_spot(obs.body.yaw_deg, now)):
+                    # Blacklisting a spot the face detector merely struggles with is how it ends up refusing
+                    # to look at somebody standing still right in front of it: the face drops out for a few
+                    # seconds, the torso is still there, and it decides the person is furniture. So a place
+                    # a face has actually come from is never written off, however long it loses them for.
                     self._body_ignore.append((obs.body.yaw_deg, now + BODY_IGNORE_S))
                     self._think(now, f"no face up there after {BODY_GIVE_UP_S:.0f} s... that's not a person. ignoring it")
                     self._body_since, self._body_first = 0.0, 0.0

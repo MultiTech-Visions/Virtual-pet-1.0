@@ -56,7 +56,10 @@ OFFER_RAD = 0.14  # the offered antenna: just past vertical, tipped toward them 
 OFFER_AWAY_RAD = 0.9  # ...and the other one leans out of the way (unless it is wearing one: then it stays up)
 OFFER_ROLL = 15.0  # the head tips toward the offered side, so that ear is plainly the one being presented
 OFFER_YAW = 22.0  # ...and turns AWAY from it, which is what swings that ear round to face the person
-CAREFUL_ANTENNA_RAD = 0.45  # a bracelet rides safely as long as its antenna stays this close to vertical
+CAREFUL_ANTENNA_RAD = 0.45  # a bracelet rides safely as long as its antenna stays this close to vertical...
+CAREFUL_ROLL_DEG = 9.0  # ...but only once the head is tilted: level, a bracelet sits at the base of a lowered
+CAREFUL_ROLL_FULL = 19.0  # antenna quite happily, which is why shedding one takes a tilt AND a lowering. So the
+#                           gate comes in with the tilt, which is what dancing has and what a peace sign does not.
 CAREFUL_SCALE = 0.4  # for a little while after a trade it also moves this much of normal, to settle
 TILT_Z_FROM = 0.55  # past this fraction of the roll limit the head stops dropping: tilted right over, a
 #                     lowered head puts the side of it on the body frame
@@ -456,12 +459,21 @@ def g_peace(u: float) -> Offsets:
                    ant_r=(a - ANTENNA_NEUTRAL[0]) * fade, ant_l=(-a - ANTENNA_NEUTRAL[1]) * fade)
 
 
+CROSS_RAD = 0.95  # how far past vertical the antennas lean back to cross over behind the head
+
+
 def g_heart(u: float) -> Offsets:
-    """Love: the antennas arc inward until their tips nearly meet over the head, and hold: a heart, near enough."""
+    """Love: both antennas swing back past vertical and cross over behind its head, and hold there.
+
+    The hinge only runs front-to-back, so a "cross" is the two of them leaning the same way past upright
+    until the tips converge over the back of the head — the same trick the sneeze's wind-up uses, going
+    the other way. The head tips back a little to show it off.
+    """
     e = _ease(min(1.0, u / 0.35)) * (1 - _ease(min(1.0, max(0.0, (u - 0.75) / 0.25))))
-    wobble = 0.05 * math.sin(2 * math.pi * 1.2 * u) * e
-    return Offsets(pitch=-4.0 * e, roll=3.0 * math.sin(2 * math.pi * 0.5 * u) * e,
-                   ant_r=1.35 * e + wobble, ant_l=-1.35 * e - wobble)
+    squeeze = 0.08 * math.sin(2 * math.pi * 1.2 * u) * e
+    a = -(CROSS_RAD + squeeze)  # absolute, for the right antenna: negative is back
+    return Offsets(pitch=-7.0 * e, z=0.006 * e, roll=2.5 * math.sin(2 * math.pi * 0.5 * u) * e,
+                   ant_r=(a - ANTENNA_NEUTRAL[0]) * e, ant_l=(-a - ANTENNA_NEUTRAL[1]) * e)
 
 
 def g_glance(u: float, side: float) -> Offsets:
@@ -956,8 +968,10 @@ class MotionComposer:
                 self._gate[i] = 1.0  # snap: once shut, the limit is exactly CAREFUL_ANTENNA_RAD, not almost
             elif self._gate[i] < 0.005:
                 self._gate[i] = 0.0
-            if self._gate[i] > 0.001:
-                lim = CAREFUL_ANTENNA_RAD + (1.0 - self._gate[i]) * math.pi  # the clamp closes (and opens) smoothly
+            tilted = max(0.0, min(1.0, (abs(roll) - CAREFUL_ROLL_DEG) / (CAREFUL_ROLL_FULL - CAREFUL_ROLL_DEG)))
+            shut = self._gate[i] * tilted
+            if shut > 0.001:
+                lim = CAREFUL_ANTENNA_RAD + (1.0 - shut) * math.pi  # the clamp closes (and opens) smoothly
                 if i == 0:
                     ant_r = max(-lim, min(lim, ant_r))
                 else:

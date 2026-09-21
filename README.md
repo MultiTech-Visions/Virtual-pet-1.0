@@ -256,15 +256,17 @@ next one or the handshake lapses.
 | Step | You | It |
 |---|---|---|
 | **Peace** | both arms up at 45°, hands well apart and above your shoulders | antennas sink all the way down, then rise together into a Y and bounce; excited chirp |
-| **Love** | hands together up at your chest, making a heart | antennas arc inward until the tips nearly meet, a coo |
-| **Unity** | hands clasped and lowered right down in front, arms in a V | antennas fold in, it snuggles, content |
+| *(between each)* | — | left ear laid right down, right ear standing up and falling toward horizontal as your twelve seconds run out |
+| **Love** | hands together up at your chest, making a heart | both antennas swing back past vertical and cross over behind its head, a coo |
+| **Unity** | hands clasped and lowered right down in front, arms in a V | the peace routine again — down, then up into the Y |
 | **Respect** | one arm up and bent, forearm and fist straight up at head height, other arm down | a fanfare, and the trade starts |
 
 **Concentrating.** From the moment the first pose lands, it stops being a pet: the gaze is pinned on
 whoever is in front of it (and held where they were if the camera loses them for a moment), no glance,
-no hum, no game, no song, the pose model runs on every frame, and a **countdown runs down its left
-antenna** — upright means the whole twelve-second window is left, horizontal means it is about to give
-up on you. So you can see that it saw your last pose and that it is waiting for the next one, instead
+no hum, no game, no song, and the pose model runs on every frame. Between poses — once its answering
+animation has finished, so the two never fight — the **left antenna lies right down and the right one
+runs the countdown**: upright is the whole twelve-second window, horizontal means it is about to give
+up on you. One thing moving, and it means one thing. So you can see that it saw your last pose and that it is waiting for the next one, instead
 of it doing the peace thing and then going back to chaos.
 
 **Teaching it a pose.** Those rules are a guess at where somebody holds their arms, and a guess is
@@ -312,9 +314,11 @@ that feels an ear tickle; that touch is swallowed rather than passed to the brai
 flinch at exactly the wrong moment. It waits ten seconds in case you are digging one out of a bag,
 then gives up gently. Two seconds after one lands it eases the antenna and head back to normal.
 
-Wearing one is not a special mode: a **loaded antenna is simply held within 26° of vertical** for as
-long as it is loaded, whatever else the robot is doing, which is all a bracelet needs to stay on
-through a whole dance. The bracelet itself still swings, though, and a big move throws it about, so
+Wearing one is not a special mode: a **loaded antenna is held within 26° of vertical whenever the head
+is tilted**, which is all a bracelet needs to stay on through a whole dance. The tilt is the condition
+because the tilt is the physics: shedding one takes a roll *and* a lowering, and with the head level a
+bracelet sits at the base of a lowered antenna quite happily. That is also what leaves the antennas free
+to do a full peace sign or cross behind its head while it is wearing two. The bracelet itself still swings, though, and a big move throws it about, so
 while it is wearing one its head movement is damped by the **steadiness** slider (half, by default):
 everything is pulled back toward where its gaze is pointed, so it still follows you about, it just
 stops flinging the bracelets around. A pose it is deliberately holding — the trade, a Simon says
@@ -506,6 +510,23 @@ between the simulated head and the injected face (≈1°). `Pet` in `main.py` ta
 
 
 ### Keeping hold of people
+
+Two things used to make it lose somebody standing still right in front of it, which is about as
+infuriating as a pet gets.
+
+**It aimed too low.** With the arms being read it dropped its aim a quarter of a frame to fit the body
+in — but that was on whenever a body was in view at all, which is nearly always, so it permanently
+pointed a quarter of a frame below your face, pushing your face up toward the edge where the detector
+is at its worst. Now it only drops the aim while something actually *needs* the arms (a game, the
+handshake, teaching it a pose, the dance-along), it drops it less (a third of a frame rather than a
+quarter), and the aim point is clamped inside the picture — a pixel outside the frame is extrapolated,
+and comes back as nonsense.
+
+**It blacklisted you.** A torso with no face found above it for six seconds was written off as
+furniture and that spot ignored for two minutes. Stand still somewhere the face detector struggles and
+it would decide you were a coat stand and refuse to look at you — repeatedly. Now a place a **face**
+has actually come from is never written off, however long it loses the face for, and the ignore is
+45 seconds rather than two minutes.
 
 The face detector drops out constantly — someone turns their head, the light changes, it blinks for a
 second. A pet that remembers only ONE last position gives up five seconds later and starts scanning the

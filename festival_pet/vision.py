@@ -41,10 +41,15 @@ POSE_IDLE_INTERVAL = 0.5  # arms read twice a second while someone is about (for
 POSE_LIVE_INTERVAL = 0.0  # every frame while an arm game or the dance-along needs them
 POSE_ROI_MAX_AGE = 1.5  # a confident pose is the next region of interest for this long; then the detector is asked again
 POSE_SOMEONE_S = 2.0  # idle arm reads only while a face or a torso was seen this recently
-FACE_TOP_FRAC = 0.25  # While the arms are in play, the face is aimed at a quarter of the way down the frame
-#                       instead of the middle: the camera is in the head, so centring the face points the
-#                       lens at it and leaves the shoulders and elbows out of the bottom of the picture.
-#                       Angling down this far keeps the whole of somebody in shot with the face still high.
+FACE_TOP_FRAC = 0.32  # Where the face is aimed to sit, down the frame, WHILE THE ARMS ARE ACTUALLY NEEDED
+#                       (a game, the handshake, teaching it a pose, the dance-along). The camera is in the
+#                       head, so centring the face points the lens at it and leaves the shoulders and
+#                       elbows out of the bottom of the picture; dropping the aim fits the person in.
+#                       Not a free win, so it is not on by default: it pushes the face toward the top of
+#                       the frame, where it is harder to detect, and an aim point below the picture is
+#                       outside what the lens calibration can honestly unproject. Hence the clamp below,
+#                       and hence 0.32 rather than a quarter.
+FACE_AIM_MAX_FRAC = 0.94  # never aim below this much of the way down the frame: past the edge is made up
 
 
 @dataclass
@@ -412,8 +417,10 @@ class Vision:
         x, y, w, h = row[:4]
         u = (x + w / 2) / scale
         v = (y + h * 0.45) / scale  # aim a little above bbox centre: between the eyes
-        if self._arms is not None and now - self._arms.ts <= POSE_SOMEONE_S:
-            v += (0.5 - FACE_TOP_FRAC) * H  # arms are being read: look lower, so the body fits in the frame
+        if self.pose_live and self._arms is not None and now - self._arms.ts <= POSE_SOMEONE_S:
+            # Something needs the arms right now, so fit the body in: aim lower, and never past the bottom
+            # of the picture (an aim point outside the frame is extrapolated, and comes back as nonsense).
+            v = min(v + (0.5 - FACE_TOP_FRAC) * H, FACE_AIM_MAX_FRAC * H)
         yaw_p, pitch_p, roll = head_pose_from_landmarks(row)
         if self.refined:
             roll = roll_search  # the landmarks' eye line cannot see roll; the rotation search can

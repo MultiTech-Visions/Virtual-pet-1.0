@@ -133,7 +133,9 @@ ANTENNA_UP_DEG, ANTENNA_SHED_DEG = 175.0, 5.0  # the antenna as an "arm": up is 
 PLUR_TRAIN_READY_S = 3.0  # "get into the pose" before it starts looking
 PLUR_TRAIN_WATCH_S = 2.5  # ...then this long of readings, whose medians become the prototype
 PLUR_TRAIN_GAP_S = 1.2  # ...then a breath, so the "got it" lands before the next pose is called for
-PLUR_CLOCK_EAR = 1  # the antenna that runs the countdown: upright is a full window, horizontal is out of time
+PLUR_CLOCK_EAR = 0  # the RIGHT antenna runs the countdown: upright is a full window, horizontal is out of time
+PLUR_DOWN_EAR = 1  # ...and the left one is laid right down out of the way, so there is one thing to read
+PLUR_DOWN_RAD = 2.3  # (left antenna: positive is back and down)
 PLUR_FOCUS_S = 2.0  # it keeps paying attention this long after the last thing that happened
 COMBO_TAPS = 4  # left right left right on the dancing layer...
 COMBO_WINDOW_S = 1.0  # ...this fast: stop dancing
@@ -1041,15 +1043,15 @@ class Pet:
         if step == "peace":
             beh._think(now, "peace! (antennas up)")
             self._dispatch(Action("sound", "excited", 3), now)
-            self._dispatch(Action("gesture", "peace", 3), now)
+            self._dispatch(Action("gesture", "peace", 4), now)
         elif step == "love":
             beh._think(now, "...love. aww")
             self._dispatch(Action("sound", "coo", 3), now)
-            self._dispatch(Action("gesture", "heart", 3), now)
+            self._dispatch(Action("gesture", "heart", 4), now)
         elif step == "unity":
             beh._think(now, "...unity")
             self._dispatch(Action("sound", "content", 3), now)
-            self._dispatch(Action("gesture", "snuggle", 3), now)
+            self._dispatch(Action("gesture", "peace", 4), now)  # the same V it answered peace with
         elif step == "respect":
             beh._think(now, "...and respect")
             self._dispatch(Action("sound", "happy", 3), now)
@@ -1156,8 +1158,13 @@ class Pet:
         beh._next_jingle = max(beh._next_jingle, now + 30.0)
         beh._look_until = 0.0
         beh.mimicking = False
-        if left_s is not None:
+        # The countdown waits for the answering gesture to finish — peace and love need both antennas —
+        # and then it is unmistakable: the left one laid right down, the right one standing up and falling
+        # to horizontal as the window runs out.
+        if left_s is not None and not comp.gesture_active(now):
             comp.ear_clock(PLUR_CLOCK_EAR, max(0.0, min(1.0, left_s / max(window_s, 1e-6))), now)
+            comp.ear_hold[PLUR_DOWN_EAR] = PLUR_DOWN_RAD
+            comp.ear_hold_until[PLUR_DOWN_EAR] = now + 0.3
 
     def train_plur(self, step: str, now: float) -> None:
         """Show it what the PLUR poses look like on a real person, one after another without stopping.

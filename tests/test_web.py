@@ -645,18 +645,28 @@ def test_the_plur_handshake_trades_a_bracelet_both_ways(tmp_path):
     assert comp.gentle_until > now
     assert beh._engaged_person.kandi == 1 and beh._engaged_person.affection > 0.2
     assert "kandi traded" in [n for _, k, n in pet.actions_log if k == "kandi"]
-    # ...and it rides out anything from here, because the gate keeps that antenna upright
+    # ...and it rides out a dance from here, because the gate keeps that antenna upright whenever the head
+    # is tilted — which is the only way a bracelet actually comes off (a tilt AND a lowering; level, one
+    # sits at the base of a lowered antenna quite happily, which is what leaves room for the PLUR poses)
+    from festival_pet.motion import CAREFUL_ROLL_FULL
+
     for k in range(200):  # the gate eases shut over a few seconds on a bracelet that has just gone on
         pet.step(now + k * 0.02)
     now += 4.0
     assert comp._gate[0] == 1.0
-    worst = 0.0
+    worst, free = 0.0, 0.0
     for k in range(600):
-        comp.request_gesture("bounce", now + k * 0.02, 3)
-        comp.groove = ((k * 0.02 / 0.5) % 1.0, 0.0, 1.0)
-        _, ants, _ = comp.sample(now + k * 0.02, 0.02)
-        worst = max(worst, abs(ants[0]))
-    assert worst <= CAREFUL_ANTENNA_RAD + 1e-6
+        t = now + k * 0.02
+        comp.request_gesture("bounce", t, 3)
+        comp.groove = ((k * 0.02 / 0.5) % 1.0, (k * 0.02 / 2.0) % 1.0, 1.0)
+        comp.groove_mix.sway = 2.0
+        comp._groove_style = 1  # the leaning style: this is the one that rolls the head over
+        head, ants, _ = comp.sample(t, 0.02)
+        if abs(_euler(head)[0]) >= CAREFUL_ROLL_FULL:
+            worst = max(worst, abs(ants[0]))
+        free = max(free, abs(ants[0]))
+    assert worst <= CAREFUL_ANTENNA_RAD + 1e-6, "a bracelet would come off mid-dance"
+    assert free > CAREFUL_ANTENNA_RAD, "level-headed, the antennas are still allowed to do a peace sign"
     assert KANDI_OFFER_S >= 10.0  # long enough to dig one out of a bag
     pet.stop()
 
@@ -1010,7 +1020,7 @@ def test_wearing_kandi_damps_the_head_without_stopping_it_looking_at_you():
 
 
 def test_showing_it_a_plur_pose_teaches_it_what_that_pose_looks_like():
-    from festival_pet.main import PLUR_TRAIN_READY_S, PLUR_TRAIN_WATCH_S
+    from festival_pet.main import PLUR_CLOCK_EAR, PLUR_DOWN_EAR, PLUR_DOWN_RAD, PLUR_TRAIN_READY_S, PLUR_TRAIN_WATCH_S
     from festival_pet.pose import Arms, plur_pose
 
     def arms(ts):  # arms at 55 degrees with the hands in toward the middle: none of the built-in rules
@@ -1029,10 +1039,11 @@ def test_showing_it_a_plur_pose_teaches_it_what_that_pose_looks_like():
     assert c.post("/api/control", json={"cmd": "train_plur", "value": "vibes"}).status_code == 400
     now = 1000.2
     pet.train_plur("peace", now)  # again on the pet's own clock, so the test can step it
-    ears = []
+    ears, downs = [], []
     while pet._training is not None and now < 1000.2 + PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S + 2.0:
         pet._train_tick(Observation(arms=arms(now)), now)  # as if the vision thread had a fresh reading
-        ears.append(pet.p.composer.ear_hold[1])
+        ears.append(pet.p.composer.ear_hold[PLUR_CLOCK_EAR])
+        downs.append(pet.p.composer.ear_hold[PLUR_DOWN_EAR])
         if now < 1000.2 + PLUR_TRAIN_READY_S:
             assert not pet.signs.trained  # still counting them in: it has not started measuring yet
         now += 0.1
@@ -1040,6 +1051,7 @@ def test_showing_it_a_plur_pose_teaches_it_what_that_pose_looks_like():
     # the countdown really did run down an antenna, twice: once to get into the pose, once while it read
     ticks = [e for e in ears if e is not None]
     assert len(ticks) > 10 and max(ticks) - min(ticks) > 0.5
+    assert set(d for d in downs if d is not None) == {PLUR_DOWN_RAD}  # the other ear is laid down out of the way
     assert set(pet.signs.trained) == {"peace"}
     assert abs(pet.signs.trained["peace"]["hi_deg"] - 57.0) < 1.0
     assert plur_pose(arms(0.0), pet.signs.trained) == "peace"  # it knows that pose now
