@@ -281,12 +281,15 @@
     <input type="range" min="-40" max="40" step="1" id="kroll" oninput="setVal('kandi_roll', this.value, 'kroll-v')">
     <label>Steadiness while wearing one: <span id="kdamp-v"></span> <span class="sub">(0 = moves as usual, 1 = barely moves its head. Bracelets hanging off its ears swing about on the big moves.)</span></label>
     <input type="range" min="0" max="1" step="0.05" id="kdamp" oninput="setVal('kandi_damp', this.value, 'kdamp-v')">
-    <label>Teach it a pose <span class="sub">(hold still and show it — 3 s to get into the pose, then it watches for 2.5 s and keeps what it measured. Stand back far enough for it to see your shoulders and elbows. What it learns is added to what it already knows, never instead of it.)</span></label>
+    <label>Teach it the handshake <span class="sub">(it runs the four poses as one routine, so you never have to stop and fiddle with the page mid-way. Per pose: it calls for it, counts down on its left antenna while you get into it, beeps when it starts watching, beeps yes or no, takes a breath, next. It concentrates the whole way through — gaze locked on you, nothing else started, the pose model on every frame. Stand back far enough for it to see your shoulders and elbows.)</span></label>
+    <div class="btns" style="margin:4px 0">
+      <button class="act big" id="train-btn" onclick="toggleTrain()">Teach the handshake</button>
+    </div>
     <div class="grid-btns" style="margin:4px 0">
-      <button onclick="ctl('train_plur', 'peace')">teach peace</button>
-      <button onclick="ctl('train_plur', 'love')">teach love</button>
-      <button onclick="ctl('train_plur', 'unity')">teach unity</button>
-      <button onclick="ctl('train_plur', 'respect')">teach respect</button>
+      <button onclick="ctl('train_plur', 'peace')">just peace</button>
+      <button onclick="ctl('train_plur', 'love')">just love</button>
+      <button onclick="ctl('train_plur', 'unity')">just unity</button>
+      <button onclick="ctl('train_plur', 'respect')">just respect</button>
       <button onclick="ctl('forget_plur', true)">forget all</button>
     </div>
     <div class="kv" id="kandi"></div>
@@ -417,6 +420,8 @@ async function loadCatalog() {
 }
 let mimeOn = false, mimeKind = 'head', singing = false, danceAlong = true, kandiSide = null, kandiBusy = false, wearing = [];
 // One button per ear does the whole exchange from that ear, and cancels it while it is running.
+let training = false;
+function toggleTrain() { ctl('train_plur', training ? false : true); }
 function tradeEar(i) { if (kandiBusy && kandiSide === i) ctl('kandi', false); else ctl('kandi', i ? 'left' : 'right'); }
 function toggleEar(i) {
   const on = [wearing.includes('right'), wearing.includes('left')];
@@ -480,11 +485,14 @@ async function refresh() {
       trading: kd.giving ? `tilting the ${kd.side} ear to drop one` : kd.offering ? (kd.got_it ? 'something landed on it — settling' : `${kd.side} ear held out, ${kd.waiting_s}s left`) : '—',
       wearing: wearing.length ? wearing.join(' + ') + ' ear' + (wearing.length > 1 ? 's' : '') : 'nothing',
       settling: kd.settling_s ? `${kd.settling_s}s of smaller moves` : '—',
-      learning: kd.training ? (kd.training.in_s > 0 ? `${kd.training.step}: get into the pose, ${kd.training.in_s}s` : `${kd.training.step}: watching, ${kd.training.left_s}s (${kd.training.seen} readings)`) : '—',
+      learning: kd.training ? `${kd.training.step}: ${{ready: 'get into the pose', watch: `WATCHING (${kd.training.seen} readings)`, gap: 'ok…'}[kd.training.phase]} ${kd.training.left_s}s` + (kd.training.queue.length ? ` · then ${kd.training.queue.join(', ')}` : ' · last one') : '—',
+      concentrating: kd.focused ? 'yes — gaze locked on you, everything else on hold' : 'no',
       taught: Object.keys(kd.trained).length ? Object.entries(kd.trained).map(([k, f]) => `${k}: arms ${f.hi_deg}°/${f.lo_deg}°, hands ${f.sep} apart, ${f.above} above`).join('<br>') : 'nothing yet (using the built-in guesses)',
       'arm numbers now': d.arms && d.arms.features ? `arms ${d.arms.features.hi_deg}°/${d.arms.features.lo_deg}° · hands ${d.arms.features.sep} apart · ${d.arms.features.above} above the shoulders · forearms ${d.arms.features.hi_forearm}°/${d.arms.features.lo_forearm}° off upright` : '—'});
+    training = !!kd.training;
+    $('train-btn').textContent = training ? `Teaching: ${kd.training.step} (tap to stop)` : 'Teach the handshake';
     const sg = d.song;
-    const songRows = sg.next_in_s === null ? {} : {'song': sg.singing ? `singing ${sg.last.name} (${sg.last.style}, ${sg.last.bpm} bpm) 🎵` : (sg.last ? `last: ${sg.last.name} (${sg.last.style})${sg.last.saved ? ' (saved)' : ''}` : 'none yet'), 'set': sg.set.songs ? `song ${sg.set.songs}${sg.set.watched === null ? '' : `, ${Math.round(sg.set.watched * 100)}% watched`}` + (sg.set.encore_in_s ? ` · encore in ${sg.set.encore_in_s} s` : '') : '—', 'next song': sg.singing ? '—' : (sg.next_in_s > 0 ? `not for ${sg.next_in_s} s` : 'when it feels like one')};
+    const songRows = sg.next_in_s === null ? {} : {'song': sg.singing ? `singing ${sg.last.name} (${sg.last.style}, ${sg.last.bpm} bpm) 🎵${sg.section ? ' · ' + sg.section : ''}` : (sg.last ? `last: ${sg.last.name} (${sg.last.style})${sg.last.saved ? ' (saved)' : ''}` : 'none yet'), 'set': sg.set.songs ? `song ${sg.set.songs}${sg.set.watched === null ? '' : `, ${Math.round(sg.set.watched * 100)}% watched`}` + (sg.set.encore_in_s ? ` · encore in ${sg.set.encore_in_s} s` : '') : '—', 'next song': sg.singing ? '—' : (sg.next_in_s > 0 ? `not for ${sg.next_in_s} s` : 'when it feels like one')};
     $('curiosity').style.width = (m.drives.curiosity * 100) + '%'; $('boredom').style.width = (m.drives.boredom * 100) + '%';
     const ACT = {hangout: '🫧 hanging out', watch: '👀 watching them', look_around: '🔭 looking around', mirror: '🪞 mirror game', mime: '🎭 Simon says', sing: '🎵 singing', rest: '😪 resting', ask_attention: '🥺 wants attention'};
     const scores = Object.entries(m.scores || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace('_', ' ')} ${v.toFixed(2)}`).join(' · ');
@@ -505,7 +513,9 @@ async function refresh() {
       person: s.face ? (fc.person === null ? 'stranger' : '#' + fc.person) : '—', similarity: fc.similarity ?? '—', tilt: s.face ? fc.tilt + '°' : '—', 'head turned / nodded': s.face ? `${fc.head_yaw}° / ${fc.head_pitch}°` : '—', smile: s.face ? fc.smile : '—',
       body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
       'dancing?': s.dance.dancing ? `yes, ${s.dance.bpm} bpm (conf ${s.dance.confidence}), holds ${s.dance.holds_for_s} s` : `no (conf ${s.dance.confidence}, amp ${s.dance.amplitude}°)`,
-      'mirror game': s.mimic ? `copying: yaw ${s.mimic.yaw}° pitch ${s.mimic.pitch}° roll ${s.mimic.roll}°` : 'off'});
+      'mirror game': s.mimic ? `copying: yaw ${s.mimic.yaw}° pitch ${s.mimic.pitch}° roll ${s.mimic.roll}°` : 'off',
+      'where people have been': m.seen_spots.length ? m.seen_spots.map((x, i) => `${i + 1}: ${x.yaw}° (${x.seen} sightings, ${x.s_ago}s ago)`).join(' · ') : 'nobody yet',
+      'checking place': m.searching_spot ? `#${m.searching_spot} of ${m.seen_spots.length}` : '—'});
     $('dance-amp').textContent = d.dance_params.min_amp; drawFaceChart(d.face_history, d.dance_params);
     document.querySelectorAll('.card.mic').forEach(c => c.classList.toggle('hidden', !d.controls.ears));
     if (m.engaged_person) { const src = `/api/people/${m.engaged_person}/face.jpg`; if (!$('who').src.endsWith(src)) { $('who').src = src; } $('who').classList.remove('hidden'); } else $('who').classList.add('hidden');

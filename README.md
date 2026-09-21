@@ -189,7 +189,10 @@ hug per twenty.
 out) it hums a little song it just made up, out of bright, near-pure console blips on a pentatonic
 scale — in the spirit of the beeps that answer Data's "life forms" song. A bar of beeps is not a
 tune; it is over before you have worked out that anything happened. So a jingle is a proper little
-song: **four counted-in taps** at the top (the "1" a fifth higher) so you can find the beat, then
+song, and a QUIET one — it hums it to itself, and a near-pure tone up at 2 kHz carries across a field
+and drills into whoever is standing next to it, so both the level and the pitch are kept down (top note
+about 1.2 kHz, a third of the level of its other sounds, a soft attack instead of a click). Structure:
+**four counted-in taps** at the top (the "1" a fifth higher) so you can find the beat, then
 **four bars of 4/4** — eight, now and then — built out of ONE motif, the same rhythm every bar with
 the pitches moved around it, in an AAB-A shape that ends on the root. It sets its own bob clock to
 the jingle's tempo from the count-in, so you can groove along with it rather than wonder what that
@@ -222,6 +225,19 @@ is a 440→150 Hz drop with a click on the front, and the click is what carries 
 half the song tempo, on the 1 and the 3, which is both the halftime feel and as fast as the neck
 wants to move.
 
+**Playing it with the body**: the head bobs on the (halftime) beat for the whole song — harder through
+a drop, barely at all through a breakdown — and the antennas play the *phrasing*, because the bar list
+is the arrangement and the body can read it as well as the speaker can: a lazy low sway through the
+intro, both antennas climbing all the way up through a build and arriving with the drop, slamming down
+and up on every beat of the drop itself, thrown back and forth through a fill, folded away in a
+breakdown, and held straight up on the last hit. Every song has a different bar list, so every
+performance is choreographed differently. The Mind tab names the section it is in.
+
+(The head not moving at all during a song was a bug: the brain clears the groove every tick, and the
+beat tracker cannot hear the robot's own song because the mics go deaf while it plays, so nothing ever
+put it back. It also throws its own antennas about hard enough to trip the ear-touch detector, so
+touches are ignored for the length of a performance — otherwise it flinched at its own showmanship.)
+
 **Performing**: a song on its own is just a song — it sings its little song and is pleased with
 itself, a wiggle and a happy beep. But it watches the audience while it plays: a face in view with
 their head pointed at it counts as watching, and if more than half the song was watched it lines up
@@ -244,15 +260,26 @@ next one or the handshake lapses.
 | **Unity** | hands clasped and lowered right down in front, arms in a V | antennas fold in, it snuggles, content |
 | **Respect** | one arm up and bent, forearm and fist straight up at head height, other arm down | a fanfare, and the trade starts |
 
+**Concentrating.** From the moment the first pose lands, it stops being a pet: the gaze is pinned on
+whoever is in front of it (and held where they were if the camera loses them for a moment), no glance,
+no hum, no game, no song, the pose model runs on every frame, and a **countdown runs down its left
+antenna** — upright means the whole twelve-second window is left, horizontal means it is about to give
+up on you. So you can see that it saw your last pose and that it is waiting for the next one, instead
+of it doing the peace thing and then going back to chaos.
+
 **Teaching it a pose.** Those rules are a guess at where somebody holds their arms, and a guess is
 all they can be: where *you* hold a double peace sign — out at the sides, up by your head, elbows
 bent, hands toward the middle — is a fact about you, not something to be derived, and if the guess
-is wrong the handshake never starts (and the hug detector grabs it instead). So show it. The four
-**teach** buttons on the Kandi card give you three seconds to get into the pose, then watch for two
-and a half and keep the medians of five numbers: the two arm angles (sorted higher-first, so which
+is wrong the handshake never starts (and the hug detector grabs it instead). So show it. **Teach the handshake** runs all four as one routine, which is the way to do it: stopping between poses
+to go and press a button is exactly when it loses you. It calls for each pose itself, counts down on the
+antenna while you get into it, beeps when it starts watching, beeps yes or no, takes a breath, and moves
+on — concentrating throughout, as above. (There are per-pose buttons too, if you only want to redo one.)
+Each pose: three seconds to get into it, two and a half of watching, and it keeps the medians of five
+numbers: the two arm angles (sorted higher-first, so which
 hand you use never matters), how far apart your hands are, how far above your shoulders they are,
 and how far each forearm is off straight up. A reading matches when every number is within tolerance
-of one it has been shown. What it learns is **added** to the built-in rules, never substituted for
+of one it has been shown — and if two poses come out measuring the same, it says so rather than leaving
+the handshake quietly ambiguous. What it learns is **added** to the built-in rules, never substituted for
 them, so training only ever widens what it will accept — and the card shows the five numbers live,
 so you can watch what it makes of you before you teach it anything.
 
@@ -477,6 +504,22 @@ between the simulated head and the injected face (≈1°). `Pet` in `main.py` ta
   Reachy-companion): energy/social drives, priority-preempting gestures, SFace-every-N-frames,
   DoA startle.
 
+
+### Keeping hold of people
+
+The face detector drops out constantly — someone turns their head, the light changes, it blinks for a
+second. A pet that remembers only ONE last position gives up five seconds later and starts scanning the
+room, which points the camera at a wall and makes finding them again impossible; you end up watching it
+stare at nothing with you standing right in front of it.
+
+So it keeps **where people have actually been**: every sighting of anybody — a face, a stranger, a torso
+it can read arms off — is filed as a place in world yaw, sightings within 18° are the same place
+refreshed rather than a new one, and it holds the three most recent. When it loses somebody it works
+back through those three, five seconds each, announcing which one it is on, before it accepts they have
+gone. And for three-quarters of a minute after company, an idle glance goes to one of those places
+rather than off to a wall at 100°. The face-lost grace is three and a half seconds, not two and a half.
+The Senses tab lists the places, with how many sightings each and how long ago, and which one it is
+checking.
 
 ### Getting out of its own way
 

@@ -43,7 +43,7 @@ from festival_pet.motion import BODY_YAW_LIMIT, OFFER_YAW, MotionComposer, turn_
 from festival_pet import songs
 from festival_pet.senses import ImuRubDetector, LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
-from festival_pet.pose import PLUR_STEPS, PLUR_TRAIN_MIN, ArmSigns, plur_features
+from festival_pet.pose import PLUR_STEP_WINDOW_S, PLUR_STEPS, PLUR_TOL, PLUR_TRAIN_MIN, ArmSigns, plur_features
 from festival_pet.tap_tempo import TapTempo
 from festival_pet.visual_rhythm import DanceDetector
 
@@ -107,6 +107,8 @@ FLOURISH_BEATS = 2
 # maybe a third, and only then is it a performance worth a proper bow.
 WATCHING_YAW_DEG, WATCHING_PITCH_DEG = 30.0, 25.0  # their head is pointed at it within this: eye contact, near enough
 ENGAGED_FRAC = 0.55  # this much of the song watched, and it has an audience
+SONG_GROOVE = 0.8  # how hard it bobs to its own song, before the section's own energy and the user's dial
+SONG_LEAD_S = 0.08  # the speaker's own latency: the choreography starts when the sound does, not when we ask
 ENCORE_GAP_S = 1.6  # the pause between songs while it decides
 ENCORE_MAX = 3  # songs in one performance
 THIRD_SONG_CHANCE = 0.35  # the third is a rarity, so it stays special
@@ -130,8 +132,16 @@ KANDI_SHAKE_HZ, KANDI_SHAKE_DEG = 4.5, 16.0  # the jiggle: how fast, and how far
 ANTENNA_UP_DEG, ANTENNA_SHED_DEG = 175.0, 5.0  # the antenna as an "arm": up is vertical, down is laid right back
 PLUR_TRAIN_READY_S = 3.0  # "get into the pose" before it starts looking
 PLUR_TRAIN_WATCH_S = 2.5  # ...then this long of readings, whose medians become the prototype
+PLUR_TRAIN_GAP_S = 1.2  # ...then a breath, so the "got it" lands before the next pose is called for
+PLUR_CLOCK_EAR = 1  # the antenna that runs the countdown: upright is a full window, horizontal is out of time
+PLUR_FOCUS_S = 2.0  # it keeps paying attention this long after the last thing that happened
 COMBO_TAPS = 4  # left right left right on the dancing layer...
 COMBO_WINDOW_S = 1.0  # ...this fast: stop dancing
+
+
+def _same_pose(a: dict, b: dict) -> bool:
+    """Would these two trained prototypes match each other? Then the pet cannot tell them apart."""
+    return all(abs(a[k] - b[k]) <= tol for k, tol in PLUR_TOL.items() if k in a and k in b)
 
 
 def _side_arg(value) -> int | None:
@@ -452,6 +462,8 @@ class Pet:
         self._song_watched = 0
         self._songs_in_set = 0
         self._next_song_at = 0.0
+        self._song_t0 = 0.0  # when the audio actually starts, so the choreography lines up with the bars
+        self._song_move = ""
         # The kandi trade: which antenna is out (or wearing one), and the clocks for each stage
         self.kandi_on = [False, False]  # antennas wearing a bracelet (right, left): what it can trade away
         self.kandi_side: int | None = None  # 0 right, 1 left
@@ -493,7 +505,8 @@ class Pet:
         self._last_phase = 0.0
         self._copy_last = 0.0
         self.signs = ArmSigns()  # waves and hugs, read from the arm readings
-        self._training: dict | None = None  # showing it a PLUR pose: {"step", "from", "until", "samples"}
+        self._training: dict | None = None  # the teaching routine's script (see train_plur)
+        self._focus_gaze: tuple[float, float] | None = None  # where the person was, while it is concentrating
         self._signs_last = 0.0  # ts of the last arm reading fed to it (each reading counts once)
         # Keypad state: direction nudges (see key_action)
         self._nudge: list[tuple[float, float]] = []  # (time, side) of recent direction taps
@@ -563,8 +576,10 @@ class Pet:
             if self.imu_rub.calibration is not None and self.imu_rub.calibration["phase"] not in ("done", "failed"):
                 if self.imu_rub.calibration_step(self.pickup.stats["gyro"], self_moving, now):
                     self.save_settings()  # the floor it found is a setting
-        # Antennas lag their command while animated; the detector raises its threshold then.
-        busy = self.move is not None or comp.gesture_active(now)
+        # Antennas lag their command while animated; the detector raises its threshold then. That includes
+        # any time WE are driving them to absolute angles — the song choreography, a Simon says flag, the
+        # dance-along — or the pet reads its own showmanship as somebody grabbing its ears and flinches.
+        busy = self.move is not None or comp.gesture_active(now) or (comp.arms is not None and now < comp.arms_until)
         present_ants = io.present_antennas()
         if self._touch_settle_left >= 0:
             # Count ticks, not wall time: the blocking sleep/wake move already ate seconds before this tick ran.
@@ -668,8 +683,8 @@ class Pet:
         for action, t_ev in fired:
             self.key_action(action, t_ev, now)
 
-        if self._training is not None:
-            self._train_tick(obs.arms, now)
+        if now < self._singing_until:
+            obs.touched = False  # mid-performance it throws its own antennas about: that is the act, not a hand
         if self._kandi_give_t0:
             obs.touched = False  # its own antenna is being driven down: that is not someone tickling its ear
             self._kandi_give(now)
@@ -689,14 +704,19 @@ class Pet:
             comp.body_follow = True
 
         # ---------------- singing (the brain chooses it; we perform it)
-        if now < self._singing_until:
-            song = self.last_song
-            comp.groove = (self.tap.phase(now), self.tap.bar_phase(now), 0.7 * self.groove_scale) if song else comp.groove
-            beh._next_react = max(beh._next_react, now + 2.0)
-            self._song_ticks += 1
-            if self._watching(obs):
-                self._song_watched += 1
-            if now >= self._singing_until - 0.02:
+        song_groove = None
+        if self._singing_until:
+            if now < self._singing_until:
+                song_groove = self._perform(now)
+                beh._next_react = max(beh._next_react, now + 2.0)
+                self._song_ticks += 1
+                if self._watching(obs):
+                    self._song_watched += 1
+            else:
+                # The first tick at or past the end. This used to look for a tick inside the last 20 ms of
+                # the song, so a loop running any slower than 50 Hz missed the end of the song entirely:
+                # no bow, no encore, and the antennas left holding the last pose of a song that had stopped.
+                self._singing_until = 0.0
                 self._song_over(now)
         elif self._next_song_at and now >= self._next_song_at:
             self._next_song_at = 0.0
@@ -706,7 +726,8 @@ class Pet:
         solo = comp._gesture is not None and comp._gesture.name in SOLO_GESTURES and comp.gesture_active(now)
         performing = now < self._singing_until or self._next_song_at > 0.0  # a gap between songs is still the act
         trading = self.signs.plur_step > 0 or self._kandi_offer_until > 0.0 or self._kandi_give_t0 > 0.0  # mid-trade: nothing else starts
-        obs.busy = "mime" if self.mime.active else "sing" if performing else "kandi" if trading else "gesture" if solo else None
+        obs.busy = ("mime" if self.mime.active else "plur" if self._training is not None else "sing" if performing
+                    else "kandi" if trading else "gesture" if solo else None)
         # Manual groove with a tempo in: we are dancing. The brain treats it like a beat (no games, songs, mirror
         # or nod-copying start) and the tapped beat below wins over anything it heard or saw.
         grooving = self.manual_groove and self.tap.active and not self.asleep and beh.state not in ("HELD", "SLEEPING", "WAKING")
@@ -726,11 +747,30 @@ class Pet:
             # 0.6 is a plain head-bob before the user's dials.
             comp.groove = (self.tap.phase(now), self.tap.bar_phase(now), 0.6 * self.groove_scale)
             comp.groove_phrase = self.tap.phrase_phase(now) if self.tap.downbeat_known else None
+        elif song_groove is not None:
+            # Its own song. This has to be set AFTER the brain's reset above, which was clearing it every
+            # tick: the beat tracker cannot hear our own song (the mics are deaf while we play), so nothing
+            # put it back and the head stood still through the whole performance.
+            comp.groove = song_groove
+            comp.groove_phrase = self.tap.phrase_phase(now) if self.tap.downbeat_known else None
         else:
             comp.groove_phrase = None
         self._dance_along(obs, now)
+        # Concentrating: while it is being taught the handshake, and from the moment the first pose of a
+        # real handshake lands. Both need every frame of the pose model and both need it to stop being a
+        # pet for a minute — see _focus.
+        if self._training is not None:
+            self._train_tick(obs, now)
+        elif self.signs.plur_step:
+            left = PLUR_STEP_WINDOW_S - (now - self.signs.plur_at)
+            self._focus(obs, now, left, PLUR_STEP_WINDOW_S)
+        elif self._focus_gaze is not None:
+            self._focus_gaze = None
+            comp.ears_clear()
         if vision is not None:
-            vision.pose_live = self._copying_arms or (self.mime.active and self.mime.kind == "arms") or (self.signs.watching and now < self.signs.watching_until)
+            vision.pose_live = (self._training is not None or self.signs.plur_step > 0 or self._copying_arms
+                                or (self.mime.active and self.mime.kind == "arms")
+                                or (self.signs.watching and now < self.signs.watching_until))
 
         # ---------------- body
         if self.move is not None:
@@ -792,7 +832,8 @@ class Pet:
         """
         comp, beh = self.p.composer, self.p.behavior
         allowed = (self.dance_along and comp.groove is not None and not self.mime.active and self.move is None
-                   and not self.asleep and beh.state not in ("HELD", "SLEEPING", "WAKING"))
+                   and not self.asleep and now >= self._singing_until  # its own song: the antennas are performing it
+                   and beh.state not in ("HELD", "SLEEPING", "WAKING"))
         if not allowed or obs.arms is None:
             # a missed arm read or two is not the end; anything else stops it at once
             if self._copying_arms and (not allowed or now - self._copy_last > 1.0):
@@ -946,6 +987,7 @@ class Pet:
         dur = songs.duration(song)
         self.sound.request_buffer(buf, "song:" + song["name"], 2, now)
         self.last_song = song
+        self._song_t0 = now + SONG_LEAD_S
         self._songs_in_set += 1
         self._song_ticks = self._song_watched = 0
         self._singing_until = now + dur
@@ -970,6 +1012,23 @@ class Pet:
         self.audio.deaf_until = max(self.audio.deaf_until, now + sounds.phrase_duration(buf, AUDIO_RATE) + 0.3)
         self.actions_log.append((now, "sound", f"jingle ({bpm:.0f} bpm)"))
         return bpm
+
+    def _perform(self, now: float) -> tuple[float, float, float] | None:
+        """Play the song with the body, not just through the speaker. Returns the groove to bob to.
+
+        The head bobs on the (halftime) beat, harder in a drop and barely at all in a breakdown, and the
+        antennas play the phrasing: climbing through a build, slamming on every beat of the drop, thrown
+        back and forth through a fill, folded away in the breakdown, held up at the end. The bar list IS
+        the arrangement, so the choreography comes straight off it and is different for every song.
+        """
+        comp, song = self.p.composer, self.last_song
+        if song is None:
+            return None
+        move, bar_u, beat_u = songs.section(song, now - self._song_t0)
+        left, right = songs.arms_for(move, bar_u, beat_u)
+        comp.show_arms(left, right, now, 0.3)
+        self._song_move = move
+        return (self.tap.phase(now), self.tap.bar_phase(now), SONG_GROOVE * songs.energy(move) * self.groove_scale)
 
     def _plur_step(self, step: str, now: float) -> None:
         """One step of the PLUR handshake landed: answer it in kind.
@@ -1075,48 +1134,122 @@ class Pet:
         self.actions_log.append((now, "kandi", f"offering the {'left' if side else 'right'} antenna"))
         return side
 
+    def _focus(self, obs: Observation, now: float, left_s: float | None = None, window_s: float = 1.0) -> None:
+        """Pay attention to the person in front of it, and SHOW that it is paying attention.
+
+        Mid-handshake (and while being taught one) the pet used to carry on being a pet: glancing off at
+        the wall, humming, starting a game, wandering its gaze — so there was no way to tell whether it
+        had seen your last pose or what it was waiting for. This pins the gaze on whoever is there, stands
+        every other impulse down, reads the pose model every frame, and runs a countdown down one antenna:
+        upright means the whole window is left, horizontal means it is about to give up on you.
+        """
+        beh, comp = self.p.behavior, self.p.composer
+        who = obs.face if obs.face is not None else obs.body
+        if who is not None:
+            self._focus_gaze = (who.yaw_deg, who.pitch_deg)
+            beh._last_seen_yaw, beh._last_seen_pitch = who.yaw_deg, who.pitch_deg
+        if self._focus_gaze is not None:  # nobody in view for a moment: hold where they were, do not go hunting
+            beh.gaze = self._focus_gaze
+            comp.set_gaze(self._focus_gaze)
+        beh._next_react = max(beh._next_react, now + PLUR_FOCUS_S)
+        beh._next_glance = max(beh._next_glance, now + PLUR_FOCUS_S)
+        beh._next_jingle = max(beh._next_jingle, now + 30.0)
+        beh._look_until = 0.0
+        beh.mimicking = False
+        if left_s is not None:
+            comp.ear_clock(PLUR_CLOCK_EAR, max(0.0, min(1.0, left_s / max(window_s, 1e-6))), now)
+
     def train_plur(self, step: str, now: float) -> None:
-        """Show it what one of the PLUR poses looks like on a real person.
+        """Show it what the PLUR poses look like on a real person, one after another without stopping.
 
         The rules in pose.py are a guess at where somebody holds their arms; this replaces the guess with
-        a measurement. Three seconds to get into the pose, then it watches for a couple of seconds and
-        keeps the medians of what it saw. What it learns only ever widens what it will accept.
+        a measurement. ``step`` is one of the four, or "all" to run the whole handshake through as a
+        routine — which is the way to do it, because the poses come one after another in real life and
+        stopping between them is exactly when the pet loses you. Per pose: a countdown on an antenna to
+        get into it, a beep when it starts watching, two and a half seconds of reading, a beep for yes or
+        no, a breath, and straight on to the next one. It focuses the whole way through (see ``_focus``).
         """
-        if step not in PLUR_STEPS:
-            raise KeyError(f"unknown PLUR step '{step}'. Known: {', '.join(PLUR_STEPS)}")
-        self._training = {"step": step, "from": now + PLUR_TRAIN_READY_S,
-                          "until": now + PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S, "samples": [], "at": 0.0}
-        self.p.behavior._think(now, f"show me: {step}. hold it...")
+        queue = list(PLUR_STEPS) if step in ("all", "", "true", "True") else [step]
+        for name in queue:
+            if name not in PLUR_STEPS:
+                raise KeyError(f"unknown PLUR step '{name}'. Known: {', '.join(PLUR_STEPS)}, all")
+        self._training = {"queue": queue, "step": "", "phase": "", "until": now, "samples": [], "at": 0.0, "learned": []}
+        self._focus_gaze = None
         self._dispatch(Action("sound", "mime_start", 4), now)
-        self.actions_log.append((now, "plur", f"learning {step}"))
+        self.p.behavior._think(now, "teach me the handshake. watch my ear for the countdown")
+        self.actions_log.append((now, "plur", "learning " + ", ".join(queue)))
+        self._train_next(now)
 
-    def _train_tick(self, arms, now: float) -> None:
-        """One tick of learning a pose: count down, collect readings, then keep the medians."""
+    def _train_next(self, now: float) -> None:
+        """Call for the next pose, or finish."""
+        t = self._training
+        assert t is not None
+        if not t["queue"]:
+            learned = t["learned"]
+            self._training = None
+            self.p.composer.ears_clear()
+            self.p.behavior._think(now, ("learned: " + ", ".join(learned)) if learned else "...I didn't get any of those")
+            self._dispatch(Action("sound", "tada" if learned else "sad", 4), now)
+            self._dispatch(Action("gesture", "tada" if learned else "droop", 3), now)
+            self.actions_log.append((now, "plur", f"learning done: {len(learned)} pose(s)"))
+            self.save_settings()
+            return
+        t["step"], t["phase"], t["until"] = t["queue"].pop(0), "ready", now + PLUR_TRAIN_READY_S
+        t["samples"], t["at"] = [], 0.0
+        self.p.behavior._think(now, f"show me: {t['step']}...")
+        self._dispatch(Action("sound", "mime_cue", 4), now)
+
+    def _train_tick(self, obs: Observation, now: float) -> None:
+        """One tick of the teaching routine: count down on an ear, read, confirm, move on."""
         t = self._training
         assert t is not None
         beh = self.p.behavior
-        if now < t["from"]:
+        phase, left = t["phase"], t["until"] - now
+        window = {"ready": PLUR_TRAIN_READY_S, "watch": PLUR_TRAIN_WATCH_S, "gap": PLUR_TRAIN_GAP_S}[phase]
+        self._focus(obs, now, left, window)
+        if phase == "ready":
+            if left <= 0.0:
+                t["phase"], t["until"] = "watch", now + PLUR_TRAIN_WATCH_S
+                self._dispatch(Action("sound", "yes", 4), now)  # NOW: that is the pose it is reading
+                beh._think(now, f"...watching. hold {t['step']}")
             return
-        if not t["samples"]:
-            self._dispatch(Action("sound", "mime_cue", 4), now)  # NOW: that is the pose it is reading
-        if arms is not None and arms.ts != t["at"]:
-            t["at"] = arms.ts
-            t["samples"].append(plur_features(arms))
-        if now < t["until"]:
+        if phase == "watch":
+            arms = obs.arms
+            if arms is not None and arms.ts != t["at"]:
+                t["at"] = arms.ts
+                t["samples"].append(plur_features(arms))
+            if left > 0.0:
+                return
+            step, samples = t["step"], t["samples"]
+            if len(samples) >= PLUR_TRAIN_MIN:
+                proto = {k: float(np.median([s[k] for s in samples])) for k in samples[0]}
+                # Two poses it cannot tell apart would make the handshake ambiguous for good, and silently:
+                # it would answer whichever came first in the list every time. Say so instead.
+                clash = [n for n in self.signs.trained if n != step and _same_pose(self.signs.trained[n], proto)]
+                self.signs.trained[step] = proto
+                t["learned"].append(step)
+                if clash:
+                    beh._think(now, f"...but that looks the same to me as {', '.join(clash)}. make them more different?")
+                    self.actions_log.append((now, "plur", f"{step} looks the same as {', '.join(clash)}"))
+                beh._think(now, f"got it: that's {step}")
+                self._dispatch(Action("sound", "tada", 4), now)
+                self._dispatch(Action("gesture", "nod", 3), now)
+                self.actions_log.append((now, "plur", f"learned {step} from {len(samples)} readings"))
+            else:
+                beh._think(now, f"...couldn't see your arms well enough for {step}")
+                self._dispatch(Action("sound", "confused", 4), now)
+                self.actions_log.append((now, "plur", f"learning {step} failed: {len(samples)} readings"))
+            t["phase"], t["until"] = "gap", now + PLUR_TRAIN_GAP_S
+            return
+        if left <= 0.0:  # the breath between poses
+            self._train_next(now)
+
+    def cancel_training(self, now: float) -> None:
+        if self._training is None:
             return
         self._training = None
-        step, samples = t["step"], t["samples"]
-        if len(samples) < PLUR_TRAIN_MIN:
-            beh._think(now, f"...I couldn't see your arms well enough to learn {step}")
-            self._dispatch(Action("sound", "confused", 4), now)
-            self.actions_log.append((now, "plur", f"learning {step} failed: {len(samples)} readings"))
-            return
-        proto = {k: float(np.median([s[k] for s in samples])) for k in samples[0]}
-        self.signs.trained[step] = proto
-        beh._think(now, f"got it: that's {step}")
-        self._dispatch(Action("sound", "yes", 4), now)
-        self.actions_log.append((now, "plur", f"learned {step} from {len(samples)} readings"))
-        self.save_settings()
+        self.p.composer.ears_clear()
+        self.actions_log.append((now, "plur", "learning cancelled"))
 
     def _kandi_regate(self) -> None:
         """Put the upright gate back the way the ear toggles say it should be.
@@ -1205,6 +1338,8 @@ class Pet:
         watched = self._song_ticks > 0 and self._song_watched / self._song_ticks >= ENGAGED_FRAC
         frac = 0.0 if self._song_ticks == 0 else self._song_watched / self._song_ticks
         self._song_ticks = self._song_watched = 0
+        self._song_move = ""
+        self.p.composer.show_arms(None)  # the performance is over: give the antennas back
         more = watched and self._songs_in_set < ENCORE_MAX and (self._songs_in_set < 2 or self.p.composer.rng.random() < THIRD_SONG_CHANCE)
         self.actions_log.append((now, "song", f"finished ({frac:.0%} watched){', encore' if more else ''}"))
         if more:
@@ -1412,14 +1547,15 @@ class Pet:
                       "wearing": [n for i, n in enumerate(("right", "left")) if self.kandi_on[i]],
                       "settling_s": round(max(0.0, comp.gentle_until - now), 1) if comp.gentle_until > now else None,
                       "damp": comp.kandi_damp, "trained": {k: {n: round(x, 2) for n, x in v.items()} for k, v in self.signs.trained.items()},
-                      "training": None if self._training is None else {"step": self._training["step"],
-                                                                       "in_s": round(max(0.0, self._training["from"] - now), 1),
+                      "training": None if self._training is None else {"step": self._training["step"], "phase": self._training["phase"],
+                                                                       "queue": list(self._training["queue"]), "learned": list(self._training["learned"]),
                                                                        "left_s": round(max(0.0, self._training["until"] - now), 1),
-                                                                       "seen": len(self._training["samples"])}},
+                                                                       "seen": len(self._training["samples"])},
+                      "focused": self._focus_gaze is not None},
             "dance_along": {"on": self.dance_along, "copying": self._copying_arms, "flourish": self._copying_arms and now < self._flourish_until,
                             "antennas": None if comp.arms is None or now >= comp.arms_until else [round(comp.arms[0]), round(comp.arms[1])]},
             "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "style": self.last_song["style"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs],
-                     "set": {"songs": self._songs_in_set, "watched": None if self._song_ticks == 0 else round(self._song_watched / self._song_ticks, 2), "encore_in_s": round(max(0.0, self._next_song_at - now), 1) if self._next_song_at else None},
+                     "section": self._song_move or None, "set": {"songs": self._songs_in_set, "watched": None if self._song_ticks == 0 else round(self._song_watched / self._song_ticks, 2), "encore_in_s": round(max(0.0, self._next_song_at - now), 1) if self._next_song_at else None},
                      "next_in_s": round(max(0.0, self.p.behavior._cool.get("sing", now) - now)) if self.singing_enabled else None},
             "build": build_info(),
             "asleep": self.asleep,
@@ -1538,8 +1674,11 @@ class Pet:
             if not 0.0 <= damp <= 1.0:
                 raise ValueError(f"kandi damping runs from 0 (move normally) to 1 (hold still), not {value}")
             self.p.composer.kandi_damp = damp
-        elif cmd == "train_plur":  # show it one of the four poses: "peace", "love", "unity", "respect"
-            self.train_plur(str(value), now)
+        elif cmd == "train_plur":  # "all" for the whole routine, or one of the four poses by name; false to stop
+            if value in (False, 0, None, "stop"):
+                self.cancel_training(now)
+            else:
+                self.train_plur("all" if value is True else str(value), now)
         elif cmd == "forget_plur":  # throw the trained poses away and go back to the built-in rules
             self.signs.trained = {} if value in (True, None, "", "all") else {k: v for k, v in self.signs.trained.items() if k != str(value)}
             self.actions_log.append((now, "plur", "forgot trained poses"))

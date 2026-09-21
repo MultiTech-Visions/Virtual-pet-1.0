@@ -113,12 +113,63 @@ class Action:
     priority: int = 1  # higher preempts lower for gestures/moves
 
 
+SPOT_MERGE_DEG = 18.0  # two sightings this close are the same person standing about, not two places
+SPOT_KEEP = 3  # how many places it holds on to: where they were, and the two before that
+SPOT_STALE_S = 180.0  # a place nobody has been for three minutes is not worth going back to
+COMPANY_RECENT_S = 45.0  # somebody was here this recently: do not go wandering off at the walls yet
+
+
+@dataclass
+class Spot:
+    """Somewhere a person was actually seen, in world yaw/pitch."""
+
+    yaw: float
+    pitch: float
+    at: float
+    seen: int = 1
+
+
+@dataclass
+class SeenSpots:
+    """Where people have been, most recent first.
+
+    The camera loses faces constantly — someone turns their head, the light changes, it blinks out for a
+    second — and a pet that only remembers ONE last position gives up after five seconds and starts
+    scanning the room, which points the camera at a wall and makes reacquiring them impossible. So every
+    sighting of anybody (a face, a stranger, a torso with arms on it) is filed here, sightings within
+    SPOT_MERGE_DEG are treated as the same place and refreshed rather than duplicated, and when it loses
+    somebody it works back through these three places before it accepts they have gone.
+    """
+
+    spots: list = field(default_factory=list)
+
+    def note(self, yaw: float, pitch: float, now: float) -> None:
+        for spot in self.spots:
+            if abs(spot.yaw - yaw) <= SPOT_MERGE_DEG:
+                spot.yaw = spot.yaw * 0.7 + yaw * 0.3  # drift with them rather than snapping about
+                spot.pitch, spot.at, spot.seen = pitch, now, spot.seen + 1
+                self.spots.sort(key=lambda x: -x.at)
+                return
+        self.spots.insert(0, Spot(yaw, pitch, now))
+        del self.spots[SPOT_KEEP:]
+
+    def recent(self, now: float) -> list:
+        return [x for x in self.spots if now - x.at <= SPOT_STALE_S]
+
+    def last_at(self) -> float:
+        return max((x.at for x in self.spots), default=-1e9)
+
+    def as_dicts(self, now: float) -> list[dict]:
+        return [{"yaw": round(x.yaw, 1), "pitch": round(x.pitch, 1), "s_ago": round(now - x.at, 1), "seen": x.seen}
+                for x in self.recent(now)]
+
+
 @dataclass
 class Timers:
     """Tunable timing, in seconds."""
 
-    face_lost_grace: float = 2.5
-    search_duration: float = 5.0
+    face_lost_grace: float = 3.5  # the detector drops a face for a second all the time: do not give up on it
+    search_duration: float = 5.0  # per remembered place, so a full sweep of three is three times this
     lonely_after: float = 90.0
     lonely_repeat: float = 45.0
     sleep_after: float = 420.0
@@ -202,6 +253,9 @@ class Behavior:
     _engaged_since: float = 0.0
     _last_seen_yaw: float = 0.0
     _last_seen_pitch: float = 0.0
+    seen_spots: SeenSpots = field(default_factory=SeenSpots)
+    _search_i: int = 0  # which remembered place it is checking
+    _search_next: float = 0.0
     _greeted_track: int | None = None
     _prev_held: bool = False
     _dizzy_until: float = 0.0
@@ -389,7 +443,26 @@ class Behavior:
         return [Action("sound", "lonely", 1), Action("gesture", "droop", 1)]
 
     # ------------------------------------------------------------------ helpers
+    def _search_spot(self, now: float) -> tuple[float, float]:
+        """Where to look while searching: the ``_search_i``-th remembered place, newest first.
+
+        Falls back to the single last reading, which is all there was before, when nothing is remembered
+        (a voice or a loud noise turned it, rather than a sighting).
+        """
+        spots = self.seen_spots.recent(now)
+        if not spots:
+            return (self._last_seen_yaw, self._last_seen_pitch)
+        spot = spots[min(self._search_i, len(spots) - 1)]
+        return (spot.yaw, spot.pitch)
+
+    def _enter_searching(self, now: float) -> None:
+        """Start the sweep at the most recently seen place. Every route into SEARCHING comes through here,
+        or the sweep would start half-finished and give up on the first tick."""
+        self._search_i, self._search_next = 0, now + self.timers.search_duration
+
     def _enter(self, state: State, now: float) -> None:
+        if state == "SEARCHING" and self.state != "SEARCHING":
+            self._enter_searching(now)
         self.state = state
         self._state_since = now
 
@@ -488,11 +561,12 @@ class Behavior:
                 if self._engaged_person is not None:
                     self.memory.add_pet(self._engaged_person)
 
-        # A little tune to itself while it potters about: a few console blips that happen to be a melody,
-        # made up on the spot. Not while it is performing, dancing or being handled.
+        # A little tune to itself while it potters about: a counted-in song of console blips, made up on the
+        # spot. Not while it is performing, dancing or being handled, and not with singing switched off.
         if now >= self._next_jingle:
             self._next_jingle = now + self.rng.uniform(JINGLE_MIN_S, JINGLE_MAX_S)
-            if (awake and self.state != "HELD" and obs.busy is None and not obs.grooving and obs.dance_bpm == 0
+            # Singing off means singing off: a jingle is a little song, so the same switch covers it.
+            if (self.can_sing and awake and self.state != "HELD" and obs.busy is None and not obs.grooving and obs.dance_bpm == 0
                     and obs.music_bpm == 0 and not self.mimicking and self.activity in JINGLE_ACTIVITIES and self.mood.energy > 0.25):
                 self._think(now, "*hums a little something*")
                 actions.append(Action("sound", "jingle", 1))
@@ -667,6 +741,7 @@ class Behavior:
             face = obs.face
             if face is not None:
                 self._last_seen_yaw, self._last_seen_pitch = face.yaw_deg, face.pitch_deg
+                self.seen_spots.note(face.yaw_deg, face.pitch_deg, now)
                 if now >= self._voice_lock_until:
                     self.gaze = (face.yaw_deg, face.pitch_deg)
                     self.attention.looked(face.yaw_deg, now)
@@ -814,6 +889,7 @@ class Behavior:
                         self._think(now, "a body! looking up for the face")
                     self.gaze = (obs.body.yaw_deg, obs.body.pitch_deg)
                     self._last_seen_yaw, self._last_seen_pitch = obs.body.yaw_deg, obs.body.pitch_deg
+                    self.seen_spots.note(obs.body.yaw_deg, obs.body.pitch_deg, now)
                     self._last_interaction = now
                     if self.state == "IDLE":
                         self._enter("SEARCHING", now)
@@ -839,7 +915,8 @@ class Behavior:
                         engaged_for = now - self._engaged_since
                         self._face_lost_at = self._last_face_time
                         self._enter("SEARCHING", now)
-                        self.gaze = (self._last_seen_yaw, self._last_seen_pitch)
+                        self._enter_searching(now)
+                        self.gaze = self._search_spot(now)
                         self._think(now, f"where did they go? looking where I last saw them ({'miss them' if engaged_for > t.engaged_sad_if_over else 'hm?'})")
                         actions.append(Action("gesture", "search", 2))
                         if engaged_for > t.engaged_sad_if_over:
@@ -847,16 +924,27 @@ class Behavior:
                         else:
                             actions.append(Action("sound", "confused", 2))
                 elif self.state == "SEARCHING":
-                    self.gaze = (self._last_seen_yaw, self._last_seen_pitch)
-                    if now - self._state_since > t.search_duration:
-                        self._engaged_track = None
-                        self._engaged_person = None
-                        self._enter("IDLE", now)
-                        self._think(now, "gave up looking, back to idling")
-                        self.gaze = None
-                        self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
+                    # Work back through where people have actually been, not just the one last reading: a
+                    # face that drops out for optical reasons is usually still standing about where it was,
+                    # or one place over.
+                    self.gaze = self._search_spot(now)
+                    if now >= self._search_next:
+                        self._search_i += 1
+                        self._search_next = now + t.search_duration
+                        if self._search_i < len(self.seen_spots.recent(now)):  # somewhere else to try
+                            self.gaze = self._search_spot(now)
+                            self._think(now, f"not there... checking where else I've seen people (#{self._search_i + 1})")
+                            actions.append(Action("gesture", "search", 1))
+                        else:
+                            self._engaged_track = None
+                            self._engaged_person = None
+                            self._enter("IDLE", now)
+                            self._think(now, "gave up looking, back to idling")
+                            self.gaze = None
+                            self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
                 else:  # IDLE
                     self.gaze = None
+                    continue_glance = False  # ...unless the glance below is a proper look around the room
                     if obs.loud_yaw_deg is not None:
                         self.gaze = (obs.loud_yaw_deg, 0.0)
                         self._look_until = 0.0
@@ -864,6 +952,19 @@ class Behavior:
                         actions.append(Action("sound", "curious", 1))
                         self._next_glance = now + 2.0
                     elif now >= self._next_glance and self.activity != "rest":
+                        # Somebody was just here. Sweeping off to a wall at 100 degrees is how it loses them
+                        # for good, so while the company is still recent it only checks the places people
+                        # have actually been.
+                        spots = self.seen_spots.recent(now)
+                        if spots and now - self.seen_spots.last_at() < COMPANY_RECENT_S:
+                            spot = spots[self.rng.randrange(min(2, len(spots)))]
+                            self._look_at = (spot.yaw, spot.pitch)
+                            self._look_until = now + self.rng.uniform(2.5, 4.0)
+                            self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
+                            self.attention.looked(spot.yaw, now)
+                        else:
+                            continue_glance = True
+                    if continue_glance:
                         # Look around properly: a wide gaze target, so the body turns too and it can see
                         # someone standing right beside it, off camera. (A head-only glance never turned the body.)
                         if self.activity == "look_around":
@@ -1021,10 +1122,13 @@ class Behavior:
 
     def mind(self, now: float) -> dict:
         """Everything driving the next decision, for the 'inside the mind' page."""
+        spots = self.seen_spots.as_dicts(now)
         t = self.timers
         alone = now - self._last_interaction
         return {
             **self.status(),
+            "seen_spots": spots,  # where people have actually been: what it checks when it loses somebody
+            "searching_spot": (self._search_i + 1) if self.state == "SEARCHING" else None,
             "state_for_s": round(now - self._state_since, 1),
             "activity_for_s": round(now - self._activity_since, 1),
             "margin": round(self._margin, 2),

@@ -307,12 +307,16 @@ EMOTIONS = (
 # jingle is a proper little song: four counted-in taps so you can find the beat, then four (or eight)
 # bars of 4/4 built out of ONE motif — the same rhythm every bar, the pitches moved around it — which
 # is what makes a shape you can follow, hum back, and groove along to.
-JINGLE_SCALE = (0, 2, 4, 7, 9, 12, 14, 16, 19)  # major pentatonic, two octaves and a bit
-JINGLE_BASES = (587.3, 659.3, 698.5, 783.9)  # D5, E5, F5, G5: the bright end, where a small speaker sings
+JINGLE_SCALE = (0, 2, 4, 7, 9, 12, 14, 16)  # major pentatonic, a bit over an octave
+# Low enough to sit under the piercing range and still above the ~300 Hz the speaker gives up on. A pure
+# tone up at 2 kHz carries across a field and drills into whoever is next to it; these keep the top note
+# under about 1.3 kHz.
+JINGLE_BASES = (440.0, 466.2, 493.9, 523.3)  # A4, Bb4, B4, C5
 JINGLE_BPM = (96, 104, 112, 120)
 JINGLE_COUNT_IN = 4  # taps before it starts: one bar of "here is where the beat is"
-JINGLE_TICK_HZ = 1760.0  # the count-in tap: well above the tune, so it is plainly not part of it
-JINGLE_TICK_S = 0.035
+JINGLE_TICK_HZ = 880.0  # the count-in tap: above the tune, so it is plainly not part of it
+JINGLE_TICK_S = 0.04
+JINGLE_GAIN, JINGLE_TICK_GAIN = 0.34, 0.16  # it hums to ITSELF: quiet enough not to carry across the field
 # One bar of eighths: 1 = a note starts here, 0 = the note before it holds on.
 JINGLE_RHYTHMS = (
     (1, 0, 1, 0, 1, 0, 1, 0),
@@ -373,10 +377,12 @@ def render_jingle(rng: random.Random, sample_rate: int = SAMPLE_RATE) -> tuple[n
     end = max(t + d for t, _, d, _ in notes) + 0.12
     out = np.zeros(int(end * sample_rate), dtype=np.float32)
     for t, f, d, kind in notes:
-        blip = tone(f, d, sample_rate, harmonics=0.18, attack=0.012, release=0.45)
+        # A softer attack takes the edge off: the hard click on the front of a near-pure tone is most of
+        # what makes it sting. The harmonic content stays, to give the speaker something to work with.
+        blip = tone(f, d, sample_rate, harmonics=0.22, attack=0.07, release=0.5)
         i = int(t * sample_rate)
         j = min(len(out), i + len(blip))
-        out[i:j] += blip[: j - i] * (0.35 if kind == "tick" else 0.75)
+        out[i:j] += blip[: j - i] * (JINGLE_TICK_GAIN if kind == "tick" else JINGLE_GAIN)
     return out, bpm
 
 # What each sound means, for the lexicon on the Play tab.

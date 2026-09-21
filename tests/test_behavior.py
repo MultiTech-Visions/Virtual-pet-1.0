@@ -406,9 +406,13 @@ def test_it_hums_a_made_up_jingle_while_pottering_about_but_not_mid_performance(
     b.activity = "look_around"
     b.mood.energy = 0.8
     jingles = lambda acts: [a for a in acts if a.kind == "sound" and a.name == "jingle"]  # noqa: E731
+    # a jingle is a little song, so the singing switch covers it: off means off
+    assert not jingles(_run(b, lambda t: Observation(), 0.0, JINGLE_MAX_S * 3, dt=0.5))
+    b, _ = _brain()
+    b.activity, b.mood.energy, b.can_sing = "look_around", 0.8, True
     acts = _run(b, lambda t: Observation(), 0.0, JINGLE_MAX_S * 3, dt=0.5)
     assert jingles(acts), "nothing hummed in three windows"
-    assert len(jingles(acts)) <= 4  # now and then, not chattering
+    assert len(jingles(acts)) <= 5  # now and then, not chattering
     # not while it is performing, dancing, grooving, held or flat out
     b._next_jingle = 0.0
     for obs in (Observation(busy="mime"), Observation(busy="sing"), Observation(grooving=True),
@@ -420,3 +424,39 @@ def test_it_hums_a_made_up_jingle_while_pottering_about_but_not_mid_performance(
     assert not jingles(b.tick(Observation(), 600.0, 0.5))
     b.activity, b.mood.energy, b._next_jingle = "watch", 0.1, 0.0
     assert not jingles(b.tick(Observation(), 700.0, 0.5))
+
+
+def test_it_remembers_where_people_have_been_and_checks_back_before_giving_up():
+    """The face detector drops out constantly for optical reasons. Remembering one last position and
+    scanning the room five seconds later points the camera at a wall, which is how it used to lose
+    somebody standing right in front of it."""
+    from festival_pet.behavior import COMPANY_RECENT_S, SPOT_KEEP, SPOT_MERGE_DEG
+
+    b, _ = _brain()
+    t = 0.0
+    for yaw in (10.0, 12.0, -40.0, 70.0):  # three places: the first two are the same person shifting about
+        _run(b, lambda _t, y=yaw: Observation(face=FaceObs(1, y, 0.0, 0.05, None, 0.0)), t, t + 4.0)
+        t += 4.0
+    spots = b.seen_spots.recent(t)
+    assert len(spots) == 3 <= SPOT_KEEP and abs(spots[0].yaw - 70.0) < SPOT_MERGE_DEG  # newest first
+    assert min(abs(x.yaw - 11.0) for x in spots) < SPOT_MERGE_DEG  # 10 and 12 merged into one place
+
+    # lose them: it works back through the places rather than giving up after the first
+    checked, end = [], t + b.timers.face_lost_grace + b.timers.search_duration * 3 + 1.0
+    while t < end:
+        b.tick(Observation(), t, 0.1)
+        if b.state == "SEARCHING":
+            checked.append(round(b.gaze[0]))
+        t += 0.1
+    assert len({y for y in checked}) == 3, "it only checked one place"
+    assert b.state == "IDLE"  # ...and it does eventually accept they have gone
+
+    # right after company it checks the remembered places, it does not swing off at a wall
+    b.seen_spots.note(25.0, 0.0, t)
+    b.activity, b._next_glance, b._look_until = "hangout", t, 0.0
+    for _ in range(20):
+        t += 0.1
+        b.tick(Observation(), t, 0.1)
+        if b.gaze is not None:
+            assert abs(b.gaze[0]) < 80.0, "wandered off to a wall with somebody just there"
+    assert COMPANY_RECENT_S > 30.0

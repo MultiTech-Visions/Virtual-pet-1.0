@@ -58,7 +58,9 @@ def test_every_sound_is_audible_on_a_tiny_speaker():
         freqs = np.fft.rfftfreq(len(buf), 1 / sounds.SAMPLE_RATE)
         low = float(spectrum[freqs < 280].sum() / spectrum.sum())
         assert low < 0.3, f"{emotion}: {low:.0%} of its energy is below 280 Hz"
-        assert np.sqrt(np.mean(buf**2)) > 0.15, f"{emotion} is too quiet"
+        # the jingle is quiet ON PURPOSE — it hums it to itself, and it is mostly the gaps between notes
+        floor = 0.05 if emotion == "jingle" else 0.15
+        assert np.sqrt(np.mean(buf**2)) > floor, f"{emotion} is too quiet"
 
 
 def test_songs_compose_render_and_describe():
@@ -169,6 +171,10 @@ def test_jingles_are_counted_in_songs_with_a_shape_you_can_follow():
         buf, bpm2 = render_jingle(random.Random(seed))
         assert bpm2 == bpm and 4.0 < phrase_duration(buf) < 24.0
         assert phrase_duration(render_phrase("jingle", random.Random(seed))) == phrase_duration(buf)
+        # it hums to itself: a pure tone up at 2 kHz carries across a field and drills into whoever is
+        # standing next to it, so both the level and the top note are kept down
+        assert float(np.abs(buf).max()) < 0.35
+        assert max(f for _, f, _, k in tune) < 1400.0
     assert len(pitches) > 8 and bars == {4, 8} and len(tempos) > 2  # it does make them up, it is not one tune on repeat
 
 

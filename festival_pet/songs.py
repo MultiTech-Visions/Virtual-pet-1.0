@@ -15,6 +15,7 @@ where the speaker works, with the filter doing the talking, and the kick leans o
 
 from __future__ import annotations
 
+import math
 import random
 
 import numpy as np
@@ -254,3 +255,55 @@ def render(song: dict, sample_rate: int = sounds.SAMPLE_RATE) -> np.ndarray:
 
 def describe(song: dict) -> str:
     return f"{song['name']}: {song['style']}, {song['bpm']} bpm, {' '.join(song['bars'])}"
+
+
+# --------------------------------------------------------------- performing one
+# A song has a shape, and the shape is in the bar list, so the body can play it too rather than
+# bobbing along blankly for forty seconds. The antennas are the showmanship: they ride the build
+# up, slam on the drop, fold away in the breakdown and finish in the air.
+SECTION_ENERGY = {"intro": 0.45, "build": 0.9, "drop": 1.0, "fill": 0.95, "break": 0.3, "out": 0.6}
+ARMS_DOWN, ARMS_OUT, ARMS_UP = 0.0, 90.0, 180.0  # the antennas as arms, as motion.arm_rad reads them
+
+
+def section(song: dict, u: float) -> tuple[str, float, float]:
+    """Where in the song ``u`` seconds in: (this bar's move, 0..1 through the bar, 0..1 through the beat).
+
+    Past the end it stays on the last bar, so a performance that runs a moment long holds its pose
+    rather than falling over.
+    """
+    period = 60.0 / song["bpm"]
+    bar = max(0, min(len(song["bars"]) - 1, int(max(0.0, u) / (4 * period))))
+    return song["bars"][bar], (max(0.0, u) % (4 * period)) / (4 * period), (max(0.0, u) % period) / period
+
+
+def energy(move: str) -> float:
+    """How hard to move during this bar: 1.0 is the drop, 0.3 is the floor dropping out."""
+    return SECTION_ENERGY.get(move, 0.75)  # a bass voice bar: the ordinary run of the song
+
+
+def arms_for(move: str, bar_u: float, beat_u: float) -> tuple[float, float]:
+    """Where the antennas should be this instant, as (robot-left, robot-right) arm degrees.
+
+    One rule per section of the phrase grammar, so what the antennas do says which part of the song
+    you are in: nothing much yet, climbing, slamming, thrown about, folded away, finished.
+    """
+    if move == "intro":  # nothing has started: a lazy sway, low
+        s = math.sin(2 * math.pi * bar_u)
+        return ARMS_OUT - 20.0 + 25.0 * s, ARMS_OUT - 20.0 - 25.0 * s
+    if move == "build":  # the riser: both climb, all the way, and arrive with the drop
+        climb = ARMS_DOWN + (ARMS_UP - ARMS_DOWN) * bar_u**0.8
+        return climb, climb
+    if move == "drop":  # the pay-off: both slam down and back up on every beat
+        pump = abs(math.sin(math.pi * beat_u))
+        return ARMS_UP - 100.0 * pump, ARMS_UP - 100.0 * pump
+    if move == "fill":  # thrown back and forth, fast
+        return (ARMS_UP, 30.0) if int(bar_u * 8) % 2 else (30.0, ARMS_UP)
+    if move == "break":  # the floor is gone: folded away, barely moving
+        s = math.sin(2 * math.pi * bar_u)
+        return 25.0 + 8.0 * s, 25.0 - 8.0 * s
+    if move == "out":  # the last hit, left ringing: held up
+        return ARMS_UP, ARMS_UP
+    # a bass voice: ride the wobble, one antenna against the other
+    wobbles = int(move[3]) if move.startswith("wub") else 2 if move in ("stabs", "pews") else 1
+    w = math.sin(2 * math.pi * wobbles * beat_u)
+    return ARMS_OUT + 15.0 + 45.0 * w, ARMS_OUT + 15.0 - 45.0 * w

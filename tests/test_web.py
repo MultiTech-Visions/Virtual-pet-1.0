@@ -397,9 +397,9 @@ def test_held_mode_asks_to_be_turned():
     pet = _pet()
     pet.control("pickup", True)
     assert pet.p.composer.held
-    pet.p.behavior.state = "SEARCHING"  # looks where it last saw someone: way off to its left
-    pet.p.behavior._last_seen_yaw, pet.p.behavior._last_seen_pitch = 100.0, 0.0
-    pet.p.behavior._state_since = 1001.0
+    beh = pet.p.behavior  # looks where it last saw someone: way off to its left
+    beh.seen_spots.note(100.0, 0.0, 1000.9)
+    beh._enter("SEARCHING", 1001.0)
     t, pointed = 1001.0, False
     while t < 1004.0:
         pet.step(t)
@@ -474,13 +474,15 @@ def test_watching_it_sing_earns_an_encore_and_a_proper_bow():
     seen_encore_gap = False
     for _ in range(200000):
         pet.step(t)
-        t += 0.02
         if pet._next_song_at:
             seen_encore_gap = True
         if pet.last_song["name"] not in songs_sung:
             songs_sung.append(pet.last_song["name"])
-        if not (t < pet._singing_until or pet._next_song_at):
+        # the song's own clock is zeroed the moment it is over, so "still performing" is that, not a
+        # comparison against a deadline this loop might step straight over
+        if not (pet._singing_until or pet._next_song_at):
             break
+        t += 0.02
     assert seen_encore_gap and pet._songs_in_set == 0  # the set ran and then ended
     assert 2 <= len(songs_sung) <= 3  # an encore, and sometimes a third
     assert comp._gesture is not None and comp._gesture.name == "bow"  # the set earned the whole routine
@@ -488,7 +490,8 @@ def test_watching_it_sing_earns_an_encore_and_a_proper_bow():
     assert any(k == "song" and "encore" in n for _, k, n in pet.actions_log)
     # the gap between songs still counts as performing, so the brain does not go and start something else
     pet.sing(t + 1.0)
-    pet._singing_until = t + 1.07  # a step that lands in the last 20 ms of the song is the one that ends it
+    pet._singing_until = t + 1.05  # the first step at or past the end is the one that ends it, whatever the dt
+    pet.step(t + 1.02)  # one tick of the song being watched, so the encore is earned
     pet.step(t + 1.06)
     assert pet._next_song_at and pet._last_obs.busy == "sing"
     pet.stop()
@@ -1026,13 +1029,17 @@ def test_showing_it_a_plur_pose_teaches_it_what_that_pose_looks_like():
     assert c.post("/api/control", json={"cmd": "train_plur", "value": "vibes"}).status_code == 400
     now = 1000.2
     pet.train_plur("peace", now)  # again on the pet's own clock, so the test can step it
-    while pet._training is not None and now < 1000.2 + PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S + 0.2:
-        pet._last_obs.arms = arms(now)  # as if the vision thread had a fresh reading each tick
-        pet._train_tick(pet._last_obs.arms, now)
+    ears = []
+    while pet._training is not None and now < 1000.2 + PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S + 2.0:
+        pet._train_tick(Observation(arms=arms(now)), now)  # as if the vision thread had a fresh reading
+        ears.append(pet.p.composer.ear_hold[1])
         if now < 1000.2 + PLUR_TRAIN_READY_S:
             assert not pet.signs.trained  # still counting them in: it has not started measuring yet
         now += 0.1
     assert pet._training is None
+    # the countdown really did run down an antenna, twice: once to get into the pose, once while it read
+    ticks = [e for e in ears if e is not None]
+    assert len(ticks) > 10 and max(ticks) - min(ticks) > 0.5
     assert set(pet.signs.trained) == {"peace"}
     assert abs(pet.signs.trained["peace"]["hi_deg"] - 57.0) < 1.0
     assert plur_pose(arms(0.0), pet.signs.trained) == "peace"  # it knows that pose now
@@ -1060,10 +1067,134 @@ def test_learning_a_pose_gives_up_when_it_cannot_see_the_arms():
 
     pet = _pet()
     pet.train_plur("respect", 1000.2)
+    assert pet._training is not None
     now = 1000.2
-    while pet._training is not None and now < 1000.2 + PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S + 0.2:
-        pet._train_tick(None, now)  # nobody in front of it
+    while pet._training is not None and now < 1000.2 + PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S + 2.0:
+        pet._train_tick(Observation(), now)  # nobody in front of it
         now += 0.1
     assert pet._training is None and pet.signs.trained == {}  # it says so rather than learning nonsense
     assert "failed" in " ".join(n for _, k, n in pet.actions_log if k == "plur")
+    pet.stop()
+
+
+def test_it_bobs_to_its_own_song_and_plays_the_phrasing_with_its_antennas():
+    """The head used to stand still through a whole song: the brain clears the groove every tick, the
+    beat tracker cannot hear our own song (the mics are deaf while we play), and nothing put it back."""
+    from festival_pet import songs
+    from festival_pet.main import SONG_GROOVE
+
+    pet = _pet()
+    now = 1000.2
+    song = pet.sing(now)
+    grooves, antennas, sections = [], [], []
+    end = now + songs.duration(song)
+    while now < end - 0.1:
+        pet.step(now)
+        assert pet.p.composer.groove is not None, "not bobbing to its own song"
+        grooves.append(pet.p.composer.groove[2])
+        if pet.p.composer.arms is not None:
+            antennas.append(tuple(round(x) for x in pet.p.composer.arms))
+        sections.append(pet._song_move)
+        now += 0.05
+    # the bob follows the shape of the song, not one flat level all the way through
+    assert max(grooves) > min(grooves) + 0.2
+    assert max(grooves) <= SONG_GROOVE + 1e-6
+    # ...and the antennas play the phrasing: a build climbs, the drop slams, each section looks different
+    assert "build" in sections and "drop" in sections
+    assert len(set(antennas)) > 20
+    builds = [a for a, m in zip(antennas, sections) if m == "build"]
+    assert max(b[0] for b in builds) - min(b[0] for b in builds) > 80.0  # the riser really does climb
+    # the song ends and the antennas are given back
+    while now < end + 0.5:
+        pet.step(now)
+        now += 0.05
+    assert pet.p.composer.arms is None and pet._song_move == ""
+    pet.stop()
+
+
+def test_teaching_the_handshake_runs_as_one_routine_and_concentrates():
+    """Stopping between poses to press a button is exactly when it loses you, so it calls for all four
+    itself — and while it does, it stops being a pet: gaze pinned, nothing else started, a countdown
+    running down an antenna so you can see it is still waiting for you."""
+    from festival_pet.behavior import FaceObs
+    from festival_pet.main import PLUR_CLOCK_EAR, PLUR_TRAIN_GAP_S, PLUR_TRAIN_READY_S, PLUR_TRAIN_WATCH_S
+    from festival_pet.pose import PLUR_STEPS, Arms
+
+    def arms(ts):
+        pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0), "l_elbow": (100.0, 120.0),
+               "r_elbow": (150.0, 120.0), "l_wrist": (105.0, 112.0), "r_wrist": (146.0, 110.0),
+               "l_wrist_ok": True, "r_wrist_ok": True}
+        return Arms(ts, 55.0, 57.0, "out", "out", 0.9, 50.0, pts)
+
+    pet = _pet()
+    beh = pet.p.behavior
+    pet.train_plur("all", 1000.2)
+    now, called, clocks = 1000.2, [], []
+    per_step = PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S + PLUR_TRAIN_GAP_S
+    while pet._training is not None and now < 1000.2 + per_step * len(PLUR_STEPS) + 2.0:
+        obs = Observation(arms=arms(now), face=FaceObs(1, 20.0, -3.0, 0.05, None, 0.0))
+        pet._train_tick(obs, now)
+        called.append(pet._training["step"] if pet._training else "")
+        clocks.append(pet.p.composer.ear_hold[PLUR_CLOCK_EAR])
+        # it concentrates: looking at the person, and nothing else is allowed to start
+        assert beh.gaze == (20.0, -3.0)
+        assert beh._next_glance > now and beh._next_jingle > now and beh._look_until == 0.0
+        now += 0.1
+    # it called for all four itself, in order, without being told again
+    order = [s for i, s in enumerate(called) if s and (i == 0 or s != called[i - 1])]
+    assert order == list(PLUR_STEPS)
+    assert set(pet.signs.trained) == set(PLUR_STEPS)  # and learned every one of them
+    assert pet._training is None and pet.p.composer.ear_hold[PLUR_CLOCK_EAR] is None  # the clock is put away
+    ticks = [c for c in clocks if c is not None]
+    assert len(ticks) > 40 and max(ticks) - min(ticks) > 0.5  # a countdown really ran, all the way through
+    assert "learning done: 4 pose(s)" in [n for _, k, n in pet.actions_log if k == "plur"]
+    pet.stop()
+
+
+def test_a_handshake_in_progress_gets_the_same_concentration():
+    """'It does the peace thing and then back to chaos' — mid-handshake it used to carry on glancing at
+    walls and humming, so there was no way to tell it had seen you or what it was waiting for."""
+    from festival_pet.behavior import FaceObs
+    from festival_pet.main import PLUR_CLOCK_EAR
+
+    pet = _pet()
+    beh = pet.p.behavior
+    now = 1000.2
+    pet.signs.plur_step, pet.signs.plur_at = 1, now  # peace has landed; it is waiting for love
+    for _ in range(30):
+        pet.step(now)
+        pet._last_obs.face = FaceObs(1, -15.0, 2.0, 0.05, None, 0.0)
+        pet._focus(pet._last_obs, now, 8.0, 12.0)
+        now += 0.05
+    assert pet._last_obs.busy == "kandi"  # the brain starts nothing while a handshake is going
+    assert beh.gaze == (-15.0, 2.0) and pet.p.composer._gaze_target == (-15.0, 2.0)
+    assert pet.p.composer.ear_hold[PLUR_CLOCK_EAR] is not None  # the window is showing on an antenna
+    assert beh._next_jingle > now  # ...and it is not about to start humming at you
+    # the handshake lapses: it lets go of the antenna and goes back to being a pet
+    pet.signs.plur_step = 0
+    pet.step(now)
+    assert pet._focus_gaze is None and pet.p.composer.ear_hold[PLUR_CLOCK_EAR] is None
+    pet.stop()
+
+
+def test_two_poses_it_cannot_tell_apart_are_called_out_rather_than_swallowed():
+    """Teaching it two poses that measure the same would make the handshake ambiguous for good — and
+    silently: it would answer whichever came first every time."""
+    from festival_pet.pose import Arms
+
+    def arms(ts):
+        pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0), "l_elbow": (100.0, 120.0),
+               "r_elbow": (150.0, 120.0), "l_wrist": (105.0, 112.0), "r_wrist": (146.0, 110.0),
+               "l_wrist_ok": True, "r_wrist_ok": True}
+        return Arms(ts, 55.0, 57.0, "out", "out", 0.9, 50.0, pts)
+
+    pet = _pet()
+    now = 1000.2
+    for step in ("peace", "love"):  # the same arms both times
+        pet.train_plur(step, now)
+        while pet._training is not None and now < 1000.2 + 60.0:
+            pet._train_tick(Observation(arms=arms(now)), now)
+            now += 0.1
+    assert set(pet.signs.trained) == {"peace", "love"}  # it keeps both: you may be redoing one on purpose
+    assert any("looks the same as peace" in n for _, k, n in pet.actions_log if k == "plur")
     pet.stop()
