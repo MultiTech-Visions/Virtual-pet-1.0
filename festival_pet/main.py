@@ -30,6 +30,7 @@ from typing import Callable, Protocol
 
 import numpy as np
 import platformdirs
+from fastapi import WebSocket
 from pydantic import BaseModel
 from scipy.spatial.transform import Rotation as R
 
@@ -45,6 +46,7 @@ from festival_pet.senses import ImuRubDetector, LoudSoundDetector, PickupDetecto
 from festival_pet.vision import Sighting
 from festival_pet.pose import PLUR_STEP_WINDOW_S, PLUR_STEPS, PLUR_TOL, PLUR_TRAIN_MIN, ArmSigns, plur_features
 from festival_pet.tap_tempo import TapTempo
+from festival_pet.devconsole import DevConsole
 from festival_pet.trace import Recorder
 from festival_pet.visual_rhythm import DanceDetector
 
@@ -523,6 +525,7 @@ class Pet:
         self._cuddle_next_react = 0.0
         self._cuddle_pet_at = 0.0  # last time this cuddling was counted toward the person's affection
         self.trace = Recorder()  # the black box: see _trace_row, and /api/trace.jsonl
+        self.dev = DevConsole(DATA_DIR, Path(__file__).resolve().parent.parent)  # the Dev tab's terminal
         # Both logs are trimmed as they grow, so the trace follows them by TIME, not by index: an index
         # into a list that drops its head quietly replays or skips entries.
         self._traced_action_at = 0.0
@@ -2079,6 +2082,94 @@ def install_routes(app, pet: Pet) -> None:
     @app.get("/api/mind")
     def mind() -> dict:
         return pet.mind()
+
+    # The Dev tab's terminal needs xterm.js, which is vendored into the package: there is no network at
+    # the festival to fetch it from, and the page has to work with the robot on its own hotspot.
+    VENDOR = {"xterm.js": "application/javascript", "xterm-addon-fit.js": "application/javascript",
+              "xterm.css": "text/css", "LICENSE-xterm.txt": "text/plain"}
+
+    @app.get("/static/vendor/{name}")
+    def vendor(name: str):
+        from fastapi.responses import FileResponse
+
+        if name not in VENDOR:  # an explicit list, not a path join: this one takes a name off the network
+            raise HTTPException(status_code=404, detail=f"no vendored file '{name}'")
+        return FileResponse(Path(__file__).resolve().parent / "static" / "vendor" / name, media_type=VENDOR[name])
+
+    # ---------------------------------------------------------------- the Dev tab
+    # A terminal on the robot, so a Claude Code session can see the camera, the IMU, the trace and the
+    # code, and drive the pet through its own API, instead of any of it being described second-hand.
+    # Off until somebody sets a passphrase: the rest of this page is sliders, but this is a shell.
+    @app.get("/api/dev")
+    def dev_status() -> dict:
+        return pet.dev.status()
+
+    @app.post("/api/dev")
+    def dev_control(c: Control) -> dict:
+        d = pet.dev
+        try:
+            if c.cmd == "enable":
+                d.enable(str(c.value))
+            elif c.cmd == "disable":
+                d.disable()
+            elif c.cmd == "key":
+                d.set_key(str(c.value))
+            elif c.cmd == "clear_key":
+                d.clear_key()
+            else:
+                raise KeyError(f"unknown dev command '{c.cmd}'")
+        except (KeyError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"ok": True, **d.status()}
+
+    @app.websocket("/ws/dev")
+    async def dev_terminal(ws: WebSocket) -> None:
+        """The pty, both ways. The passphrase is checked here, on every connection, not in the page."""
+        import asyncio
+
+        await ws.accept()
+        d = pet.dev
+        if not d.allows(ws.query_params.get("token")):
+            await ws.send_text("\r\n[the dev console is off, or that passphrase is wrong]\r\n")
+            await ws.close()
+            return
+        cmd, cols, rows = ws.query_params.get("cmd", ""), int(ws.query_params.get("cols", 100)), int(ws.query_params.get("rows", 30))
+        if not d.running or cmd:
+            d.start(cmd, cols, rows)
+        else:
+            d.resize(cols, rows)
+        loop = asyncio.get_running_loop()
+
+        async def pump() -> None:  # the terminal talking: read in a thread, the fd is blocking
+            while True:
+                data = await loop.run_in_executor(None, d.read)
+                if not data:
+                    break
+                await ws.send_bytes(data)
+
+        out = asyncio.create_task(pump())
+        try:
+            while True:
+                msg = await ws.receive()
+                if msg["type"] == "websocket.disconnect":
+                    break
+                if msg.get("bytes") is not None:
+                    d.write(msg["bytes"])
+                elif msg.get("text"):
+                    text = msg["text"]
+                    if text.startswith("\x00resize:"):  # the only out-of-band message: a window size
+                        c, _, r = text[len("\x00resize:"):].partition(",")
+                        d.resize(int(c), int(r))
+                    else:
+                        d.write(text.encode())
+        except Exception:
+            logger.debug("dev console socket closed", exc_info=True)
+        finally:
+            out.cancel()
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     @app.get("/api/trace.jsonl")
     def trace(last_s: float | None = None, name: str = "festival-pet-trace"):

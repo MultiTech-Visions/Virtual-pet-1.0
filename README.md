@@ -509,6 +509,46 @@ between the simulated head and the injected face (≈1°). `Pet` in `main.py` ta
   DoA startle.
 
 
+### The Dev tab: Claude Code on the robot
+
+Describing the robot's behaviour into a chat window is the slow way to fix it. The Dev tab is a **real
+terminal on the Pi, in the pet's own page**, so a Claude Code session can run *on the robot* — look at
+what the camera sees, read the black box, drive the pet through its own API, change the code, and try
+it again. It is the actual CLI in an xterm, so the chat, the tool calls, the diffs and the permission
+prompts are all exactly as they are in a terminal.
+
+**It needs the internet.** Claude Code talks to Anthropic's API; at a campsite there is nothing to talk
+to. This is a bench tool — home, the van, a phone hotspot — and the app itself stays entirely offline,
+which is the whole point of it. The tab tells you plainly whether the robot can currently reach the
+API.
+
+**It is a shell, so it is off by default.** The pet's page has no login: anybody on the same network
+can open it, which is fine for sliders and a terrible idea for a terminal. So the console stays off
+until you switch it on with a passphrase of at least six characters, and the WebSocket re-checks that
+passphrase on every connection rather than trusting the page. Turning it off kills the session. Turn it
+off when you are done, and certainly before the festival.
+
+Setup, once, in the tab itself: paste an **API key** (written to a 0600 file on the robot, never
+logged, never in the trace; the page only ever shows the last four characters), set a **passphrase**,
+then **Install Claude Code** (`npm install -g @anthropic-ai/claude-code`, needs Node 18+ — the tab says
+whether Node is there and which version). After that, **Start Claude Code** and talk to it. xterm.js is
+vendored into the package rather than loaded from a CDN, because there is no CDN on a campsite.
+
+**`scripts/petctl.py`** is the same API with a short name on it, for a session in that terminal:
+
+```bash
+python3 scripts/petctl.py see          # state, face, arms, gaze, remembered spots, vision timing — one line
+python3 scripts/petctl.py watch        # ...once a second, while somebody stands in front of it
+python3 scripts/petctl.py camera shot.jpg    # what the camera sees, with the detector overlays drawn on
+python3 scripts/petctl.py do gesture wave    # any control the page has
+python3 scripts/petctl.py trace out.jsonl --last 120
+python3 scripts/petctl.py mark "it looked at the wall"
+```
+
+There is a **`CLAUDE.md`** at the repo root telling the session all of this, plus the house rules (no
+silent defaults, tests before pushing, why the odd numbers are what they are), so you should not have
+to explain the project every time you start one.
+
 ### The black box
 
 Debugging a robot through a chat window is guesswork: "it lost me", "it looked at the wall", "it

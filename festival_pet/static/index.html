@@ -51,6 +51,7 @@
   .layer .slot { display:grid; grid-template-columns:1fr 5em auto; gap:6px; align-items:center; margin:4px 0; font-size:13px; }
   .layer .slot input { width:100%; font-size:14px; text-transform:uppercase; } .layer .slot button { padding:4px 8px; min-height:0; font-size:12px; }
 </style>
+<link rel="stylesheet" href="/static/vendor/xterm.css">
 </head>
 <body>
 <h1>Reachy's Mind <span class="sub" id="ver" style="font-weight:400"></span></h1>
@@ -62,6 +63,7 @@
   <button data-tab="controls">Controls</button>
   <button data-tab="play">Play</button>
   <button data-tab="log">Log</button>
+  <button data-tab="dev">Dev</button>
 </nav>
 
 <section id="tab-mind" class="grid">
@@ -319,11 +321,46 @@
   </div>
 </section>
 
+<section id="tab-dev" class="hidden">
+  <div class="card" style="grid-column:1/-1">
+    <h2>Claude Code, on this robot</h2>
+    <div class="sub">A real terminal on the Pi, in this page. The point is that a session running <em>here</em> can look at what the camera sees, read the black box, drive the pet through its own API and edit the code — instead of any of it being described to it second-hand. It is the actual CLI, so the chat, the tool calls, the diffs and the permission prompts are all exactly as they are in a terminal.</div>
+    <div class="sub" style="color:var(--warm)"><b>This is a shell on the robot.</b> Anybody on this network who knows the passphrase has one too. Leave it off unless you are using it, and it needs the internet — at the festival there is none, so this is a bench tool.</div>
+    <div class="kv" id="devstat" style="margin:10px 0"></div>
+    <div id="dev-setup">
+      <label>1 · Anthropic API key <span class="sub">(from console.anthropic.com. Stored in a 0600 file on the robot, never logged, never in the trace; the page only ever sees the last four characters.)</span></label>
+      <div class="btns">
+        <input type="password" id="dev-key" placeholder="sk-ant-..." style="flex:1;min-width:16em;font-size:15px">
+        <button class="act" onclick="devKey()">Save key</button>
+        <button class="act danger" onclick="devPost('clear_key', true)">Forget key</button>
+      </div>
+      <label>2 · Passphrase <span class="sub">(at least 6 characters; it gates the terminal on every connection, not just in this page)</span></label>
+      <div class="btns">
+        <input type="password" id="dev-pass" placeholder="passphrase" style="flex:1;min-width:16em;font-size:15px">
+        <button class="act" id="dev-onoff" onclick="devToggle()">Turn the console on</button>
+      </div>
+      <label>3 · Install Claude Code on the robot, if it is not there yet <span class="sub">(needs Node 18+ and the internet; one command, once)</span></label>
+      <div class="btns">
+        <button class="act" onclick="devRun(devInstall)">Install Claude Code</button>
+        <button class="act big" onclick="devRun('claude')">Start Claude Code</button>
+        <button class="act" onclick="devRun('')">Plain shell</button>
+        <button class="act" onclick="devRun('python3 scripts/petctl.py watch')">Watch what it sees</button>
+        <button class="act danger" onclick="devSend('\u0003')">Ctrl-C</button>
+      </div>
+    </div>
+    <div id="term" style="height:60vh;margin-top:12px;border-radius:10px;overflow:hidden;background:#000"></div>
+    <div class="sub" id="dev-msg" style="margin-top:6px"></div>
+    <div class="sub">There is a <code>CLAUDE.md</code> in the repo telling the session how to drive the pet (<code>scripts/petctl.py see</code>, <code>camera shot.jpg</code>, <code>trace out.jsonl</code>), so you should not have to explain any of it.</div>
+  </div>
+</section>
+
 <section id="tab-log" class="hidden">
   <div class="card"><h2>App log</h2><pre class="log" id="log"></pre></div>
 </section>
 
 <style>.feeling{font-size:1.1em;margin:4px 0 8px}.feeling b{color:#ffb86b;text-transform:capitalize}.act.big{font-size:1.15em;padding:14px 22px}.act.hit{filter:brightness(1.6)}</style>
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/xterm-addon-fit.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const v = id => $(id).value;
@@ -331,7 +368,7 @@ let tab = 'mind', voice = 'full', slidersInit = false, lastImuCal = null;
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   tab = b.dataset.tab;
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
-  ['mind','senses','people','controls','play','log'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== tab));
+  ['mind','senses','people','controls','play','log','dev'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== tab));
   refresh();
 });
 function kv(el, obj) {
@@ -641,7 +678,63 @@ function drawFaceChart(hist, params) {
   }
   g.fillStyle = '#8b8fa8'; hist.forEach(h => { if (h.kind === 'body') g.fillRect(x(h.t) - 1, H - 5, 2, 3); });
 }
+// ---------------------------------------------------------------- the Dev tab
+let term = null, fit = null, sock = null, devInstall = 'npm install -g @anthropic-ai/claude-code';
+async function devStatus() {
+  try { const r = await fetch('/api/dev'); return r.ok ? await r.json() : null; } catch (e) { return null; }
+}
+async function devPost(cmd, value) {
+  const r = await fetch('/api/dev', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cmd, value})});
+  const j = await r.json();
+  if (!r.ok) { $('dev-msg').textContent = j.detail; return null; }
+  $('dev-msg').textContent = '';
+  drawDev(j);
+  return j;
+}
+function devKey() { const k = v('dev-key'); if (k) { devPost('key', k); $('dev-key').value = ''; } }
+async function devToggle() {
+  const st = await devStatus();
+  if (st && st.enabled) return devPost('disable', true);
+  const pass = v('dev-pass');
+  if (!pass) { $('dev-msg').textContent = 'set a passphrase first: this is a shell on the robot'; return; }
+  await devPost('enable', pass);
+  devOpen('');
+}
+function drawDev(st) {
+  if (!st) { kv('devstat', {status: 'the app did not answer'}); return; }
+  $('dev-onoff').textContent = st.enabled ? 'Turn the console OFF' : 'Turn the console on';
+  devInstall = st.install_cmd;
+  kv('devstat', {
+    console: st.enabled ? (st.running ? `on — running ${st.cmd}` : 'on — no session yet') : 'OFF',
+    'api key': st.key_set ? `set (…${st.key_tail})` : 'NOT SET — Claude Code cannot start without one',
+    'node': st.node ? `${st.node_version} at ${st.node}` : 'NOT INSTALLED — sudo apt install nodejs npm, or use nvm',
+    'claude code': st.claude ? `${st.claude_version} at ${st.claude}` : 'not installed yet — use the button below',
+    'internet': st.online ? 'reachable' : 'NO — Claude Code needs it; this is a bench tool, not a festival one',
+    'working directory': st.workdir});
+}
+function devOpen(cmd) {
+  if (!term) {
+    term = new Terminal({fontSize: 13, theme: {background: '#000000', foreground: '#e8e8f0'}, cursorBlink: true, scrollback: 5000});
+    fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open($('term'));
+    term.onData(d => devSend(d));
+    window.addEventListener('resize', () => { if (tab === 'dev') devFit(); });
+  }
+  devFit();
+  if (sock) { try { sock.close(); } catch (e) {} }
+  const pass = encodeURIComponent(v('dev-pass'));
+  const q = `?token=${pass}&cols=${term.cols}&rows=${term.rows}` + (cmd ? '&cmd=' + encodeURIComponent(cmd) : '');
+  sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/dev' + q);
+  sock.binaryType = 'arraybuffer';
+  sock.onmessage = e => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+  sock.onclose = () => term.write('\r\n[session closed]\r\n');
+}
+function devFit() { if (fit) { try { fit.fit(); } catch (e) {} } if (sock && sock.readyState === 1) sock.send('\x00resize:' + term.cols + ',' + term.rows); }
+function devSend(d) { if (sock && sock.readyState === 1) sock.send(d); else $('dev-msg').textContent = 'no session: turn the console on first'; }
+function devRun(cmd) { devOpen(cmd); }
 loadCatalog(); loadVolume(); refresh(); setInterval(refresh, 500);
+setInterval(async () => { if (tab === 'dev') drawDev(await devStatus()); }, 3000);
 </script>
 </body>
 </html>
