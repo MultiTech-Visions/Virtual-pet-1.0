@@ -509,6 +509,30 @@ between the simulated head and the injected face (≈1°). `Pet` in `main.py` ta
   DoA startle.
 
 
+### The black box
+
+Debugging a robot through a chat window is guesswork: "it lost me", "it looked at the wall", "it
+didn't see my peace sign" are all symptoms of numbers nobody can see. So it keeps a **rolling record
+of what it was actually doing**, ten times a second, and the whole thing downloads as one file you can
+hand over.
+
+Each sampled line has what it could see (face and body angles and sizes, whether the pose model
+returned arms and how stale they were), what the brain decided (state, activity, what it is busy with,
+the gaze target), where the head and body actually went, the places it remembers people standing —
+with how many of those sightings were real faces — which spot it has written off, how long the face
+has been lost, and the state of every routine (handshake step, teaching phase, kandi, song section),
+plus the ear-deviation numbers that make it think it is being touched. Thoughts, actions and marks go
+in at full resolution, the moment they happen.
+
+It is a fixed ring of 40,000 lines — about an hour — so it runs for four days without ever filling the
+disk, and it is **on by default**: the point is to already be recording when something goes wrong.
+
+On the Controls tab, under **Black box**: hit **Mark** the instant it misbehaves (it writes a labelled
+line, optionally with a note, so it can be found in a 50,000-line file), then **Download last 5 min**
+or **Download everything**. The file is JSON Lines — one self-contained object per line, greppable —
+and the first line is a header with the build, every setting, the memory summary and the tail of the
+log, so a trace can be read without having to ask what version produced it.
+
 ### Keeping hold of people
 
 Two things used to make it lose somebody standing still right in front of it, which is about as

@@ -1210,3 +1210,68 @@ def test_two_poses_it_cannot_tell_apart_are_called_out_rather_than_swallowed():
     assert set(pet.signs.trained) == {"peace", "love"}  # it keeps both: you may be redoing one on purpose
     assert any("looks the same as peace" in n for _, k, n in pet.actions_log if k == "plur")
     pet.stop()
+
+
+def test_the_black_box_records_a_dropout_and_downloads_as_one_file():
+    """The reason this exists: 'it lost me and stared at the wall' has to be something you can send,
+    not something you have to describe."""
+    from festival_pet.behavior import FaceObs
+
+    pet = _pet()
+    app = FastAPI()
+    install_routes(app, pet)
+    c = TestClient(app)
+
+    seen = {"on": True}
+    real_tick = pet.p.behavior.tick
+
+    def tick(obs, now, dt):  # a camera that has somebody at +25°, then loses them
+        if seen["on"]:
+            obs.face = FaceObs(1, 25.0, -2.0, 0.06, None, 0.0)
+        return real_tick(obs, now, dt)
+
+    pet.p.behavior.tick = tick
+    now = 1000.2
+    for i in range(400):
+        if i == 150:
+            seen["on"] = False
+            pet.trace.mark(now, "lost me here")
+        pet.step(now)
+        now += 0.05
+
+    body = c.get("/api/trace.jsonl")
+    assert body.status_code == 200 and "attachment" in body.headers["content-disposition"]
+    assert body.headers["content-type"].startswith("application/x-ndjson")
+    lines = body.text.strip().split("\n")
+    head, rows = json.loads(lines[0]), [json.loads(x) for x in lines[1:]]
+    # the header says what produced the file, so a trace can be read without asking what version it is
+    assert head["k"] == "header" and head["build"]["version"] and "controls" in head and head["rows_in_file"] == len(rows)
+    assert [r["t"] for r in rows] == sorted(r["t"] for r in rows)
+
+    marks = [r for r in rows if r["k"] == "mark"]
+    assert len(marks) == 1 and marks[0]["text"] == "lost me here"
+    state = [r for r in rows if r["k"] == "s"]
+    assert len(state) > 100 and {r["st"] for r in state} >= {"ENGAGED", "SEARCHING"}
+    # and the file actually shows the story: a face, then no face, then it checking where they were
+    assert any(r["face"] and r["face"][0] == 25.0 for r in state)
+    after = [r for r in state if r["t"] > marks[0]["t"]]
+    assert all(r["face"] is None for r in after)
+    assert any(r["st"] == "SEARCHING" and r["gaze"] and abs(r["gaze"][0] - 25.0) < 1.0 for r in after)
+    assert any(r["spots"] and r["spots"][0][2] > 0 for r in after)  # it remembers a FACE came from there
+    assert any(r["k"] == "think" for r in rows) and any(r["k"] == "action" for r in rows)
+
+    # the tail can be taken on its own, and it is trimmed
+    short = c.get("/api/trace.jsonl?last_s=3").text.strip().split("\n")
+    assert 1 < len(short) < len(lines)
+
+    # it can be switched off and cleared from the page, and the page is told what is being kept
+    assert c.get("/api/mind").json()["trace"]["rows"] == len(rows)
+    assert c.post("/api/control", json={"cmd": "record", "value": False}).status_code == 200
+    kept = len(pet.trace.rows)
+    for _ in range(50):
+        pet.step(now)
+        now += 0.05
+    assert len(pet.trace.rows) == kept and not c.get("/api/mind").json()["trace"]["on"]
+    assert c.post("/api/control", json={"cmd": "clear_trace", "value": True}).status_code == 200
+    assert not pet.trace.rows
+    pet.stop()

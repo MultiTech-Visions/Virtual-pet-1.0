@@ -222,6 +222,18 @@
     <label>Layers <span class="sub">(one tap = one action; the pad's LED colour says which layer is on. Type the key code each key sends: press it and read "last key" above.)</span></label>
     <div class="layers" id="keymap"></div>
   </div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Black box</h2>
+    <div class="sub">Everything it saw and did, ten times a second: faces and bodies with their angles, whether the pose model returned arms, where the brain pointed the gaze against where the head actually went, the places it remembers people standing, which spot it has written off, the state of every routine. It records all the time into a fixed ring (about an hour; it can never fill the disk), so when something goes wrong the evidence is already there. Hit <b>Mark</b> the moment it misbehaves — it writes a labelled line you can find in the file — then download and send it.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act big" onclick="mark()">Mark — it just did it</button>
+      <button class="act" onclick="download(300)">Download last 5 min</button>
+      <button class="act" onclick="download(null)">Download everything</button>
+      <button class="act" id="rec-btn" onclick="toggleRec()">Recording: on</button>
+      <button class="act danger" onclick="ctl('clear_trace', true)">Clear</button>
+    </div>
+    <div class="kv" id="trace"></div>
+  </div>
   <div class="card">
     <h2>Power</h2>
     <div class="btns">
@@ -408,6 +420,18 @@ async function power(action) {
   try { const r = await fetch('/api/power/' + action, {method:'POST'}); const j = await r.json(); $('power-msg').textContent = r.ok ? j.detail : ('failed: ' + j.detail); }
   catch (e) { $('power-msg').textContent = 'connection dropped (expected once it powers off)'; }
 }
+let recording = true, markCount = 0;
+function toggleRec() { recording = !recording; ctl('record', recording); $('rec-btn').textContent = 'Recording: ' + (recording ? 'on' : 'off'); }
+async function mark() {
+  const note = prompt('What just happened? (optional — it is labelled in the file either way)', '');
+  if (note === null) return;
+  await ctl('mark', note || true);
+  markCount++;
+}
+function download(lastS) {
+  const q = lastS ? ('?last_s=' + lastS) : '';
+  window.location = '/api/trace.jsonl' + q;
+}
 function toggleBody() { bodyf = !bodyf; ctl('body_finder', bodyf); $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
 function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Held in hand: ' + (pickup ? 'on' : 'off'); }
 async function loadCatalog() {
@@ -519,6 +543,10 @@ async function refresh() {
     $('dance-amp').textContent = d.dance_params.min_amp; drawFaceChart(d.face_history, d.dance_params);
     document.querySelectorAll('.card.mic').forEach(c => c.classList.toggle('hidden', !d.controls.ears));
     if (m.engaged_person) { const src = `/api/people/${m.engaged_person}/face.jpg`; if (!$('who').src.endsWith(src)) { $('who').src = src; } $('who').classList.remove('hidden'); } else $('who').classList.add('hidden');
+    const tr = d.trace;
+    recording = tr.on; $('rec-btn').textContent = 'Recording: ' + (tr.on ? 'on' : 'off');
+    kv('trace', {recording: tr.on ? 'yes' : 'NO — nothing is being kept', 'held': `${tr.rows.toLocaleString()} rows covering ${Math.round(tr.covers_s / 60)} min` + (tr.dropped ? ` (${tr.dropped.toLocaleString()} older rows rolled off the end)` : ''),
+      marks: tr.marks || '—', 'about': (tr.bytes_est / 1e6).toFixed(1) + ' MB if downloaded now', 'running for': Math.round(tr.since_s / 60) + ' min'});
     drawKeymap(d.controls.keymap);
     // sg: the song block, declared above
     kv('song', {now: sg.singing ? 'singing 🎵' : 'quiet', 'last song': sg.last ? `${sg.last.name} · ${sg.last.bpm} bpm · ${sg.last.bars.join(' ')}${sg.last.saved ? ' (saved)' : ''}` : '—', repertoire: sg.repertoire.length ? sg.repertoire.join(', ') : 'nothing saved yet', 'next song in': sg.next_in_s === null ? 'singing is off' : sg.next_in_s + ' s'});

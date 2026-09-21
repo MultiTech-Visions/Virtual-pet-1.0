@@ -45,6 +45,7 @@ from festival_pet.senses import ImuRubDetector, LoudSoundDetector, PickupDetecto
 from festival_pet.vision import Sighting
 from festival_pet.pose import PLUR_STEP_WINDOW_S, PLUR_STEPS, PLUR_TOL, PLUR_TRAIN_MIN, ArmSigns, plur_features
 from festival_pet.tap_tempo import TapTempo
+from festival_pet.trace import Recorder
 from festival_pet.visual_rhythm import DanceDetector
 
 logger = logging.getLogger("festival_pet")
@@ -521,6 +522,11 @@ class Pet:
         self._cuddle_done: set[int] = set()
         self._cuddle_next_react = 0.0
         self._cuddle_pet_at = 0.0  # last time this cuddling was counted toward the person's affection
+        self.trace = Recorder()  # the black box: see _trace_row, and /api/trace.jsonl
+        # Both logs are trimmed as they grow, so the trace follows them by TIME, not by index: an index
+        # into a list that drops its head quietly replays or skips entries.
+        self._traced_action_at = 0.0
+        self._traced_think_at = 0.0
 
     # ------------------------------------------------------------------ lifecycle
     def start(self, now: float) -> None:
@@ -823,6 +829,7 @@ class Pet:
                 self.actions_log.append((now, "ask", "turn me " + ("left" if side == "+" else "right")))
         else:
             self._short_since = 0.0
+        self._trace_tick(obs, now)
         self.p.memory.save()
 
     # ------------------------------------------------------------------ dance-along
@@ -1513,6 +1520,63 @@ class Pet:
             beh._think(now, f"yeah, over this way ({'left' if side > 0 else 'right'})")
             self._dispatch(Action("gesture", f"tilt:{'+' if side > 0 else '-'}", 2), now)
 
+    def _trace_row(self, obs: Observation, now: float) -> dict:
+        """One line of the black box: what it could see, what it decided, and where it actually went.
+
+        Chosen for the questions that keep coming up and cannot be answered from a chat window — did
+        the camera have a face that frame, where did the brain point the gaze, where did the head end
+        up, was the pose model returning arms, which remembered spot was it checking, was a spot
+        blacklisted. Short keys: this runs ten times a second for days.
+        """
+        beh, comp = self.p.behavior, self.p.composer
+        face, body = obs.face, obs.body
+        vision = getattr(self, "vision", None)
+        roll, pitch, yaw = R.from_matrix(self.last_pose[:3, :3]).as_euler("xyz", degrees=True)
+        row = {
+            "st": beh.state, "act": beh.activity, "busy": obs.busy,
+            # what it could see
+            "face": None if face is None else [round(face.yaw_deg, 1), round(face.pitch_deg, 1), round(face.area_frac, 3), face.track_id],
+            "body": None if body is None else [round(body.yaw_deg, 1), round(body.pitch_deg, 1), round(body.area_frac, 3)],
+            "arms": None if obs.arms is None else [round(obs.arms.left_deg), round(obs.arms.right_deg), round(obs.arms.conf, 2), round(now - obs.arms.ts, 2)],
+            # where it meant to look, and where it went
+            "gaze": None if beh.gaze is None else [round(beh.gaze[0], 1), round(beh.gaze[1], 1)],
+            "head": [round(float(yaw), 1), round(float(pitch), 1), round(float(roll), 1)],
+            "bodyyaw": round(comp.body_yaw, 1), "ants": [round(a, 2) for a in self.last_ants],
+            # what it remembers about people, and what it has written off
+            "spots": [[round(x.yaw), x.seen, x.faces, round(now - x.at, 1)] for x in beh.seen_spots.recent(now)],
+            "search": beh._search_i if beh.state == "SEARCHING" else None,
+            "ignored": [round(y) for y, until in beh._body_ignore if until > now],
+            "lostfor": round(now - beh._last_face_time, 1) if beh._last_face_time else None,
+            # the routines that people are trying to do with it
+            "plur": self.signs.plur_step, "train": None if self._training is None else [self._training["step"], self._training["phase"]],
+            "kandi": [int(self._kandi_give_t0 > 0), int(self._kandi_offer_until > 0), self.kandi_side, [int(x) for x in self.kandi_on]],
+            "song": self._song_move or None,
+            # the senses that fire by accident
+            "touch": [int(obs.touched), obs.touched_side, int(obs.petting)],
+            "ear_dev": [round(x, 2) for x in self.touch.stats["dev"]],
+        }
+        if vision is not None:
+            v = vision.stats
+            row["vis"] = [v["frames"], v["faces"], v["bodies"], round(v["detect_ms"]), round(v["pose_ms"]),
+                          v["no_frame"], v["errors"], int(vision.pose_live)]
+        return row
+
+    def _trace_tick(self, obs: Observation, now: float) -> None:
+        """Sample the state, and copy anything new out of the thought and action logs into the trace."""
+        tr = self.trace
+        if not tr.enabled:
+            return
+        if tr.due(now):
+            tr.tick(now, self._trace_row(obs, now))
+        for t, kind, name in self.actions_log:
+            if t > self._traced_action_at:
+                tr.event(t, "action", f"{kind}:{name}")
+        self._traced_action_at = max([self._traced_action_at] + [t for t, _, _ in self.actions_log])
+        for t, text in self.p.behavior.thoughts:
+            if t > self._traced_think_at:
+                tr.event(t, "think", text)
+        self._traced_think_at = max([self._traced_think_at] + [t for t, _ in self.p.behavior.thoughts])
+
     def _feeling(self, now: float) -> dict:
         """The most recent gesture/move and sound, for the top of the Mind page."""
         out: dict = {"motion": None, "sound": None}
@@ -1565,6 +1629,7 @@ class Pet:
                      "section": self._song_move or None, "set": {"songs": self._songs_in_set, "watched": None if self._song_ticks == 0 else round(self._song_watched / self._song_ticks, 2), "encore_in_s": round(max(0.0, self._next_song_at - now), 1) if self._next_song_at else None},
                      "next_in_s": round(max(0.0, self.p.behavior._cool.get("sing", now) - now)) if self.singing_enabled else None},
             "build": build_info(),
+            "trace": self.trace.stats(now),
             "asleep": self.asleep,
             "transcript": [{"t": round(now - t, 1), "text": txt.split("|")[0], "intents": ints} for t, txt, ints in reversed(self.transcript)],
             "senses": {
@@ -1759,6 +1824,13 @@ class Pet:
             vision.body_enabled = bool(value)
         elif cmd == "match_threshold":
             self.p.memory.match_threshold = float(value)
+        elif cmd == "record":  # the black box on or off (on by default; it is a ring, it never fills up)
+            self.trace.enabled = bool(value)
+            self.trace.event(now, "note", "recording " + ("on" if self.trace.enabled else "off"))
+        elif cmd == "mark":  # "it just did the thing, NOW": a labelled line to find in the file
+            self.trace.mark(now, "" if value in (True, None) else str(value))
+        elif cmd == "clear_trace":
+            self.trace.clear(now)
         elif cmd == "forget":
             self.p.memory.people.clear()
             self.p.memory._dirty = True
@@ -2007,6 +2079,23 @@ def install_routes(app, pet: Pet) -> None:
     @app.get("/api/mind")
     def mind() -> dict:
         return pet.mind()
+
+    @app.get("/api/trace.jsonl")
+    def trace(last_s: float | None = None, name: str = "festival-pet-trace"):
+        """The black box, as a download. One JSON object per line: a header, then rows oldest first.
+
+        ``last_s`` trims it to the last N seconds, for when the interesting thing just happened and the
+        ring is holding an hour of it standing about.
+        """
+        from fastapi.responses import StreamingResponse
+
+        now = time.time()
+        pet.trace.header = {"build": build_info(), "controls": pet.mind()["controls"],
+                            "memory": pet.p.memory.summary(), "log_tail": list(LOG_RING.lines)[-60:]}
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+        body = (line + "\n" for line in pet.trace.lines(now, last_s))
+        return StreamingResponse(body, media_type="application/x-ndjson",
+                                 headers={"Content-Disposition": f'attachment; filename="{name}-{stamp}.jsonl"'})
 
     @app.get("/api/log")
     def log(n: int = 200) -> dict:
