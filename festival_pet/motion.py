@@ -53,10 +53,13 @@ ARM_LEVEL_DEG = {"down": 0.0, "out": 90.0, "up": 180.0}  # the three flag positi
 LEAN_FADE_S = 2.0  # a keypad groove nudge fades out over about this long (a few beats)
 STILL_PITCH = 10.0  # head dipped a little while it holds still: an offered head, and a stable antenna
 OFFER_RAD = 0.14  # the offered antenna: just past vertical, tipped toward them so a bracelet slides down it
-OFFER_AWAY_RAD = 0.9  # ...and the other one leans out of the way
-OFFER_ROLL = 7.0  # the head tips a little toward the offered side, to present it
+OFFER_AWAY_RAD = 0.9  # ...and the other one leans out of the way (unless it is wearing one: then it stays up)
+OFFER_ROLL = 15.0  # the head tips toward the offered side, so that ear is plainly the one being presented
+OFFER_YAW = 22.0  # ...and turns AWAY from it, which is what swings that ear round to face the person
 CAREFUL_ANTENNA_RAD = 0.45  # a bracelet rides safely as long as its antenna stays this close to vertical
 CAREFUL_SCALE = 0.4  # for a little while after a trade it also moves this much of normal, to settle
+TILT_Z_FROM = 0.55  # past this fraction of the roll limit the head stops dropping: tilted right over, a
+#                     lowered head puts the side of it on the body frame
 LEAN_BODY_DEG = 5.0  # how far the body leans into a full nudge (a lean, not a turn: the gaze stays on the person)
 
 
@@ -337,6 +340,10 @@ def g_bow(u: float) -> Offsets:
     return Offsets(yaw=yaw, body=yaw, pitch=30.0 * dip, z=-0.01 * dip, x=-0.02 * dip, ant_r=ant_r, ant_l=ant_l)
 
 
+SWAT_RAD = 1.65  # how far through the swat the antenna sweeps: half as far again as it first reached,
+#                  which is what it takes to actually arrive at the hand rather than gesture at it
+
+
 def g_swat(u: float, side: float) -> Offsets:
     """Not in the mood: the free antenna bats at the hand, three quick taps (no-no-no), with a little turn toward it.
 
@@ -346,16 +353,33 @@ def g_swat(u: float, side: float) -> Offsets:
     lean = _pulse(u)
     off = Offsets(yaw=side * 8.0 * lean, roll=side * 5.0 * lean, pitch=4.0 * lean)
     if side > 0:
-        off.ant_l = -1.1 * abs(sweep) - 0.3 * lean  # forward, over the head, and back
+        off.ant_l = -SWAT_RAD * abs(sweep) - 0.45 * lean  # forward, over the head, and back
     else:
-        off.ant_r = 1.1 * abs(sweep) + 0.3 * lean
+        off.ant_r = SWAT_RAD * abs(sweep) + 0.45 * lean
     return off
 
 
+NUZZLE_S = 4.2
+NUZZLE_CIRCLES = 2.0  # how many times round the circle
+NUZZLE_DIP = 11.0  # degrees the gaze drops for the whole of it: a lowered, affectionate head
+NUZZLE_RISE = 7.0  # ...and how far it comes back up at the top of each circle
+NUZZLE_PUSH_M = 0.016  # how far forward it pushes at the widest point
+
+
 def g_nuzzle(u: float) -> Offsets:
-    """Okay, okay: gaze lowers a little and the head pushes forward into the hand, asking for a pet instead."""
-    e = _ease(min(1.0, u / 0.3)) * (1 - _ease(min(1.0, max(0.0, (u - 0.75) / 0.25))))
-    return Offsets(pitch=12.0 * e, x=0.02 * e, z=-0.005 * e, ant_r=0.5 * e, ant_l=-0.5 * e)
+    """A dog pushing its head into you: the gaze drops, then the face goes slowly round a circle — up and
+    forward into the hand, over the top, down and back — a couple of times, and eases out.
+
+    The circle is in the (forward, up) plane: ``x`` leads the pitch by a quarter turn, which is what turns
+    two sine waves into one slow rolling push rather than a nod.
+    """
+    e = _ease(min(1.0, u / 0.22)) * (1 - _ease(min(1.0, max(0.0, (u - 0.78) / 0.22))))
+    a = 2 * math.pi * NUZZLE_CIRCLES * u
+    return Offsets(pitch=(NUZZLE_DIP - NUZZLE_RISE * (1 - math.cos(a))) * e,
+                   x=NUZZLE_PUSH_M * math.sin(a) * e,
+                   z=-0.004 * e + 0.004 * (1 - math.cos(a)) * e,
+                   roll=2.5 * math.sin(a) * e,
+                   ant_r=0.5 * e, ant_l=-0.5 * e)
 
 
 def g_boop(u: float) -> Offsets:
@@ -366,21 +390,33 @@ def g_boop(u: float) -> Offsets:
     return Offsets(pitch=-6.0 * snap, z=0.006 * snap, x=-0.012 * snap, yaw=shake, ant_r=0.7 * cross, ant_l=-0.7 * cross)
 
 
-WAVE_S = 2.0
+WAVE_S = 3.0
+WAVE_SWEEPS = 3.0  # full side-to-side sweeps over the wave: slow enough to read as a wave, not a shake
+WAVE_ARC = 0.85  # radians either side of upright the waving antenna swings through
+WAVE_ROLL, WAVE_YAW = 14.0, 12.0  # the head lifts that side, and turns the other way to present it
+WAVE_TUCK = 0.35  # the other antenna leans back out of the picture
 HUG_S = 4.0
 
 
 def g_wave(u: float, side: float) -> Offsets:
-    """Waving back with one antenna: it comes forward and up, waggles three times, and settles, while the
-    head tips toward that side and lifts a little. ``side`` +1 = the left antenna, -1 = the right.
-    (Antenna offsets: forward is + on the right and - on the left, as in g_swat.)"""
-    up = _ease(min(1.0, u / 0.2)) * (1 - _ease(min(1.0, max(0.0, (u - 0.8) / 0.2))))
-    wag = 0.45 * math.sin(2 * math.pi * 3.0 * min(1.0, max(0.0, (u - 0.2) / 0.6))) * up
-    off = Offsets(roll=side * 8.0 * up, pitch=-5.0 * up, yaw=side * 3.0 * up)
-    if side > 0:
-        off.ant_l = -(0.9 * up + wag)
+    """A proper parade wave — HEY, OVER HERE — with one antenna. ``side`` +1 = the left, -1 = the right.
+
+    The head lifts that side and turns the other way, which swings that antenna round to the front where
+    it can be seen; the antenna itself stands up and sweeps slowly side to side through a big arc. The
+    other one leans back out of the way so there is only one thing moving.
+
+    (Antenna angles here are absolute, not offsets from neutral: upright is 0, forward is + on the right
+    and - on the left, so the sweep is symmetric about standing straight up.)
+    """
+    up = _ease(min(1.0, u / 0.18)) * (1 - _ease(min(1.0, max(0.0, (u - 0.82) / 0.18))))
+    swing = WAVE_ARC * math.sin(2 * math.pi * WAVE_SWEEPS * u)
+    off = Offsets(roll=side * WAVE_ROLL * up, yaw=-side * WAVE_YAW * up, pitch=-6.0 * up, z=0.008 * up)
+    if side > 0:  # the left antenna waves: its upright is 0, so the offset is -neutral, plus the sweep
+        off.ant_l = (-ANTENNA_NEUTRAL[1] - swing) * up
+        off.ant_r = -WAVE_TUCK * up
     else:
-        off.ant_r = 0.9 * up + wag
+        off.ant_r = (-ANTENNA_NEUTRAL[0] + swing) * up
+        off.ant_l = WAVE_TUCK * up
     return off
 
 
@@ -393,11 +429,31 @@ def g_hug(u: float) -> Offsets:
                    ant_r=-1.0 * e, ant_l=1.0 * e, body=5.0 * rock * e)
 
 
+PEACE_DIP_U, PEACE_RISE_U = 0.3, 0.3  # fractions of the gesture spent going down, then coming up
+PEACE_DOWN_RAD = -ARM_BACK  # laid right back, as low as the hinge goes: the wind-up
+PEACE_UP_RAD = 0.12  # a hair off vertical, so the two of them make a Y rather than a post
+
+
 def g_peace(u: float) -> Offsets:
-    """Peace: both antennas snap up into a V and hold there, with a small double bounce."""
-    up = _ease(min(1.0, u / 0.15)) * (1 - _ease(min(1.0, max(0.0, (u - 0.8) / 0.2))))
-    bounce = 0.12 * math.sin(2 * math.pi * 2.0 * u) * up
-    return Offsets(pitch=-6.0 * up, z=0.006 * up, ant_r=-1.0 * up + bounce, ant_l=1.0 * up - bounce)
+    """Peace, as a little routine rather than a pose: both antennas sink all the way down, then rise
+    together into the Y and hold there with a double bounce.
+
+    Standing them up on their own is barely different from how it stands about all day, which is why the
+    trip to the bottom is the gesture: you see them go, and then you see them arrive.
+    (Angles are absolute for the right antenna — down is negative, upright is 0 — mirrored for the left.)
+    """
+    fade = 1 - _ease(min(1.0, max(0.0, (u - 0.88) / 0.12)))
+    if u < PEACE_DIP_U:
+        k = _ease(u / PEACE_DIP_U)
+        a = ANTENNA_NEUTRAL[0] + (PEACE_DOWN_RAD - ANTENNA_NEUTRAL[0]) * k
+        pitch, z = 8.0 * k, -0.006 * k
+    else:
+        k = _ease(min(1.0, (u - PEACE_DIP_U) / PEACE_RISE_U))
+        a = PEACE_DOWN_RAD + (PEACE_UP_RAD - PEACE_DOWN_RAD) * k
+        a += 0.12 * math.sin(2 * math.pi * 2.0 * (u - PEACE_DIP_U)) * k  # the bounce, once they are up
+        pitch, z = 8.0 - 16.0 * k, -0.006 + 0.018 * k
+    return Offsets(pitch=pitch * fade, z=z * fade,
+                   ant_r=(a - ANTENNA_NEUTRAL[0]) * fade, ant_l=(-a - ANTENNA_NEUTRAL[1]) * fade)
 
 
 def g_heart(u: float) -> Offsets:
@@ -438,10 +494,10 @@ GESTURES: dict[str, tuple[float, str]] = {
     "point": (2.6, "sided"),
     "bow": (BOW_S, "plain"),
     "swat": (1.3, "sided"),
-    "nuzzle": (3.2, "plain"),
+    "nuzzle": (NUZZLE_S, "plain"),
     "boop": (0.7, "plain"),
     "wave": (WAVE_S, "sided"),
-    "peace": (1.8, "plain"),
+    "peace": (2.6, "plain"),
     "heart": (2.6, "plain"),
     "hug": (HUG_S, "plain"),
 }
@@ -544,6 +600,9 @@ class MotionComposer:
         self.loaded = [False, False]  # antennas wearing a bracelet (right, left): held near vertical so it cannot slide off
         self.gentle_until = 0.0  # ...and for a moment after a trade, everything moves smaller
         self._gentle = 0.0
+        self.kandi_damp = 0.5  # 0..1: how much of its head movement to take out for as long as it wears one.
+        #                        Upright antennas hold a bracelet through anything, but a bracelet hanging
+        #                        off one still swings, and a big move throws it about.
         self._gate = [0.0, 0.0]  # how closed each antenna's upright gate is: it shuts and opens smoothly
         self.body_yaw = 0.0  # degrees, follows the gaze slowly so the head can recenter
         self.body_follow = True
@@ -855,12 +914,21 @@ class MotionComposer:
         if self._still > 0.001:                     # if whoever it is looking at wanders off
             k = self._still
             want_r, want_l = ANTENNA_NEUTRAL
-            want_roll = 0.0
-            if self.offer_side == 0:  # the right antenna is the post: up past vertical, the left out of the way
-                want_r, want_l, want_roll = OFFER_RAD, OFFER_AWAY_RAD, -OFFER_ROLL
-            elif self.offer_side == 1:
-                want_r, want_l, want_roll = -OFFER_AWAY_RAD, -OFFER_RAD, OFFER_ROLL
-            yaw = yaw * (1 - k) + self._still_yaw * k
+            want_roll = want_yaw = 0.0
+            if self.offer_side is not None:
+                # The offered antenna stands up just past vertical, tipped toward them so a bracelet slides
+                # down it. The head tips TOWARD that side and turns AWAY from it: that is what swings the ear
+                # round to face whoever is standing in front, instead of leaving it off to one side.
+                other = 1 - self.offer_side
+                # ...and the other one leans back out of the way, unless it is wearing one of its own, in
+                # which case it stays up where a bracelet is safe and the tilt does the telling instead.
+                away = 0.0 if self.loaded[other] else OFFER_AWAY_RAD
+                sign = 1.0 if self.offer_side == 0 else -1.0  # right antenna: forward is +; left: forward is -
+                want_r = sign * (OFFER_RAD if self.offer_side == 0 else away)
+                want_l = sign * (away if self.offer_side == 0 else OFFER_RAD)
+                want_roll = -sign * OFFER_ROLL
+                want_yaw = sign * OFFER_YAW
+            yaw = yaw * (1 - k) + (self._still_yaw + want_yaw) * k
             pitch = pitch * (1 - k) + STILL_PITCH * k
             roll = roll * (1 - k) + want_roll * k
             z *= 1 - k
@@ -871,11 +939,17 @@ class MotionComposer:
         # so the gate is simply always on for a loaded antenna rather than a special careful mode. Only
         # the settling right after a trade takes the size out of everything else.
         self._gentle += ((1.0 if now < self.gentle_until else 0.0) - self._gentle) * min(1.0, dt * 1.5)
-        if self._gentle > 0.001:
-            small = 1.0 - self._gentle * (1.0 - CAREFUL_SCALE)
-            pitch *= small
-            roll *= small
-            z *= small
+        worn = max(self._gate)  # how loaded it is, eased: the damping comes and goes with the gate
+        damp = max(self._gentle * (1.0 - CAREFUL_SCALE), worn * max(0.0, min(1.0, self.kandi_damp)))
+        if holding or self._still > 0.001:
+            damp = 0.0  # a pose it is deliberately holding — the trade, a Simon says move — is the point: never shrink it
+        if damp > 0.001:
+            # Shrink the MOVEMENT, not the looking: everything is pulled back toward where the gaze is
+            # pointed, so it still follows the person, it just stops throwing the bracelets around.
+            yaw = float(self._gaze[0]) + (yaw - float(self._gaze[0])) * (1 - damp)
+            pitch = float(self._gaze[1]) + (pitch - float(self._gaze[1])) * (1 - damp)
+            roll *= 1 - damp
+            z *= 1 - damp
         for i in (0, 1):
             self._gate[i] += ((1.0 if self.loaded[i] else 0.0) - self._gate[i]) * min(1.0, dt * 1.5)
             if self._gate[i] > 0.995:
@@ -893,6 +967,12 @@ class MotionComposer:
         pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, pitch))
         roll = max(-ROLL_LIMIT, min(ROLL_LIMIT, roll))
         z = max(-Z_LIMIT_M, min(Z_LIMIT_M, z))
+        # Tilted right over, the head is nearly sitting on the side of the body frame already: dropping it as
+        # well is what knocks them together. So the further it is rolled, the less of a drop it is allowed —
+        # both limits are fine on their own, it is only the corner where they meet that hits.
+        if z < 0.0:
+            tilt = abs(roll) / ROLL_LIMIT
+            z *= 1.0 - max(0.0, min(1.0, (tilt - TILT_Z_FROM) / (1.0 - TILT_Z_FROM)))
 
         # Body follows the gaze (not the gesture wobble) when the head is far off-centre, slowly and with a deadband,
         # so the whole robot ends up facing the person and the head has room to move both ways. While grooving the

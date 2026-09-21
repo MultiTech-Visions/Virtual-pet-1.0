@@ -295,66 +295,89 @@ EMOTIONS = (
     "no_no",  # nuh-uh-uh: not in the mood (ears)
     "huff",  # "no? like THIS": a short exasperated puff
     "coo",  # a warm, low coo: being hugged
-    "jingle",  # a tiny made-up melody: console blips that happen to be a tune
+    "jingle",  # a made-up little tune: console blips that happen to be a song
+    "fanfare",  # da da-da DA: something is about to happen (the kandi trade)
 )
 
 # --------------------------------------------------------------------------- jingles
-# Short console-blip melodies, made up on the spot, in the spirit of the beeps that answer Data's
-# "life forms" song: a handful of bright, near-pure notes on a small scale, hard attack, quick decay,
-# landing on a grid so a row of button presses comes out as a phrase. A jingle is a call and (usually)
-# an answer that repeats its rhythm a step or two away and resolves onto the root.
+# Made-up little tunes of console blips, in the spirit of the beeps that answer Data's "life forms"
+# song: bright, near-pure notes on a small scale, hard attack, quick decay.
+#
+# A bar of beeps is not a tune — it goes by before you have worked out that anything happened. So a
+# jingle is a proper little song: four counted-in taps so you can find the beat, then four (or eight)
+# bars of 4/4 built out of ONE motif — the same rhythm every bar, the pitches moved around it — which
+# is what makes a shape you can follow, hum back, and groove along to.
 JINGLE_SCALE = (0, 2, 4, 7, 9, 12, 14, 16, 19)  # major pentatonic, two octaves and a bit
 JINGLE_BASES = (587.3, 659.3, 698.5, 783.9)  # D5, E5, F5, G5: the bright end, where a small speaker sings
-JINGLE_STEP_S = 0.115  # the grid one note lands on
-JINGLE_NOTE_S = 0.075
+JINGLE_BPM = (96, 104, 112, 120)
+JINGLE_COUNT_IN = 4  # taps before it starts: one bar of "here is where the beat is"
+JINGLE_TICK_HZ = 1760.0  # the count-in tap: well above the tune, so it is plainly not part of it
+JINGLE_TICK_S = 0.035
+# One bar of eighths: 1 = a note starts here, 0 = the note before it holds on.
+JINGLE_RHYTHMS = (
+    (1, 0, 1, 0, 1, 0, 1, 0),
+    (1, 0, 1, 1, 1, 0, 1, 0),
+    (1, 1, 1, 0, 1, 0, 1, 1),
+    (1, 0, 1, 0, 1, 1, 1, 0),
+    (1, 1, 0, 1, 1, 0, 1, 0),
+    (1, 0, 0, 1, 1, 0, 1, 0),
+)
+# Which bar is which. "A*" is A with its last note pulled home to the root: the ending.
+JINGLE_FORMS = (("A", "A", "B", "A*"), ("A", "A", "B", "A", "A", "B", "C", "A*"))
+JINGLE_FORM_WEIGHTS = (3, 1)  # mostly the short one; the long one is a treat
 
 
-def jingle_notes(rng: random.Random) -> list[tuple[float, float, float]]:
-    """Make up a jingle: [(start s, frequency Hz, length s)]. Pure scheduling, no audio."""
+def jingle_notes(rng: random.Random) -> tuple[list[tuple[float, float, float, str]], float]:
+    """Make up a jingle. Returns ([(start s, frequency Hz, length s, "tick" | "note")], bpm).
+
+    Pure scheduling, no audio, so the tempo can be handed to the body as well as to the speaker.
+    """
     base = rng.choice(JINGLE_BASES)
-    n = rng.randint(3, 5)
-    degrees = [rng.randrange(len(JINGLE_SCALE) - 3)]
-    for _ in range(n - 1):
-        step = rng.choice((-2, -1, 1, 1, 2, 2, 3))  # mostly walking, the odd leap
-        degrees.append(max(0, min(len(JINGLE_SCALE) - 1, degrees[-1] + step)))
-    rhythm = [rng.choice((1, 1, 1, 2)) for _ in range(n)]  # slots per note: the odd long one
-    if rng.random() < 0.45:  # a stutter: one note fired twice, fast
-        rhythm[rng.randrange(n)] = 0.5
+    bpm = float(rng.choice(JINGLE_BPM))
+    beat = 60.0 / bpm
+    step = beat / 2.0  # eighths
+    rhythm = rng.choice(JINGLE_RHYTHMS)
+    degree = rng.randrange(len(JINGLE_SCALE) - 3)
+    motif = []
+    for _ in range(sum(rhythm)):
+        motif.append(degree)
+        degree = max(0, min(len(JINGLE_SCALE) - 1, degree + rng.choice((-2, -1, 1, 1, 2, 2, 3))))
+    shifts = {"A": 0, "A*": 0, "B": rng.choice((-3, -2, 2, 3)), "C": rng.choice((-4, -1, 1, 4))}
+    form = rng.choices(JINGLE_FORMS, weights=JINGLE_FORM_WEIGHTS)[0]
 
-    phrases = [degrees]
-    if rng.random() < 0.65:  # the answer: same shape, shifted, resolving down onto the root
-        shift = rng.choice((-3, -2, -1, 1, 2))
-        answer = [max(0, min(len(JINGLE_SCALE) - 1, d + shift)) for d in degrees]
-        answer[-1] = 0
-        phrases.append(answer)
-
-    out: list[tuple[float, float, float]] = []
+    out: list[tuple[float, float, float, str]] = []
     t = 0.0
-    for p, phrase in enumerate(phrases):
-        if p:
-            t += JINGLE_STEP_S * 1.5  # a breath between call and answer
-        for degree, slots in zip(phrase, rhythm):
-            f = base * 2 ** (JINGLE_SCALE[degree] / 12.0)
-            if slots < 1:  # the stutter: two sixteenths in one slot
-                out.append((t, f, JINGLE_NOTE_S * 0.45))
-                out.append((t + JINGLE_STEP_S * 0.5, f, JINGLE_NOTE_S * 0.45))
-                t += JINGLE_STEP_S
-            else:
-                out.append((t, f, JINGLE_NOTE_S * slots))
-                t += JINGLE_STEP_S * slots
-    return out
+    for k in range(JINGLE_COUNT_IN):  # one, two, three, four — the "1" a fifth higher so you know where it is
+        out.append((t, JINGLE_TICK_HZ * (1.5 if k == 0 else 1.0), JINGLE_TICK_S, "tick"))
+        t += beat
+    for name in form:
+        degrees = [max(0, min(len(JINGLE_SCALE) - 1, d + shifts[name])) for d in motif]
+        if name.endswith("*"):
+            degrees[-1] = 0  # home
+        i = 0
+        for slot, hit in enumerate(rhythm):
+            if not hit:
+                continue
+            held = 1
+            while slot + held < len(rhythm) and not rhythm[slot + held]:
+                held += 1  # the rests after a note are that note still ringing
+            out.append((t + slot * step, base * 2 ** (JINGLE_SCALE[degrees[i]] / 12.0), step * held * 0.85, "note"))
+            i += 1
+        t += len(rhythm) * step
+    return out, bpm
 
 
-def render_jingle(rng: random.Random, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
-    notes = jingle_notes(rng)
-    end = max(t + d for t, _, d in notes) + 0.08
+def render_jingle(rng: random.Random, sample_rate: int = SAMPLE_RATE) -> tuple[np.ndarray, float]:
+    """Audio for a made-up jingle, and the tempo it is in (so the body can bob along with it)."""
+    notes, bpm = jingle_notes(rng)
+    end = max(t + d for t, _, d, _ in notes) + 0.12
     out = np.zeros(int(end * sample_rate), dtype=np.float32)
-    for t, f, d in notes:
+    for t, f, d, kind in notes:
         blip = tone(f, d, sample_rate, harmonics=0.18, attack=0.012, release=0.45)
         i = int(t * sample_rate)
         j = min(len(out), i + len(blip))
-        out[i:j] += blip[: j - i] * 0.75
-    return out
+        out[i:j] += blip[: j - i] * (0.35 if kind == "tick" else 0.75)
+    return out, bpm
 
 # What each sound means, for the lexicon on the Play tab.
 MEANINGS = {
@@ -367,7 +390,8 @@ MEANINGS = {
     "mirror_start": "let's play mirror: I'll copy you", "mirror_end": "mirror game over",
     "mime_start": "Simon says: do what I do", "mime_end": "Simon says is over", "mime_cue": "watch this move",
     "yes": "you did it!", "huff": "no? like THIS. again", "no_no": "nuh-uh-uh: leave my ears alone",
-    "coo": "aww... a hug", "jingle": "a little tune it just made up, to itself",
+    "coo": "aww... a hug", "jingle": "a little song it just made up, counted in so you can join",
+    "fanfare": "da da-da DA: kandi trade starting",
 }
 
 
@@ -564,7 +588,16 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
             purr(j(0.8, 1.1), base=f0 * 0.9, pulse_rate=j(18, 22), sample_rate=sr) * np.float32(0.6),
         )
     elif emotion == "jingle":
-        out = render_jingle(r, sr)
+        out = render_jingle(r, sr)[0]
+    elif emotion == "fanfare":
+        # da   da-da   DA: a short call, two quick pick-up notes, and the long one it lands on, an octave up
+        f0 = j(520, 560)
+        out = concat(
+            tone(f0, 0.17, sr, harmonics=0.45, attack=0.02, release=0.25), silence(0.09, sr),
+            tone(f0 * 1.26, 0.10, sr, harmonics=0.45, attack=0.02, release=0.3), silence(0.02, sr),
+            tone(f0 * 1.5, 0.10, sr, harmonics=0.45, attack=0.02, release=0.3), silence(0.02, sr),
+            warble(f0 * 2.0, 0.5, rate=9, depth=0.05, sample_rate=sr),
+        )
     elif emotion == "sing":
         out = tone(j(1100, 1700), j(0.06, 0.09), sr, harmonics=0.3)
     elif emotion == "tada":

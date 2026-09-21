@@ -175,7 +175,10 @@ off on the Play tab.
 
 **Waves and hugs** (from the same arm reading, whenever no game or dance-along is using the
 arms): wave a hand above shoulder height, three swings side to side within two seconds, and it
-waves back with the mirrored antenna (your right hand, its left), tipping its head that way. Hold
+waves back with the mirrored antenna (your right hand, its left) — a proper parade wave, HEY OVER
+HERE: it lifts that side of its head and turns the other way, which swings that antenna round to
+the front, then sweeps it slowly through a big arc either side of upright, three times over three
+seconds, while the other antenna leans back out of the picture. Hold
 both arms out wide at it for 2.5 s and that is a hug: antennas open wide, head lowered and turned
 aside to nuzzle in, body rocking about five degrees, with a warm coo. A raised or open arm makes
 the pose model read every frame for a moment (a wave cannot be told from a stretch at the idle
@@ -183,18 +186,20 @@ rate); the Play tab's "your arms" row shows "watching" then. One wave back per s
 hug per twenty.
 
 **Jingles**: now and then while it is pottering about (looking around, watching someone, hanging
-out) it hums a little tune it just made up: three to five bright, near-pure console blips on a
-pentatonic scale, hard attack and quick decay, landing on a grid so they come out as a phrase
-rather than as beeping. Two thirds of the time there is an answering phrase that repeats the
-rhythm a step or two away and resolves onto the root. In the spirit of the console beeps that
-answer Data's "life forms" song. Every 25–70 s, never mid-performance, mid-dance, while being
-held, or when it is flat out. No switch: it is just something it does. The Jingle button on the
-Play tab plays one on demand, and "jingle" is in the lexicon.
+out) it hums a little song it just made up, out of bright, near-pure console blips on a pentatonic
+scale — in the spirit of the beeps that answer Data's "life forms" song. A bar of beeps is not a
+tune; it is over before you have worked out that anything happened. So a jingle is a proper little
+song: **four counted-in taps** at the top (the "1" a fifth higher) so you can find the beat, then
+**four bars of 4/4** — eight, now and then — built out of ONE motif, the same rhythm every bar with
+the pitches moved around it, in an AAB-A shape that ends on the root. It sets its own bob clock to
+the jingle's tempo from the count-in, so you can groove along with it rather than wonder what that
+noise was. 96–120 bpm. Every 25–70 s, never mid-performance, mid-dance, while being held, or when
+it is flat out. No switch: it is just something it does. The Jingle button on the Play tab plays
+one on demand, and "jingle" is in the lexicon.
 
-**Songs** come in two kinds, and it picks one when it decides to sing (or you pick with the
-Drumline / Bass buttons). *Drumline* is rhythm, not melody: two "hands" on two pitches playing
-quarters, eighths, triplets, paradiddles, flams, rolls and rests through an AABA-ish form, with a
-roll to finish.
+**Songs** are *bass* music. (There was a second kind, a drumline of beeps on two pitches; next to
+these it was just annoying, so it is gone. A saved drumline song is dropped when the repertoire
+loads rather than kept as one it can no longer play.)
 
 *Bass* is built the way the genre is, because without that there is nothing to follow. 140 bpm with
 a sparse halftime kit underneath — kick on the 1, snare on the 3, hats on the offbeats, over a
@@ -215,7 +220,7 @@ The speaker reproduces nothing under about 300 Hz, so the bass note sits at 310�
 harmonics with the moving filter do the talking; an actual sub would come out as silence. The kick
 is a 440→150 Hz drop with a click on the front, and the click is what carries it. The body bobs at
 half the song tempo, on the 1 and the 3, which is both the halftime feel and as fast as the neck
-wants to move. Saved songs from before the two kinds existed are stamped as drumline when they load.
+wants to move.
 
 **Performing**: a song on its own is just a song — it sings its little song and is pleased with
 itself, a wiggle and a happy beep. But it watches the audience while it plays: a face in view with
@@ -234,10 +239,22 @@ next one or the handshake lapses.
 
 | Step | You | It |
 |---|---|---|
-| **Peace** | both arms up at 45°, hands well apart and above your shoulders | antennas snap up into a V, excited chirp |
+| **Peace** | both arms up at 45°, hands well apart and above your shoulders | antennas sink all the way down, then rise together into a Y and bounce; excited chirp |
 | **Love** | hands together up at your chest, making a heart | antennas arc inward until the tips nearly meet, a coo |
 | **Unity** | hands clasped and lowered right down in front, arms in a V | antennas fold in, it snuggles, content |
-| **Respect** | one arm up and bent, forearm and fist straight up at head height, other arm down | it holds out an antenna |
+| **Respect** | one arm up and bent, forearm and fist straight up at head height, other arm down | a fanfare, and the trade starts |
+
+**Teaching it a pose.** Those rules are a guess at where somebody holds their arms, and a guess is
+all they can be: where *you* hold a double peace sign — out at the sides, up by your head, elbows
+bent, hands toward the middle — is a fact about you, not something to be derived, and if the guess
+is wrong the handshake never starts (and the hug detector grabs it instead). So show it. The four
+**teach** buttons on the Kandi card give you three seconds to get into the pose, then watch for two
+and a half and keep the medians of five numbers: the two arm angles (sorted higher-first, so which
+hand you use never matters), how far apart your hands are, how far above your shoulders they are,
+and how far each forearm is off straight up. A reading matches when every number is within tolerance
+of one it has been shown. What it learns is **added** to the built-in rules, never substituted for
+them, so training only ever widens what it will accept — and the card shows the five numbers live,
+so you can watch what it makes of you before you teach it anything.
 
 A hug is the same hands-apart shape as peace but with the arms straight out at shoulder height, so
 the height of the wrists separates them; while a handshake is under way the wave and hug detectors
@@ -246,13 +263,22 @@ stand down anyway.
 **The exchange.** On *respect* it trades, both ways. It is wearing bracelets on its antennas (tell
 it which ears are loaded on the Controls tab), so first it gives one:
 
-1. It raises the loaded ear and looks at you.
-2. It rolls its head over until that ear's base is the lowest part of the head.
-3. It lowers that antenna, slowly, until the bracelet runs off the tip into your hand, and giggles.
-4. It holds there a moment while you take it, then comes back up level.
+1. A fanfare — da da-da DA — so everyone nearby knows something is happening.
+2. It raises the loaded ear, looks at you, and turns its head *away* from that side, which is what
+   swings that ear round to the front where your hand is rather than leaving it off to one side.
+3. It rolls its head over until that ear's base is the lowest part of the head.
+4. It lowers that antenna, slowly, until the bracelet runs off the tip — then **jiggles it**, four
+   and a half times a second, down at the bottom: the antennas have a helical twist near the base
+   and a bracelet catches on it, and the flicks bounce it off the end. It giggles as it goes.
+5. It holds there a moment while you take it, then comes back up level.
+
+The ear *toggle* stays on through all this, on the assumption you will hang a replacement on it;
+only the upright gate is lifted, for as long as the trade runs.
 
 Then it asks for one back on the same ear: that antenna goes to just past vertical and tipped
-toward you, the other leans out of the way, and it **freezes** — no breathing, no groove, no
+toward you, the head turns away from that side again to present it, the other ear leans out of the
+way — unless it is wearing one of its own, in which case it stays safely upright and the tilt does
+the telling instead — and it **freezes** — no breathing, no groove, no
 gestures — so you can slide one down the wire and let gravity take it to the head. It knows the
 bracelet landed because the antenna gets pushed off its commanded angle, which is the same detector
 that feels an ear tickle; that touch is swallowed rather than passed to the brain, or it would
@@ -261,21 +287,25 @@ then gives up gently. Two seconds after one lands it eases the antenna and head 
 
 Wearing one is not a special mode: a **loaded antenna is simply held within 26° of vertical** for as
 long as it is loaded, whatever else the robot is doing, which is all a bracelet needs to stay on
-through a whole dance. Only the twenty seconds right after a trade also take the size out of the
-head's movement, to settle. Trades are counted per person and are worth a lot of affection, so a
+through a whole dance. The bracelet itself still swings, though, and a big move throws it about, so
+while it is wearing one its head movement is damped by the **steadiness** slider (half, by default):
+everything is pulled back toward where its gaze is pointed, so it still follows you about, it just
+stops flinging the bracelets around. A pose it is deliberately holding — the trade, a Simon says
+move — is never damped. The twenty seconds right after a trade take a bit more out of it, to settle. Trades are counted per person and are worth a lot of affection, so a
 trader becomes a bestie fast.
 
 Both the give and the ask are driven through overrides that already existed — `hold` for the head
 pose (Simon says shows poses with it) and `show_arms` for absolute antenna angles (the arm game) —
 so there is no third way of moving the head to keep in step with the rest.
 
-The **Kandi trading** card on the Controls tab has: trade now (or from a named ear), just ask for
-one without giving, cancel a trade that started by mistake, a per-ear loaded toggle, and a **shed
-tilt** slider. Which way the head has to lean to make a given ear the low point is a fact about the
+The **Kandi trading** card on the Play tab is two rows of two: trade left / trade right on top,
+the per-ear loaded toggles under them. A trade button runs the whole exchange from that ear and
+counts down while it waits; press it again to stop. Below them: the **shed tilt** and **steadiness**
+sliders and the four **teach** buttons. Which way the head has to lean to make a given ear the low point is a fact about the
 real robot, so it is a signed number you can set from the page: if it tilts the wrong ear down, use
 a negative value.
 
-**Lexicon**: every sound with what it means**Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
+**Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
 "Puppet it". Distinct calls: a rising two-note for "let's play mirror" (falling for "mirror
 over"), the fanfare for Simon says, a double blip before each shown move, a bright "yes", a
 puffed "huff".
@@ -446,3 +476,24 @@ between the simulated head and the injected face (≈1°). `Pet` in `main.py` ta
 - Behaviour ideas borrowed from community apps (desk_pet_bird, reachy_baby_yoda, recognizer,
   Reachy-companion): energy/social drives, priority-preempting gestures, SFace-every-N-frames,
   DoA startle.
+
+
+### Getting out of its own way
+
+A few limits that only matter where two perfectly reasonable movements meet.
+
+**A tilted head does not also drop.** Rolled right over, the side of the head is already next to the
+body frame; lowering it as well is what knocks them together, which is what repeated groove nudges
+on the keypad used to do after five or six presses. Past 55% of the roll limit the allowed drop
+fades to nothing, so both movements stay available and the corner where they met does not.
+
+**A move that spins the body unwinds, it does not snap.** Library moves are recorded with their own
+body swing, and some of them (the circus one) finish 180° round. That offset used to vanish between
+one tick and the next, so the robot whipped back to front as fast as the motors managed — with kandi
+on its ears, alarming. The body is now blended back with the head, over a window that grows with how
+far it has to come, so the return is always about 60°/s however wild the move was.
+
+**The face is framed higher once the arms are in play.** The camera is in the head, so aiming at a
+face centres that face — and puts the shoulders and elbows out of the bottom of the picture, which
+is why the arm game and the PLUR handshake kept losing them. While arms are being read it aims a
+quarter of a frame lower, so the face rides near the top and the whole of somebody fits in.

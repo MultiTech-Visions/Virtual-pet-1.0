@@ -11,7 +11,9 @@ def test_every_emotion_renders_clean_float32():
         buf = sounds.render_phrase(e, rng=rng)
         assert buf.dtype == np.float32
         assert buf.ndim == 1
-        assert 0.04 < sounds.phrase_duration(buf) < (9.5 if e == "sneeze" else 3.0), e  # the sneeze is a whole bit
+        # the sneeze is a whole bit, and the jingle is a whole little song with a count-in
+        longest = {"sneeze": 9.5, "jingle": 24.0}.get(e, 3.0)
+        assert 0.04 < sounds.phrase_duration(buf) < longest, e
         assert np.max(np.abs(buf)) <= 0.8001, e
         assert np.isfinite(buf).all(), e
 
@@ -73,10 +75,7 @@ def test_songs_compose_render_and_describe():
         assert abs(len(buf) / 16000 - songs.duration(song)) < 0.01
         assert 5.0 < songs.duration(song) < 45.0
         assert song["name"] in songs.describe(song) and song["style"] in songs.describe(song)
-        if song["style"] == "drumline":
-            assert song["bars"][-1] == "roll_and_stop" and 4 <= len(song["bars"]) <= 9
-            assert len(songs.hits(song)) >= 4 * len(song["bars"]) - 4
-        else:
+        if True:
             assert song["bpm"] == songs.BASS_BPM and songs.body_bpm(song) == songs.BASS_BPM / 2  # halftime for the body
             assert 1 <= song["bars"].count("drop") <= 4  # at least one, and a breakdown earns another
             assert song["bars"][0] == "intro" and song["bars"][-1] == "out"  # a count-in, and an ending
@@ -87,12 +86,10 @@ def test_songs_compose_render_and_describe():
                     assert "build" in song["bars"][max(0, k - 4):k] or song["bars"][k - 1] == "drop"  # ...with a build in front
             assert song["lo"] >= 300  # the speaker carries nothing lower: the bass is implied, not played
             assert all(m in songs.BASS_MOVES for m in song["bars"]) and song["kit"] in songs.DRUM_KITS
-    assert len(seen) > 3 and styles == {"drumline", "bass"}  # variety
+    assert len(seen) > 3 and styles == {"bass"}  # the drumline beeps are gone; the bass songs vary on their own
     # four days of festival: the shape has to change, not just the notes
     shapes = {tuple(songs.compose(random.Random(k), "bass")["bars"]) for k in range(40)}
     assert len(shapes) == 40 and len({len(x) for x in shapes}) >= 3
-    # a paradiddle bar has 16 hits with accents on each group of four
-    assert [a for _, _, a in songs.PATTERNS["paradiddle"]] == [1, 0, 0, 0] * 4
     # an unknown style is an error, not a quiet fallback
     for bad in (lambda: songs.compose(rng, "polka"), lambda: songs.render({**songs.compose(rng, "bass"), "style": "polka"})):
         try:
@@ -137,24 +134,42 @@ def test_bass_songs_have_a_kit_to_count_against():
     assert float(np.sqrt((drums**2).mean())) > 0.3 * float(np.sqrt((full**2).mean()))
 
 
-def test_jingles_are_short_made_up_melodies_on_a_scale():
-    from festival_pet.sounds import JINGLE_BASES, JINGLE_SCALE, jingle_notes, phrase_duration, render_phrase
+def test_jingles_are_counted_in_songs_with_a_shape_you_can_follow():
+    from festival_pet.sounds import (JINGLE_BASES, JINGLE_COUNT_IN, JINGLE_RHYTHMS, JINGLE_SCALE,
+                                     jingle_notes, phrase_duration, render_jingle, render_phrase)
 
-    pitches, lengths = set(), set()
-    for seed in range(12):
-        notes = jingle_notes(random.Random(seed))
-        assert 3 <= len(notes) <= 14
-        starts = [t for t, _, _ in notes]
+    pitches, bars, tempos = set(), set(), set()
+    for seed in range(20):
+        notes, bpm = jingle_notes(random.Random(seed))
+        beat = 60.0 / bpm
+        tempos.add(bpm)
+        starts = [t for t, _, _, _ in notes]
         assert starts == sorted(starts) and starts[0] == 0.0
-        lengths.add(len(notes))
-        for _, f, d in notes:
-            assert 0.03 < d < 0.2
+        # four taps, on the beat, before a note of the tune: that is what you count yourself in on
+        ticks = [n for n in notes if n[3] == "tick"]
+        tune = [n for n in notes if n[3] == "note"]
+        assert len(ticks) == JINGLE_COUNT_IN and all(n[3] == "tick" for n in notes[:JINGLE_COUNT_IN])
+        for k, (t, _, _, _) in enumerate(ticks):
+            assert abs(t - k * beat) < 1e-9
+        assert abs(tune[0][0] - JINGLE_COUNT_IN * beat) < 1e-9  # the tune starts on the next "1"
+        # a whole number of 4/4 bars of tune, four or eight of them: a song, not a bar of beeps
+        span = starts[-1] + notes[-1][2] - tune[0][0]
+        n_bars = int((max(starts) - tune[0][0]) / (4 * beat) + 1e-6) + 1
+        assert n_bars in (4, 8) and 3.0 * beat <= span <= n_bars * 4 * beat
+        bars.add(n_bars)
+        # every bar plays the same rhythm — one motif, moved around — which is what makes it hummable
+        per_bar = [round((t - tune[0][0]) / (beat / 2)) % 8 for t, _, _, _ in tune]
+        assert set(per_bar) in [{i for i, hit in enumerate(rh) if hit} for rh in JINGLE_RHYTHMS]
+        assert len(set(per_bar)) == len(tune) // n_bars
+        for _, f, d, _ in tune:
+            assert 0.05 < d < 2.0
             # every note is a scale degree of one of the bases: a tune, not a random beep
             assert any(abs(f - base * 2 ** (s / 12.0)) < 0.5 for base in JINGLE_BASES for s in JINGLE_SCALE)
             pitches.add(round(f))
-        buf = render_phrase("jingle", random.Random(seed))
-        assert 0.3 < phrase_duration(buf) < 2.6
-    assert len(pitches) > 8 and len(lengths) > 2  # it does make them up, it is not one tune on repeat
+        buf, bpm2 = render_jingle(random.Random(seed))
+        assert bpm2 == bpm and 4.0 < phrase_duration(buf) < 24.0
+        assert phrase_duration(render_phrase("jingle", random.Random(seed))) == phrase_duration(buf)
+    assert len(pitches) > 8 and bars == {4, 8} and len(tempos) > 2  # it does make them up, it is not one tune on repeat
 
 
 def test_huff_has_a_real_puff():

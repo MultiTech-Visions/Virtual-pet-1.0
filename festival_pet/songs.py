@@ -1,7 +1,4 @@
-"""Songs it makes up. Two styles, both built from the same little dict so they can be saved as JSON.
-
-``drumline`` is rhythm, not melody: two "hands" on two pitches (a high and a low blip), and the
-interest is all in the playing — quarters, eighths, triplets, paradiddles, flams, rolls, rests.
+"""Songs it makes up, as a little dict so they can be saved as JSON.
 
 ``bass`` is the robot's idea of bass music, built the way the genre actually is: 140 bpm, a sparse
 halftime kit underneath (kick on the 1, snare on the 3, hats on the offbeats, a two-bar loop) so
@@ -23,23 +20,6 @@ import random
 import numpy as np
 
 from festival_pet import sounds
-
-# One bar = 4 beats. Each hit: (beat offset, hand "R"/"L", accent 0/1). Flams are a grace hit ~35 ms before.
-PATTERNS: dict[str, list[tuple[float, str, int]]] = {
-    "quarters": [(0, "R", 1), (1, "L", 0), (2, "R", 0), (3, "L", 0)],
-    "eighths": [(i / 2, "R" if i % 2 == 0 else "L", 1 if i % 4 == 0 else 0) for i in range(8)],
-    "triplets": [(b + k / 3, ("R", "L", "R")[k] if b % 2 == 0 else ("L", "R", "L")[k], 1 if k == 0 else 0) for b in range(4) for k in range(3)],
-    "paradiddle": [(i / 4, h, 1 if i % 4 == 0 else 0) for i, h in enumerate("RLRRLRLLRLRRLRLL")],
-    "flams": [(0, "F", 1), (1, "L", 0), (2, "F", 1), (3, "L", 0)],  # F = flam (grace + accented hit)
-    "hemiola": [(0, "R", 1), (0.75, "L", 0), (1.5, "R", 1), (2.25, "L", 0), (3, "R", 1), (3.5, "L", 0)],
-    "roll_and_stop": [(i / 4, "R" if i % 2 == 0 else "L", 1 if i == 0 else 0) for i in range(12)] + [(3, "F", 1)],
-    "call": [(0, "R", 1), (0.5, "R", 0), (1, "L", 1), (2.5, "R", 0), (3, "L", 1)],
-    "answer": [(0, "L", 1), (1, "R", 0), (1.5, "R", 0), (2, "L", 1), (3.5, "R", 0)],
-    "six_stroke": [(0, "R", 1), (0.25, "L", 0), (0.5, "L", 0), (0.75, "R", 1), (1, "R", 0), (1.25, "L", 0),
-                   (2, "R", 1), (2.25, "L", 0), (2.5, "L", 0), (2.75, "R", 1), (3, "R", 0), (3.25, "L", 0)],
-    "rest": [(0, "R", 1)],  # a bar of air after one hit
-}
-FORMS = [["A", "A", "B", "A"], ["A", "B", "A", "B"], ["A", "A", "B", "B", "A", "C"], ["A", "B", "A", "C", "A", "B", "A", "C"], ["A", "B", "C", "A"]]
 
 # ----------------------------------------------------------------- bass music
 # 16 steps to the bar (sixteenths at 140), two bars to a drum loop. "x" is a hit, "." is a rest.
@@ -89,31 +69,15 @@ MAX_PHRASES = 6  # 24 bars, about 41 s: long enough to have a shape, short enoug
 MIDDLES = ("ride", "ride_easy", "ride", "ride_easy", "breakdown", "half_break")  # what can sit between the drops
 # Where the bass sits per phrase, in semitones off the root: minor-ish, and it moves.
 BASS_RIFFS = ((0, 0, 0, 0), (0, 0, 3, 3), (0, 3, 0, -2), (0, 0, -2, -4), (0, 5, 3, 0), (0, -4, 0, 3), (3, 3, 0, 0))
-STYLES = ("drumline", "bass")
+STYLES = ("bass",)  # the drumline beeps are gone: next to the bass songs they were just annoying
 
 
 def compose(rng: random.Random, style: str | None = None) -> dict:
-    """A new song. ``style`` is "drumline", "bass", or None to pick one."""
+    """A new song. ``style`` is "bass" or None (the same thing, while bass is the only style)."""
     style = style if style is not None else rng.choice(STYLES)
     if style not in STYLES:
         raise ValueError(f"unknown song style '{style}'")
-    if style == "bass":
-        return _compose_bass(rng)
-    names = [n for n in PATTERNS if n not in ("rest", "roll_and_stop")]
-    form = rng.choice(FORMS)
-    parts = {p: rng.choice(names) for p in sorted(set(form))}
-    # B (or C) is allowed to be a breath
-    if len(parts) > 1 and rng.random() < 0.3:
-        parts[sorted(parts)[-1]] = "rest"
-    bars = [parts[p] for p in form] + ["roll_and_stop"]
-    return {
-        "style": "drumline",
-        "bpm": rng.choice([88, 96, 104, 112, 120, 128]),
-        "bars": bars,
-        "hi": rng.choice([1500, 1600, 1700, 1800]),
-        "lo": rng.choice([950, 1000, 1100, 1200]),
-        "name": rng.choice(["rat-a-tat", "boop cadence", "tenor line", "flam city", "little march", "roll call", "pip pip"]) + f" #{rng.randint(10, 99)}",
-    }
+    return _compose_bass(rng)
 
 
 def _bass_arrangement(rng: random.Random) -> tuple[list[str], list[int]]:
@@ -165,22 +129,7 @@ def _compose_bass(rng: random.Random) -> dict:
 def body_bpm(song: dict) -> float:
     """What the robot should bob to. Bass music is counted in halftime: the body moves on the 1 and the 3,
     once per two of the song's beats, which is also as fast as the neck wants to move."""
-    return song["bpm"] / 2.0 if song["style"] == "bass" else float(song["bpm"])
-
-
-def hits(song: dict) -> list[tuple[float, str, int]]:
-    """(time s, hand, accent) for the whole song, flams expanded into grace + accented hit."""
-    period = 60.0 / song["bpm"]
-    out = []
-    for b, name in enumerate(song["bars"]):
-        for off, hand, acc in PATTERNS[name]:
-            t = (b * 4 + off) * period
-            if hand == "F":
-                out.append((t - 0.035, "L", 0))
-                out.append((t, "R", 1))
-            else:
-                out.append((t, hand, acc))
-    return out
+    return song["bpm"] / 2.0
 
 
 def duration(song: dict) -> float:
@@ -285,26 +234,18 @@ def _render_bass(out: np.ndarray, song: dict, bar: int, t0: float, step: float, 
 
 
 def render(song: dict, sample_rate: int = sounds.SAMPLE_RATE) -> np.ndarray:
-    """Audio for a song. Drumline: a short blip per hit, accents louder and a touch longer.
-    Bass: the kit on the grid, and a bass voice over it, bar by bar."""
-    style = song["style"]
+    """Audio for a song: the kit on the grid, and a bass voice over it, bar by bar."""
+    if song["style"] not in STYLES:
+        raise ValueError(f"unknown song style '{song['style']}'")
     n = int(duration(song) * sample_rate)
     out = np.zeros(n, dtype=np.float32)
     period = 60.0 / song["bpm"]
-    if style == "bass":
-        rng = random.Random(song["name"])  # the kit's own jitter, the same every time a saved song plays
-        step = period / 4.0
-        for b in range(len(song["bars"])):
-            t0 = b * 4 * period
-            _render_drums(out, song, b, t0, step, sample_rate, rng)
-            _render_bass(out, song, b, t0, step, sample_rate)
-    elif style == "drumline":
-        for t, hand, acc in hits(song):
-            f = song["hi"] if hand == "R" else song["lo"]
-            blip = sounds.tone(f * (1.03 if acc else 1.0), 0.075 if acc else 0.055, sample_rate, harmonics=0.35, attack=0.02, release=0.25)
-            _mix(out, blip, t, sample_rate, 0.8 if acc else 0.5)
-    else:
-        raise ValueError(f"unknown song style '{style}'")
+    rng = random.Random(song["name"])  # the kit's own jitter, the same every time a saved song plays
+    step = period / 4.0
+    for b in range(len(song["bars"])):
+        t0 = b * 4 * period
+        _render_drums(out, song, b, t0, step, sample_rate, rng)
+        _render_bass(out, song, b, t0, step, sample_rate)
     peak = float(np.max(np.abs(out)))
     if peak > 0.8:
         out *= 0.8 / peak

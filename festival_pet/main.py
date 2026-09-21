@@ -39,11 +39,11 @@ from festival_pet.behavior import Action, Behavior, FaceObs, Observation
 from festival_pet.keypad import LAYERS, KeyMap, KeypadListener
 from festival_pet.memory import FaceMemory
 from festival_pet.mime import MimeGame
-from festival_pet.motion import BODY_YAW_LIMIT, MotionComposer, turn_pose, SOLO_GESTURES
+from festival_pet.motion import BODY_YAW_LIMIT, OFFER_YAW, MotionComposer, turn_pose, SOLO_GESTURES
 from festival_pet import songs
 from festival_pet.senses import ImuRubDetector, LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
-from festival_pet.pose import PLUR_STEPS, ArmSigns
+from festival_pet.pose import PLUR_STEPS, PLUR_TRAIN_MIN, ArmSigns, plur_features
 from festival_pet.tap_tempo import TapTempo
 from festival_pet.visual_rhythm import DanceDetector
 
@@ -77,6 +77,8 @@ SONGS_FILE = DATA_DIR / "songs.json"
 CONTROL_HZ = 50.0
 PLAY_LIBRARY_SOUNDS = False  # True = play Pollen's sidecar sound with library moves instead of our beeps
 MOVE_BLEND_S = 0.5
+MOVE_BODY_RETURN_DEG_S = 60.0  # how fast the body is allowed to unwind after a move that turned it right round
+MOVE_BLEND_MAX_S = 3.5
 FREE_DANCE_BPM = 108.0
 AUDIO_RATE = 16000
 ARMS_MAX_AGE_S = 0.6  # an arm read older than this is nobody's arms
@@ -117,11 +119,17 @@ KANDI_GENTLE_S = 20.0  # ...then move smaller for this long while it settles (th
 KANDI_GIVE_POINT_S = 0.9  # raise the chosen antenna and look at them
 KANDI_GIVE_TILT_S = 1.2  # roll the head over so that antenna's base is the lowest part of it
 KANDI_GIVE_LOWER_S = 2.0  # lower it, slowly, until the bracelet runs off the end
-KANDI_GIVE_CATCH_S = 1.2  # hold it down there while they take it
+KANDI_GIVE_SHAKE_S = 1.4  # ...then jiggle it down there: the antennas have a helical twist near the base and
+#                           a bracelet catches on it, so a few quick flicks bounce it off the end
+KANDI_GIVE_CATCH_S = 1.0  # hold still while they take it
 KANDI_GIVE_BACK_S = 1.0  # and back up to normal
-KANDI_GIVE_S = KANDI_GIVE_POINT_S + KANDI_GIVE_TILT_S + KANDI_GIVE_LOWER_S + KANDI_GIVE_CATCH_S + KANDI_GIVE_BACK_S
+KANDI_GIVE_S = (KANDI_GIVE_POINT_S + KANDI_GIVE_TILT_S + KANDI_GIVE_LOWER_S + KANDI_GIVE_SHAKE_S
+                + KANDI_GIVE_CATCH_S + KANDI_GIVE_BACK_S)
 KANDI_GIVE_PITCH = 14.0  # it looks down at where the bracelet is going while it sheds it
+KANDI_SHAKE_HZ, KANDI_SHAKE_DEG = 4.5, 16.0  # the jiggle: how fast, and how far either side of right down
 ANTENNA_UP_DEG, ANTENNA_SHED_DEG = 175.0, 5.0  # the antenna as an "arm": up is vertical, down is laid right back
+PLUR_TRAIN_READY_S = 3.0  # "get into the pose" before it starts looking
+PLUR_TRAIN_WATCH_S = 2.5  # ...then this long of readings, whose medians become the prototype
 COMBO_TAPS = 4  # left right left right on the dancing layer...
 COMBO_WINDOW_S = 1.0  # ...this fast: stop dancing
 
@@ -424,7 +432,9 @@ class Pet:
         self.move_t0 = 0.0
         self.last_pose = np.eye(4)
         self.last_ants = [0.0, 0.0]
-        self.blend_from: tuple[np.ndarray, list[float], float] | None = None
+        self.last_body = 0.0  # degrees of body yaw last commanded: what a move has to be blended back FROM
+        # (pose, antennas, body yaw degrees, when the blend started, how long it gets)
+        self.blend_from: tuple[np.ndarray, list[float], float, float, float] | None = None
         self.actions_log: list[tuple[float, str, str]] = []
         self._next_doa = 0.0
         self._last = 0.0
@@ -448,6 +458,7 @@ class Pet:
         self._kandi_offer_until = 0.0
         self._kandi_got_at = 0.0  # when something landed on the offered antenna (0 = still waiting)
         self._kandi_give_t0 = 0.0  # when the giving-one-back routine started (0 = not running)
+        self._kandi_shed = False  # the bracelet has been shaken off the end this time round
         self.kandi_roll_deg = 25.0  # how far to tilt the head to shed a bracelet; flip the sign if it leans the wrong way
         self._singing_until = 0.0
         self.songs_file: Path | None = None
@@ -482,6 +493,7 @@ class Pet:
         self._last_phase = 0.0
         self._copy_last = 0.0
         self.signs = ArmSigns()  # waves and hugs, read from the arm readings
+        self._training: dict | None = None  # showing it a PLUR pose: {"step", "from", "until", "samples"}
         self._signs_last = 0.0  # ts of the last arm reading fed to it (each reading counts once)
         # Keypad state: direction nudges (see key_action)
         self._nudge: list[tuple[float, float]] = []  # (time, side) of recent direction taps
@@ -656,6 +668,8 @@ class Pet:
         for action, t_ev in fired:
             self.key_action(action, t_ev, now)
 
+        if self._training is not None:
+            self._train_tick(obs.arms, now)
         if self._kandi_give_t0:
             obs.touched = False  # its own antenna is being driven down: that is not someone tickling its ear
             self._kandi_give(now)
@@ -723,19 +737,26 @@ class Pet:
             t = now - self.move_t0
             if t >= self.move.duration - 0.02:
                 self.move = None
-                self.blend_from = (self.last_pose, list(self.last_ants), now)
+                # The BODY has to be blended back too, not just the head. A move that ends with the body
+                # swung round (the circus one finishes 180° away) used to have that offset vanish between
+                # one tick and the next: the robot whipped back to front at whatever speed the motors could
+                # manage, which with bracelets on its ears is alarming. The blend gets longer the further it
+                # has to come back, so the return is always about the same, sane, speed.
+                back = abs(self.last_body - comp.body_yaw)
+                self.blend_from = (self.last_pose, list(self.last_ants), self.last_body, now,
+                                   min(MOVE_BLEND_S + back / MOVE_BODY_RETURN_DEG_S, MOVE_BLEND_MAX_S))
             else:
                 head, ants, move_body = self.move.evaluate(t)
                 # Moves are recorded body-forward: turn them with the body and add the move's own body swing.
                 body = 0.0 if comp.held else max(-BODY_YAW_LIMIT, min(BODY_YAW_LIMIT, comp.body_yaw + math.degrees(float(move_body))))
                 head = turn_pose(head, body)
-                self.last_pose, self.last_ants = head, [float(ants[0]), float(ants[1])]
+                self.last_pose, self.last_ants, self.last_body = head, [float(ants[0]), float(ants[1])], body
                 if not self.asleep:
                     io.set_target(head, self.last_ants, math.radians(body))
         if self.move is None:
             head, ants, body_yaw = comp.sample(now, dt)
             if self.blend_from is not None:
-                a = (now - self.blend_from[2]) / MOVE_BLEND_S
+                a = (now - self.blend_from[3]) / self.blend_from[4]
                 if a >= 1.0:
                     self.blend_from = None
                 else:
@@ -743,7 +764,8 @@ class Pet:
 
                     head = linear_pose_interpolation(self.blend_from[0], head, a)
                     ants = [self.blend_from[1][i] * (1 - a) + ants[i] * a for i in range(2)]
-            self.last_pose, self.last_ants = head, ants
+                    body_yaw = self.blend_from[2] * (1 - a) + body_yaw * a
+            self.last_pose, self.last_ants, self.last_body = head, ants, body_yaw
             if not self.asleep:
                 io.set_target(head, ants, math.radians(body_yaw))
         # Held in hand and straining to look somewhere the head cannot reach: ask to be turned that way.
@@ -826,7 +848,10 @@ class Pet:
             del self.actions_log[:-2000]
         if act.kind == "sound":
             if self.voice == "full" or (self.voice == "quiet" and (act.priority >= 3 or (act.priority == 2 and self.p.composer.rng.random() < 0.5))):
-                self.sound.request(act.name, act.priority, now)
+                if act.name == "jingle":
+                    self.jingle(now, act.priority)  # a jingle has a tempo, and the body wants to know it
+                else:
+                    self.sound.request(act.name, act.priority, now)
         elif act.kind == "gesture":
             if self.move is None:
                 name, _, side = act.name.partition(":")  # "flinch:+" forces the side of a sided gesture
@@ -932,6 +957,20 @@ class Pet:
         self.actions_log.append((now, "song", song["name"]))
         return song
 
+    def jingle(self, now: float, priority: int = 2) -> float:
+        """Hum a made-up little song, and bob to it. Returns its tempo.
+
+        It is counted in — four taps before the tune starts — and the tap clock is set to the same beat
+        from the same instant, so the count-in lands on the pet's own bob and whoever is listening can
+        find the beat and groove along with it rather than wondering what that noise was.
+        """
+        buf, bpm = sounds.render_jingle(self.p.composer.rng, AUDIO_RATE)
+        self.sound.request_buffer(buf, "jingle", priority, now)
+        self.tap.set_bpm(bpm, beat_at=now + 0.08)
+        self.audio.deaf_until = max(self.audio.deaf_until, now + sounds.phrase_duration(buf, AUDIO_RATE) + 0.3)
+        self.actions_log.append((now, "sound", f"jingle ({bpm:.0f} bpm)"))
+        return bpm
+
     def _plur_step(self, step: str, now: float) -> None:
         """One step of the PLUR handshake landed: answer it in kind.
 
@@ -975,10 +1014,11 @@ class Pet:
             return
         self.kandi_side = give
         self._kandi_give_t0 = now
+        self._kandi_shed = False
         self.p.composer.loaded[give] = False  # the upright gate has to be open by the time the antenna comes down
         self._kandi_offer_until = self._kandi_got_at = 0.0
         self.p.behavior._think(now, f"here — this one's for you, off my {'left' if give else 'right'} ear")
-        self._dispatch(Action("sound", "curious", 3), now)
+        self._dispatch(Action("sound", "fanfare", 4), now)  # da da-da DA: everyone look, something is happening
         self.actions_log.append((now, "kandi", f"giving the one on the {'left' if give else 'right'} antenna"))
 
     def _kandi_give(self, now: float) -> None:
@@ -998,12 +1038,17 @@ class Pet:
         tilt = max(0.0, min(1.0, (u - KANDI_GIVE_POINT_S) / KANDI_GIVE_TILT_S))
         back = max(0.0, (u - (KANDI_GIVE_S - KANDI_GIVE_BACK_S)) / KANDI_GIVE_BACK_S)
         ease = max(0.0, tilt - back)
-        comp.hold = (aim, KANDI_GIVE_PITCH * ease, roll * ease, now + 0.3)
+        # The head turns AWAY from the giving side, the same as when it offers one: that is what brings that
+        # ear round to the front, where their hand is, instead of leaving it out at the side of the head.
+        comp.hold = (aim + OFFER_YAW * (-1.0 if side else 1.0) * ease, KANDI_GIVE_PITCH * ease, roll * ease, now + 0.3)
+        down_at = KANDI_GIVE_POINT_S + KANDI_GIVE_TILT_S + KANDI_GIVE_LOWER_S
         drop = max(0.0, min(1.0, (u - KANDI_GIVE_POINT_S - KANDI_GIVE_TILT_S) / KANDI_GIVE_LOWER_S)) * (1.0 - back)
         deg = ANTENNA_UP_DEG + (ANTENNA_SHED_DEG - ANTENNA_UP_DEG) * drop
+        if down_at <= u < down_at + KANDI_GIVE_SHAKE_S:  # the jiggle, to bounce it past the twist at the base
+            deg += KANDI_SHAKE_DEG * (1.0 + math.sin(2 * math.pi * KANDI_SHAKE_HZ * (u - down_at)))
         comp.show_arms(deg if side == 1 else ANTENNA_UP_DEG, deg if side == 0 else ANTENNA_UP_DEG, now, 0.3)
-        if self.kandi_on[side] and u >= KANDI_GIVE_POINT_S + KANDI_GIVE_TILT_S + KANDI_GIVE_LOWER_S:
-            self.kandi_on[side] = False  # it should have run off the end by now
+        if not self._kandi_shed and u >= down_at + KANDI_GIVE_SHAKE_S * 0.6:
+            self._kandi_shed = True  # a few flicks in: it has had every chance to come off
             beh._think(now, "...there you go!")
             self._dispatch(Action("sound", "giggle", 3), now)
             self.actions_log.append((now, "kandi", "gave one away"))
@@ -1030,9 +1075,63 @@ class Pet:
         self.actions_log.append((now, "kandi", f"offering the {'left' if side else 'right'} antenna"))
         return side
 
+    def train_plur(self, step: str, now: float) -> None:
+        """Show it what one of the PLUR poses looks like on a real person.
+
+        The rules in pose.py are a guess at where somebody holds their arms; this replaces the guess with
+        a measurement. Three seconds to get into the pose, then it watches for a couple of seconds and
+        keeps the medians of what it saw. What it learns only ever widens what it will accept.
+        """
+        if step not in PLUR_STEPS:
+            raise KeyError(f"unknown PLUR step '{step}'. Known: {', '.join(PLUR_STEPS)}")
+        self._training = {"step": step, "from": now + PLUR_TRAIN_READY_S,
+                          "until": now + PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S, "samples": [], "at": 0.0}
+        self.p.behavior._think(now, f"show me: {step}. hold it...")
+        self._dispatch(Action("sound", "mime_start", 4), now)
+        self.actions_log.append((now, "plur", f"learning {step}"))
+
+    def _train_tick(self, arms, now: float) -> None:
+        """One tick of learning a pose: count down, collect readings, then keep the medians."""
+        t = self._training
+        assert t is not None
+        beh = self.p.behavior
+        if now < t["from"]:
+            return
+        if not t["samples"]:
+            self._dispatch(Action("sound", "mime_cue", 4), now)  # NOW: that is the pose it is reading
+        if arms is not None and arms.ts != t["at"]:
+            t["at"] = arms.ts
+            t["samples"].append(plur_features(arms))
+        if now < t["until"]:
+            return
+        self._training = None
+        step, samples = t["step"], t["samples"]
+        if len(samples) < PLUR_TRAIN_MIN:
+            beh._think(now, f"...I couldn't see your arms well enough to learn {step}")
+            self._dispatch(Action("sound", "confused", 4), now)
+            self.actions_log.append((now, "plur", f"learning {step} failed: {len(samples)} readings"))
+            return
+        proto = {k: float(np.median([s[k] for s in samples])) for k in samples[0]}
+        self.signs.trained[step] = proto
+        beh._think(now, f"got it: that's {step}")
+        self._dispatch(Action("sound", "yes", 4), now)
+        self.actions_log.append((now, "plur", f"learned {step} from {len(samples)} readings"))
+        self.save_settings()
+
+    def _kandi_regate(self) -> None:
+        """Put the upright gate back the way the ear toggles say it should be.
+
+        The gate is lifted off the giving ear for the length of a trade (it has to come down past vertical
+        to shed one), so every way out of a trade has to put it back — or that ear would stay free to swing
+        about with a fresh bracelet on it.
+        """
+        self.p.composer.loaded = list(self.kandi_on)
+
     def cancel_kandi(self, now: float) -> None:
         """Stop mid-trade (it was started by mistake, or nobody came)."""
         self._kandi_offer_until = self._kandi_got_at = self._kandi_give_t0 = 0.0
+        self._kandi_shed = False
+        self._kandi_regate()
         self.signs.plur_step = 0
         self.p.composer.hold = None
         self.p.composer.show_arms(None)
@@ -1072,6 +1171,7 @@ class Pet:
             if now >= self._kandi_offer_until:  # nobody had one ready
                 self._kandi_offer_until = 0.0
                 comp.release_still()
+                self._kandi_regate()
                 beh._think(now, "...no? that's okay. next time")
                 self._dispatch(Action("sound", "curious", 2), now)
                 self.actions_log.append((now, "kandi", "nothing came: offer over"))
@@ -1136,12 +1236,12 @@ class Pet:
     def load_songs(self) -> None:
         if self.songs_file is None or not self.songs_file.exists():
             return
-        self.songs = json.loads(self.songs_file.read_text())
-        old = [s for s in self.songs if "style" not in s]
-        for s in old:  # saved before there was more than one style: they are all drumline ones
-            s["style"] = "drumline"
-        if old:
-            logger.info("songs: stamped %d saved song(s) from before styles as drumline", len(old))
+        saved = json.loads(self.songs_file.read_text())
+        # The drumline beeps are gone, so any saved one is dropped rather than kept as a song that can no
+        # longer be played. Songs saved before styles existed at all were drumline ones, so they go too.
+        self.songs = [s for s in saved if s.get("style") in songs.STYLES]
+        if len(self.songs) != len(saved):
+            logger.info("songs: dropped %d saved drumline song(s); that style is gone", len(saved) - len(self.songs))
 
     def start_simon(self, kind: str | None, now: float) -> str | None:
         """Start Simon says. ``kind`` "arms" or "head", or None to pick: the arm game when their arms can be
@@ -1303,13 +1403,19 @@ class Pet:
             "mime": self.mime.status(now),
             "arms": None if o.arms is None else {"left": o.arms.left, "right": o.arms.right, "left_deg": round(o.arms.left_deg), "right_deg": round(o.arms.right_deg), "conf": round(o.arms.conf, 2), "shoulder_px": round(o.arms.shoulder_px),
                                                 "watching": self.signs.watching and now < self.signs.watching_until,
-                                                "plur": None if not (self.signs.plur_step or self._kandi_offer_until) else {"step": self.signs.plur_step, "next": PLUR_STEPS[self.signs.plur_step] if self.signs.plur_step else None}},
+                                                "plur": None if not (self.signs.plur_step or self._kandi_offer_until) else {"step": self.signs.plur_step, "next": PLUR_STEPS[self.signs.plur_step] if self.signs.plur_step else None},
+                                                "features": {k: round(x, 2) for k, x in plur_features(o.arms).items()}},
             "kandi": {"offering": self._kandi_offer_until > 0.0, "side": None if self.kandi_side is None else ("left" if self.kandi_side else "right"),
                       "waiting_s": round(max(0.0, self._kandi_offer_until - now), 1) if self._kandi_offer_until else None,
                       "got_it": self._kandi_got_at > 0.0, "step": self.signs.plur_step,
                       "giving": self._kandi_give_t0 > 0.0, "roll_deg": self.kandi_roll_deg,
                       "wearing": [n for i, n in enumerate(("right", "left")) if self.kandi_on[i]],
-                      "settling_s": round(max(0.0, comp.gentle_until - now), 1) if comp.gentle_until > now else None},
+                      "settling_s": round(max(0.0, comp.gentle_until - now), 1) if comp.gentle_until > now else None,
+                      "damp": comp.kandi_damp, "trained": {k: {n: round(x, 2) for n, x in v.items()} for k, v in self.signs.trained.items()},
+                      "training": None if self._training is None else {"step": self._training["step"],
+                                                                       "in_s": round(max(0.0, self._training["from"] - now), 1),
+                                                                       "left_s": round(max(0.0, self._training["until"] - now), 1),
+                                                                       "seen": len(self._training["samples"])}},
             "dance_along": {"on": self.dance_along, "copying": self._copying_arms, "flourish": self._copying_arms and now < self._flourish_until,
                             "antennas": None if comp.arms is None or now >= comp.arms_until else [round(comp.arms[0]), round(comp.arms[1])]},
             "song": {"singing": now < self._singing_until, "last": None if self.last_song is None else {"name": self.last_song["name"], "style": self.last_song["style"], "bpm": self.last_song["bpm"], "bars": self.last_song["bars"], "saved": self.last_song in self.songs}, "repertoire": [x["name"] for x in self.songs],
@@ -1336,7 +1442,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "dance_along": self.dance_along, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.layers, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "kandi_roll": self.kandi_roll_deg, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "dance_along": self.dance_along, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.layers, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "kandi_roll": self.kandi_roll_deg, "kandi_damp": comp.kandi_damp, "plur_trained": self.signs.trained, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
             "calibration": self.audio.calibration_result,
             "imu_calibration": self.imu_rub.calibration,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
@@ -1427,6 +1533,23 @@ class Pet:
             self.kandi_roll_deg = float(value)
             if abs(self.kandi_roll_deg) > 40.0:
                 raise ValueError("a shed tilt beyond 40 degrees will not get the head back level nicely")
+        elif cmd == "kandi_damp":  # how much movement to take out while it is wearing one (0 = none, 1 = still)
+            damp = float(value)
+            if not 0.0 <= damp <= 1.0:
+                raise ValueError(f"kandi damping runs from 0 (move normally) to 1 (hold still), not {value}")
+            self.p.composer.kandi_damp = damp
+        elif cmd == "train_plur":  # show it one of the four poses: "peace", "love", "unity", "respect"
+            self.train_plur(str(value), now)
+        elif cmd == "forget_plur":  # throw the trained poses away and go back to the built-in rules
+            self.signs.trained = {} if value in (True, None, "", "all") else {k: v for k, v in self.signs.trained.items() if k != str(value)}
+            self.actions_log.append((now, "plur", "forgot trained poses"))
+        elif cmd == "plur_trained":  # restoring the lot from the settings file
+            if not isinstance(value, dict):
+                raise ValueError("trained PLUR poses must be a mapping of step name to its numbers")
+            for step in value:
+                if step not in PLUR_STEPS:
+                    raise KeyError(f"unknown PLUR step '{step}'. Known: {', '.join(PLUR_STEPS)}")
+            self.signs.trained = {k: {n: float(x) for n, x in v.items()} for k, v in value.items()}
         elif cmd == "dance_along":
             self.dance_along = bool(value)
         elif cmd == "singing":
@@ -1500,7 +1623,7 @@ class Pet:
         return {"ok": True}
 
     # ------------------------------------------------------------------ settings persistence
-    _SETTING_KEYS = ("voice", "muted", "pickup", "ears", "dance_along", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "kandi_roll", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
+    _SETTING_KEYS = ("voice", "muted", "pickup", "ears", "dance_along", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "kandi_roll", "kandi_damp", "plur_trained", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
         c = self.mind()["controls"]

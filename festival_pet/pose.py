@@ -82,6 +82,16 @@ CLASP_MAX_ABOVE = -0.7  # ...and right down in front of them, arms in a V, for t
 RESPECT_FOREARM_DEG = 35.0  # the raised fist: forearm within this of straight up
 RESPECT_MIN_ABOVE = -0.25  # ...with the fist up around head level
 RESPECT_OTHER_DEG = 40.0  # ...and the other arm hanging down
+# Trained poses. The rules below are a guess at what a pose looks like from arm angles, and a guess is
+# all they can be: where someone actually holds a double peace sign — out at the sides, up by their head,
+# elbows bent, hands toward the middle — is a fact about that person, not something to be derived. So a
+# pose can instead be SHOWN to it: hold it, and the medians of these five numbers are remembered as that
+# step's prototype. A reading matches a prototype when every number is within tolerance of it, and a
+# prototype match counts alongside the built-in rules, never instead of them — training only ever widens
+# what it will accept. The two arms are sorted higher-first, so which hand somebody uses never matters.
+PLUR_FEATURES = ("hi_deg", "lo_deg", "sep", "above", "hi_forearm", "lo_forearm")
+PLUR_TOL = {"hi_deg": 25.0, "lo_deg": 25.0, "sep": 0.5, "above": 0.4, "hi_forearm": 35.0, "lo_forearm": 35.0}
+PLUR_TRAIN_MIN = 6  # readings needed before a trained pose is worth keeping
 HUG_HOLD_S = 2.5  # both arms held out this long: a hug
 HUG_REARM_S = 1.0  # the arms have to leave "out" for this long before another hug counts
 SIGN_WATCH_S = 1.5  # a raised or open arm seen this recently keeps the pose model reading every frame
@@ -113,6 +123,7 @@ class ArmSigns:
         self.plur_at = 0.0  # when the last one landed
         self._pose: str | None = None  # the pose being held right now, and since when
         self._pose_since = 0.0
+        self.trained: dict[str, dict[str, float]] = {}  # step -> prototype, from somebody showing it the pose
 
     @property
     def watching(self) -> bool:
@@ -162,7 +173,7 @@ class ArmSigns:
         """Walk the handshake. Returns ("plur", step) as each one lands, else None."""
         if self.plur_step and now - self.plur_at > PLUR_STEP_WINDOW_S:
             self.plur_step = 0  # they wandered off mid-handshake
-        pose = plur_pose(a)
+        pose = plur_pose(a, self.trained)
         if pose != self._pose:
             self._pose, self._pose_since = pose, now
             return None
@@ -184,8 +195,63 @@ def _mid(a, b) -> tuple[float, float]:
     return ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
 
 
-def plur_pose(a: Arms) -> str | None:
+def _forearm_deg(elbow, wrist) -> float:
+    """How far the forearm is off straight up, in degrees (0 = elbow under a fist straight above it).
+
+    180 is a forearm pointing straight down. Image y grows downward, hence the flipped rise.
+    """
+    rise, run = elbow[1] - wrist[1], wrist[0] - elbow[0]
+    return math.degrees(math.atan2(abs(run), rise)) if rise > 0 else 180.0 - math.degrees(math.atan2(abs(run), -rise))
+
+
+def plur_features(a: Arms) -> dict[str, float]:
+    """The five numbers a PLUR pose is recognised by, in shoulder widths and degrees.
+
+    The two arms are sorted, higher first, so nothing here depends on which hand somebody uses; a wrist
+    the model cannot see is stood in for by that elbow, which is the closest thing to it we have.
+    """
+    p = a.points
+    scale = max(a.shoulder_px, 1e-6)
+    sh_y = _mid(p["l_shoulder"], p["r_shoulder"])[1]
+    hand = {s: (p[s + "_wrist"] if p.get(s + "_wrist_ok") else p[s + "_elbow"]) for s in ("l", "r")}
+    arms = sorted((("l", a.left_deg), ("r", a.right_deg)), key=lambda x: -x[1])  # the raised arm first
+    (hi, hi_deg), (lo, lo_deg) = arms
+    return {
+        "hi_deg": hi_deg,
+        "lo_deg": lo_deg,
+        "sep": math.dist(hand["l"], hand["r"]) / scale,
+        "above": (sh_y - _mid(hand["l"], hand["r"])[1]) / scale,
+        "hi_forearm": _forearm_deg(p[hi + "_elbow"], hand[hi]),
+        "lo_forearm": _forearm_deg(p[lo + "_elbow"], hand[lo]),
+    }
+
+
+def _trained_pose(a: Arms, trained: dict[str, dict[str, float]]) -> str | None:
+    """Which trained prototype this reading matches, if any: every feature within tolerance, nearest wins."""
+    f = plur_features(a)
+    best, best_d = None, None
+    for name, proto in trained.items():
+        if name not in PLUR_STEPS:
+            continue
+        d = 0.0
+        for k, tol in PLUR_TOL.items():
+            if k not in proto:
+                break
+            gap = abs(f[k] - float(proto[k])) / tol
+            if gap > 1.0:
+                break
+            d = max(d, gap)
+        else:
+            if best_d is None or d < best_d:
+                best, best_d = name, d
+    return best
+
+
+def plur_pose(a: Arms, trained: dict[str, dict[str, float]] | None = None) -> str | None:
     """Which PLUR pose the arms are making, if any. See PLUR_STEPS.
+
+    ``trained`` is the prototypes somebody has shown it (see ``plur_features``); anything one of those
+    matches counts, and the rules below are tried after, so training only ever adds to what it knows.
 
     All four are read from arm angles and where the wrists are, which is what this model gives us
     reliably at across-the-tent distance. Peace is arms up at 45 with the hands apart (a hug is the
@@ -194,6 +260,10 @@ def plur_pose(a: Arms) -> str | None:
     in front; respect is one arm raised and bent so the forearm stands straight up, fist at head
     height, with the other arm down.
     """
+    if trained:
+        shown = _trained_pose(a, trained)
+        if shown is not None:
+            return shown
     p = a.points
     scale = max(a.shoulder_px, 1e-6)
     l_deg, r_deg = a.left_deg, a.right_deg

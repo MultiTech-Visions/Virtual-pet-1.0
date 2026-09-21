@@ -364,9 +364,22 @@ def test_ear_holds_park_an_antenna_and_expire():
     m.request_gesture("swat", 8.0, 3, side=1.0)
     _, ants, _ = m.sample(8.3, 0.02)
     assert ants[1] < ANTENNA_NEUTRAL[1] - 0.5  # the left antenna sweeps forward to bat
+    # the nuzzle is a circle, not a push: the face goes up-and-forward, over, then down-and-back, twice
+    from festival_pet.motion import NUZZLE_CIRCLES, NUZZLE_S
+
     m.request_gesture("nuzzle", 10.0, 3)
-    head, _, _ = m.sample(11.0, 0.02)
-    assert head[0, 3] > 0.01  # pushes forward into the hand
+    xs, pitches = [], []
+    t = 10.0
+    while t < 10.0 + NUZZLE_S:
+        head, _, _ = m.sample(t, 0.02)
+        xs.append(head[0, 3])
+        pitches.append(_euler(head)[1])
+        t += 0.02
+    assert max(xs) > 0.01 and min(xs) < -0.008  # it pushes forward and pulls back
+    assert max(pitches) > 6.0 and min(pitches) < 0.0  # ...gaze down at the bottom, head up at the top
+    # forward leads the rise by a quarter turn, so x peaks roughly halfway up: one circle, not a nod
+    turns = sum(1 for a, b in zip(xs, xs[1:]) if (a > 0) != (b > 0))
+    assert turns >= 2 * NUZZLE_CIRCLES - 1
 
 
 def test_antennas_as_arms_read_literally_and_follow_fast():
@@ -487,3 +500,65 @@ def test_far_gaze_is_carried_by_the_body_and_the_head_stops_short_of_the_frame()
         head, _, body = m.sample(i * 0.02, 0.02)
     yaw_world = math.degrees(math.atan2(head[1, 0], head[0, 0]))
     assert abs(yaw_world - 120.0) < 3.0 and abs(body - 120.0) < 15.0  # and the head did the fine aim
+
+
+def test_the_wave_is_a_wave_and_peace_is_a_routine():
+    """Both used to be near enough the same shrug. A wave has to read as HEY OVER HERE from across a
+    field, and peace has to be visibly different from just standing there."""
+    from festival_pet.motion import ANT_FULL_DOWN, GESTURES, WAVE_ARC, WAVE_S, WAVE_SWEEPS, WAVE_TUCK
+
+    m = MotionComposer()
+    m.energy = 0.0  # no breathing on top, so the numbers are the gesture and nothing else
+    m.request_gesture("wave", 0.0, 5, side=-1.0)  # the RIGHT antenna waves
+    waving, other, t = [], [], 0.0
+    while t < WAVE_S:
+        _, ants, _ = m.sample(t, 0.02)
+        waving.append(ants[0])
+        other.append(ants[1])
+        t += 0.02
+    # it sweeps right through upright, both ways, several times over: a wave, not a twitch
+    assert max(waving) > WAVE_ARC * 0.8 and min(waving) < -WAVE_ARC * 0.8
+    crossings = sum(1 for a, b in zip(waving, waving[1:]) if (a > 0) != (b > 0))
+    assert crossings >= 2 * WAVE_SWEEPS - 1
+    assert max(other) >= WAVE_TUCK * 0.8  # ...and the other one gets out of the picture
+    # ...slowly: a parade wave, about a second a sweep, not the buzz of a shake
+    assert WAVE_S / WAVE_SWEEPS > 0.8
+
+    m = MotionComposer()
+    m.energy = 0.0
+    m.request_gesture("peace", 10.0, 5)
+    dur = GESTURES["peace"][0]
+    seq, t = [], 10.0
+    while t < 10.0 + dur:
+        _, ants, _ = m.sample(t, 0.02)
+        seq.append(ants[0])
+        t += 0.02
+    bottom = seq.index(min(seq))
+    assert min(seq) < -ANT_FULL_DOWN * 0.9  # all the way down first...
+    assert max(seq[bottom:]) > -0.05  # ...and then up to the Y
+    assert bottom < len(seq) * 0.45  # in that order, with most of the gesture spent on the way up
+
+
+def test_a_tilted_head_is_not_also_allowed_to_drop():
+    """Rolled right over, the side of the head is already next to the body frame; dropping it as well is
+    what knocks them together, which is what repeated groove nudges on the keypad used to do."""
+    from festival_pet.motion import ROLL_LIMIT, TILT_Z_FROM
+
+    m = MotionComposer()
+    m.energy = 0.0
+    lows = {}
+    for lean in (0.0, 1.0):
+        m.groove_lean = lean
+        m._lean = lean  # already leaning, not easing into it
+        worst = 0.0
+        for k in range(400):
+            t = 20.0 + k * 0.02
+            m.groove = ((k * 0.02 / 0.5) % 1.0, 0.0, 1.0)
+            m.request_gesture("bounce", t, 3)
+            head, _, _ = m.sample(t, 0.02)
+            roll = _euler(head)[0]
+            if abs(roll) > TILT_Z_FROM * ROLL_LIMIT:
+                worst = min(worst, head[2, 3])
+        lows[lean] = worst
+    assert lows[0.0] <= 0.0
+    assert lows[1.0] > -1e-9  # tilted over: no drop at all, whatever the groove and the gesture ask for

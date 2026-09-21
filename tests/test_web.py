@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import threading
 import time
 
@@ -13,6 +14,12 @@ from festival_pet.behavior import Behavior, Observation
 from festival_pet.main import LOG_RING, Pet, PetParts, install_routes
 from festival_pet.memory import FaceMemory
 from festival_pet.motion import MotionComposer
+
+
+def _euler(pose):
+    from scipy.spatial.transform import Rotation as R
+
+    return R.from_matrix(pose[:3, :3]).as_euler("xyz", degrees=True)
 
 
 class NullIO:
@@ -428,14 +435,15 @@ def test_singing_sings_bows_and_saves(tmp_path):
     pet2 = _pet(); pet2.songs_file = pet.songs_file; pet2.load_songs()
     assert pet2.songs == pet.songs
     # a style can be asked for by name, and only a real one
-    for style in ("drumline", "bass"):
-        assert c.post("/api/control", json={"cmd": "sing", "value": style}).status_code == 200
-        assert pet.last_song["style"] == style and c.get("/api/mind").json()["song"]["last"]["style"] == style
-    assert c.post("/api/control", json={"cmd": "sing", "value": "polka"}).status_code == 400
-    # a repertoire saved before styles existed still loads: those songs are drumline ones
-    pet.songs_file.write_text(json.dumps([{"bpm": 100, "bars": ["quarters", "roll_and_stop"], "hi": 1500, "lo": 1000, "name": "old one"}]))
+    assert c.post("/api/control", json={"cmd": "sing", "value": "bass"}).status_code == 200
+    assert pet.last_song["style"] == "bass" and c.get("/api/mind").json()["song"]["last"]["style"] == "bass"
+    for gone in ("polka", "drumline"):  # the drumline beeps were dropped: asking for one is an error now
+        assert c.post("/api/control", json={"cmd": "sing", "value": gone}).status_code == 400
+    # ...and a saved drumline song is dropped on load rather than kept as one it can no longer play
+    pet.songs_file.write_text(json.dumps([{"style": "drumline", "bpm": 100, "bars": ["quarters"], "hi": 1500, "lo": 1000, "name": "old one"},
+                                          {"bpm": 100, "bars": ["quarters"], "hi": 1500, "lo": 1000, "name": "older one"}]))
     pet5 = _pet(); pet5.songs_file = pet.songs_file; pet5.load_songs()
-    assert pet5.songs[0]["style"] == "drumline" and songs.render(pet5.songs[0]).size > 0
+    assert pet5.songs == []
     pet5.stop()
     assert c.post("/api/control", json={"cmd": "singing", "value": True}).status_code == 200
     assert c.get("/api/mind").json()["song"]["next_in_s"] is not None
@@ -595,12 +603,16 @@ def test_the_plur_handshake_trades_a_bracelet_both_ways(tmp_path):
         now += 0.05
     assert max(rolls) > 10.0  # the head really did lean over
     assert max(abs(x) for x in antenna) > 1.5  # ...and the antenna came right down, past the upright gate
-    assert not pet.kandi_on[0] and not comp.loaded[0]  # that one is gone
+    # the ear TOGGLE stays on (you will hang a replacement on it), but the gate is off while the trade runs
+    assert pet.kandi_on[0] and not comp.loaded[0]
     assert "gave one away" in [n for _, k, n in pet.actions_log if k == "kandi"]
     gave_at = [t for t, k, n in pet.actions_log if k == "kandi" and n == "gave one away"][0]
     assert gave_at - give_t0 > KANDI_GIVE_S * 0.5  # it lets go near the end, not the moment it starts
     assert any(k == "sound" and n == "giggle" and abs(t - gave_at) < 0.3 for t, k, n in pet.actions_log)  # giggles as it goes
-    assert abs((now - give_t0) - KANDI_GIVE_S) < 0.4  # the whole thing takes about six seconds
+    assert abs((now - give_t0) - KANDI_GIVE_S) < 0.4  # point, tilt, lower, jiggle it off, hold, come back up
+    # ...and it shakes the antenna about down there, to bounce the bracelet off the twist near the base
+    low = [x for x in antenna[-int(KANDI_GIVE_S / 0.05 * 0.3):]]
+    assert max(low) - min(low) > 0.2
 
     # ...then asks for one back, on the same ear, and freezes
     assert pet._kandi_offer_until > now and pet.kandi_side == 0 and comp.offer_side == 0
@@ -871,4 +883,187 @@ def test_mind_json_never_carries_numpy_scalars():
     import pytest
     with pytest.raises(AssertionError):
         walk(pet.mind())
+    pet.stop()
+
+
+class SpinMove:
+    """A library move that ends with the body swung right round, like the circus one."""
+
+    duration = 0.6
+    sound_path = None
+
+    def evaluate(self, t):
+        return np.eye(4), np.zeros(2), math.radians(180.0 * min(1.0, t / self.duration))
+
+
+def _stub_interpolation():
+    """The blend back out of a library move borrows the SDK's pose interpolation, which is not installed
+    off-robot. A straight lerp of the two matrices is close enough for what this test measures."""
+    import sys
+    import types
+
+    mod = types.ModuleType("reachy_mini.utils.interpolation")
+    mod.linear_pose_interpolation = lambda a, b, t: a * (1 - t) + b * t
+    for name in ("reachy_mini", "reachy_mini.utils", "reachy_mini.utils.interpolation"):
+        sys.modules.setdefault(name, types.ModuleType(name) if name != "reachy_mini.utils.interpolation" else mod)
+    sys.modules["reachy_mini.utils.interpolation"] = mod
+
+
+def test_a_move_that_spins_the_body_unwinds_instead_of_snapping_back():
+    """The circus move finishes 180 degrees round. That offset used to vanish between one tick and the
+    next, so the robot whipped back to front at whatever speed the motors managed — with kandi on its
+    ears, alarming. It has to come back at a walking pace instead."""
+    from festival_pet.main import MOVE_BODY_RETURN_DEG_S
+    from festival_pet.motion import BODY_YAW_LIMIT
+
+    _stub_interpolation()
+    pet = _pet(time.time())  # library moves are timed off the wall clock, so this test runs on it too
+    pet.p.library = lambda name: SpinMove()
+    now = time.time() + 0.1
+    pet.control("move", "circus1")
+    bodies, unwinding = [], []
+    end = now + SpinMove.duration + 6.0
+    while now < end:
+        was_moving = pet.move is not None
+        pet.step(now)
+        bodies.append(pet.last_body)
+        if not was_moving and pet.move is None and len(bodies) > 1:
+            unwinding.append(bodies[-1] - bodies[-2])  # only the way back: the move's own swing is its business
+        now += 0.02
+    assert max(abs(b) for b in bodies) >= BODY_YAW_LIMIT - 1e-6  # the move really did turn it right round
+    assert abs(bodies[-1] - pet.p.composer.body_yaw) < 8.0  # ...and it came back to where the pet itself wants the body
+    fastest = max(abs(d) for d in unwinding) / 0.02
+    assert fastest <= MOVE_BODY_RETURN_DEG_S * 1.5  # no snap: it unwinds at about the rate we asked for
+    pet.stop()
+
+
+def test_the_offered_ear_is_turned_to_face_the_person_and_the_other_stays_safe():
+    """Offering an ear used to leave it out at the side of the head, pointing past whoever was standing
+    there, and with the other ear loaded and gated the two looked nearly the same: you could not tell
+    which one was on offer."""
+    from festival_pet.motion import OFFER_RAD, OFFER_YAW
+
+    pet = _pet()
+    comp = pet.p.composer
+    comp.set_gaze((0.0, 0.0))
+    pet.set_bracelets([0, 1], 1000.2)  # wearing one on each ear
+    pet.touch.update = lambda *a, **k: False  # type: ignore[assignment]  nobody is putting one on yet
+    pet.start_kandi(1000.2, 1)  # the LEFT ear is offered
+    now = 1000.2
+    for _ in range(80):
+        pet.step(now)
+        now += 0.05
+    head, ants, _ = comp.sample(now, 0.02)
+    # offering its left: the head turns to its RIGHT of wherever it had been looking, which is what swings
+    # that ear round to the front instead of leaving it pointing off past them
+    # (not the full OFFER_YAW to the degree: the head can only turn so far on the body, which is fine —
+    #  what matters is that it turns that way at all, where before it turned not at all)
+    turn = _euler(head)[2] - comp._still_yaw
+    assert -OFFER_YAW * 1.3 < turn < -OFFER_YAW * 0.5
+    assert abs(ants[1] - -OFFER_RAD) < 0.05  # the left antenna is the post, tipped toward them
+    # the other ear is wearing one of its own, so it stays up where that is safe rather than leaning away
+    assert abs(ants[0]) < 0.5
+    pet.stop()
+
+
+def test_wearing_kandi_damps_the_head_without_stopping_it_looking_at_you():
+    from festival_pet.motion import ANTENNA_NEUTRAL
+
+    def swing(pet, now):
+        """How far the head moves about over a few seconds of hard grooving."""
+        comp = pet.p.composer
+        comp.set_gaze((20.0, 0.0))
+        for k in range(300):  # settle the gaze and the gate first
+            comp.sample(now + k * 0.02, 0.02)
+        yaws, base = [], now + 6.0
+        for k in range(300):
+            t = base + k * 0.02
+            comp.groove = ((k * 0.02 / 0.5) % 1.0, (k * 0.02 / 2.0) % 1.0, 1.0)
+            comp.groove_mix.sway = 2.0
+            comp._groove_style = 2  # the sway-over-the-bar one: the style that moves the head sideways
+            head, _, _ = comp.sample(t, 0.02)
+            yaws.append(_euler(head)[2])
+        return max(yaws) - min(yaws), sum(yaws) / len(yaws)
+
+    bare = _pet()
+    free, aim_free = swing(bare, 1000.2)
+    bare.stop()
+
+    worn = _pet()
+    worn.control("kandi_damp", 0.8)
+    worn.set_bracelets([0], 1000.2)
+    damped, aim_worn = swing(worn, 1000.2)
+    assert damped < free * 0.5  # a bracelet hanging off an ear is not thrown about any more
+    assert abs(aim_worn - aim_free) < 3.0  # ...and it is still looking at the same person
+    assert worn.control("kandi_damp", 0.0) == {"ok": True}
+    assert worn.p.composer.kandi_damp == 0.0
+    for bad in (-0.1, 1.5):
+        try:
+            worn.control("kandi_damp", bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad} should not be an allowed damping")
+    worn.stop()
+
+
+def test_showing_it_a_plur_pose_teaches_it_what_that_pose_looks_like():
+    from festival_pet.main import PLUR_TRAIN_READY_S, PLUR_TRAIN_WATCH_S
+    from festival_pet.pose import Arms, plur_pose
+
+    def arms(ts):  # arms at 55 degrees with the hands in toward the middle: none of the built-in rules
+        pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0), "l_elbow": (100.0, 120.0),
+               "r_elbow": (150.0, 120.0), "l_wrist": (105.0, 112.0), "r_wrist": (146.0, 110.0),
+               "l_wrist_ok": True, "r_wrist_ok": True}
+        return Arms(ts, 55.0, 57.0, "out", "out", 0.9, 50.0, pts)
+
+    pet = _pet()
+    app = FastAPI()
+    install_routes(app, pet)
+    c = TestClient(app)
+    assert plur_pose(arms(0.0)) is None
+
+    assert c.post("/api/control", json={"cmd": "train_plur", "value": "peace"}).status_code == 200
+    assert c.post("/api/control", json={"cmd": "train_plur", "value": "vibes"}).status_code == 400
+    now = 1000.2
+    pet.train_plur("peace", now)  # again on the pet's own clock, so the test can step it
+    while pet._training is not None and now < 1000.2 + PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S + 0.2:
+        pet._last_obs.arms = arms(now)  # as if the vision thread had a fresh reading each tick
+        pet._train_tick(pet._last_obs.arms, now)
+        if now < 1000.2 + PLUR_TRAIN_READY_S:
+            assert not pet.signs.trained  # still counting them in: it has not started measuring yet
+        now += 0.1
+    assert pet._training is None
+    assert set(pet.signs.trained) == {"peace"}
+    assert abs(pet.signs.trained["peace"]["hi_deg"] - 57.0) < 1.0
+    assert plur_pose(arms(0.0), pet.signs.trained) == "peace"  # it knows that pose now
+    assert "learned peace" in " ".join(n for _, k, n in pet.actions_log if k == "plur")
+
+    # it survives a restart, and it can be thrown away again
+    settings = pet._settings()
+    assert settings["plur_trained"]["peace"]["hi_deg"] == pet.signs.trained["peace"]["hi_deg"]
+    pet2 = _pet()
+    pet2.control("plur_trained", settings["plur_trained"])
+    assert plur_pose(arms(0.0), pet2.signs.trained) == "peace"
+    try:
+        pet2.control("plur_trained", {"vibes": {}})
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("an unknown step should not be quietly accepted")
+    assert c.post("/api/control", json={"cmd": "forget_plur", "value": True}).status_code == 200
+    assert pet.signs.trained == {}
+    pet.stop(); pet2.stop()
+
+
+def test_learning_a_pose_gives_up_when_it_cannot_see_the_arms():
+    from festival_pet.main import PLUR_TRAIN_READY_S, PLUR_TRAIN_WATCH_S
+
+    pet = _pet()
+    pet.train_plur("respect", 1000.2)
+    now = 1000.2
+    while pet._training is not None and now < 1000.2 + PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S + 0.2:
+        pet._train_tick(None, now)  # nobody in front of it
+        now += 0.1
+    assert pet._training is None and pet.signs.trained == {}  # it says so rather than learning nonsense
+    assert "failed" in " ".join(n for _, k, n in pet.actions_log if k == "plur")
     pet.stop()

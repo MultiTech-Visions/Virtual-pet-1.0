@@ -189,3 +189,45 @@ def test_rotation_search_finds_the_roll_and_rotates_the_landmarks_back(monkeypat
     monkeypatch.setattr(vision, "_detect_rotated", lambda d, b, a: (None, np.eye(2, 3, dtype=np.float32)))
     out3, roll3, ok3 = refine_landmarks(ScoreByAngle(), small, row)
     assert not ok3 and roll3 == 0.0 and np.array_equal(out3, row)
+
+
+def test_the_face_is_framed_higher_once_the_arms_are_in_play():
+    """The camera is in the head, so centring the face points the lens at it and the shoulders and elbows
+    fall out of the bottom of the picture — which is why the arm game kept losing them. With arms being
+    read, it aims lower so the face rides near the top and the body fits in."""
+    import numpy as np
+
+    from festival_pet.pose import Arms
+    from festival_pet.vision import DETECT_WIDTH, FACE_TOP_FRAC
+
+    v = _bare_vision(lambda: None, None)
+    del v.process_frame  # the real one is what is under test here
+    v.body = None
+    v.body_enabled = False
+    v.recognizer = None
+    v.preview = False
+    v.pose_live = True  # skip the close-up rotation search: it needs a real detector
+    v._track = None
+    v._next_track_id = 1
+    v._roll_prev = 0.0
+    v._last_body_box = None
+    row = np.zeros(15, dtype=np.float32)
+    row[:4] = (140.0, 40.0, 40.0, 40.0)  # a face box in the 320 px detection frame
+    row[4:14] = (150, 50, 170, 50, 160, 60, 152, 70, 168, 70)
+    v.detector = type("D", (), {"detect": staticmethod(lambda small: row[np.newaxis])})()
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    scale = DETECT_WIDTH / frame.shape[1]
+
+    v._arms = None
+    plain = v.process_frame(frame, np.eye(4), 100.0)
+    assert abs(plain.v - (40.0 + 40.0 * 0.45) / scale) < 1e-6  # between the eyes, as before
+
+    v._arms = Arms(100.0, 30.0, 100.0, "down", "out", 0.9, 40.0, {})
+    framed = v.process_frame(frame, np.eye(4), 100.0)
+    assert framed.u == plain.u  # left and right are unchanged: only the aim height moves
+    assert framed.v - plain.v == (0.5 - FACE_TOP_FRAC) * frame.shape[0]
+    # aiming at that point puts the face a quarter of the way down the frame instead of halfway
+    assert abs((plain.v - framed.v) / frame.shape[0] + 0.5 - FACE_TOP_FRAC) < 1e-9
+
+    v._arms = Arms(90.0, 30.0, 100.0, "down", "out", 0.9, 40.0, {})  # a stale read is nobody's arms
+    assert v.process_frame(frame, np.eye(4), 100.0).v == plain.v

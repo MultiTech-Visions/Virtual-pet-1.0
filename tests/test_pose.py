@@ -219,3 +219,38 @@ def test_a_peace_sign_does_not_read_as_a_hug():
             got.append(r)
         t += 0.1
     assert ("hug",) not in got and ("plur", "peace") in got
+
+
+def test_a_pose_can_be_shown_to_it_and_is_then_recognised():
+    """The built-in rules are a guess at where somebody holds a double peace sign. When the guess is
+    wrong for a particular person — arms lower, hands toward the middle — they can show it the pose
+    instead, and what it measures is added to what it already knows."""
+    from festival_pet.pose import PLUR_TOL, ArmSigns, plur_features, plur_pose
+
+    # arms well below where the rule looks for peace, hands in toward the middle: a shrug, as far as the
+    # built-in rule is concerned, and near enough a hug to the hug detector
+    mine = lambda t: _plur_arms(t, 58.0, 56.0, (75.0, 118.0), (175.0, 116.0))  # noqa: E731
+    assert plur_pose(mine(0.0)) is None
+
+    proto = plur_features(mine(0.0))
+    trained = {"peace": proto}
+    assert plur_pose(mine(0.0), trained) == "peace"
+    # near enough still counts; a different pose does not get swept up in it
+    nearly = _plur_arms(0.0, 58.0 + PLUR_TOL["hi_deg"] * 0.5, 56.0, (78.0, 120.0), (172.0, 118.0))
+    assert plur_pose(nearly, trained) == "peace"
+    assert plur_pose(PLUR_POSES["unity"](0.0), trained) == "unity"  # its own rule, untouched
+    assert plur_pose(_plur_arms(0.0, 10.0, 10.0, (95.0, 180.0), (155.0, 180.0)), trained) is None
+    # ...and what it already knew still works: training only ever widens
+    for name, make in PLUR_POSES.items():
+        assert plur_pose(make(0.0), trained) == name, name
+
+    # once trained, it walks the handshake from that pose, and the hug detector stands down for it
+    signs = ArmSigns()
+    signs.trained = trained
+    got, t = [], 0.0
+    while t < 1.2:
+        r = signs.feed(mine(t), t)
+        if r is not None:
+            got.append(r)
+        t += 0.1
+    assert got == [("plur", "peace")] and signs.plur_step == 1
