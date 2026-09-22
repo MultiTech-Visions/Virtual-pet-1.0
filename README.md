@@ -258,7 +258,7 @@ next one or the handshake lapses.
 | **Peace** | both arms up at 45°, hands well apart and above your shoulders | antennas sink all the way down, then rise together into a Y and bounce; excited chirp |
 | *(between each)* | — | left ear laid right down, right ear standing up and falling toward horizontal as your twelve seconds run out |
 | **Love** | hands together up at your chest, making a heart | both antennas swing back past vertical and cross over behind its head, a coo |
-| **Unity** | hands clasped and lowered right down in front, arms in a V | the peace routine again — down, then up into the Y |
+| **Unity** | arms folded across your chest | the peace routine again — down, then up into the Y |
 | **Respect** | one arm up and bent, forearm and fist straight up at head height, other arm down | a fanfare, and the trade starts |
 
 **Concentrating.** From the moment the first pose lands, it stops being a pet: the gaze is pinned on
@@ -301,6 +301,15 @@ of one it has been shown — and if two poses come out measuring the same, it sa
 the handshake quietly ambiguous. What it learns is **added** to the built-in rules, never substituted for
 them, so training only ever widens what it will accept — and the card shows the five numbers live,
 so you can watch what it makes of you before you teach it anything.
+
+*Unity used to be hands clasped low in front, and it was the worst pose this model could be asked for:
+wrists are the landmarks it is least sure about, low hands sit near the edge of the frame, and "both
+arms down with the hands together" is barely distinguishable from standing still. Folded arms put each
+wrist on the far side of the body from its own shoulder — a big displacement measured against the
+**shoulders**, which the model is surest about — and nothing else in the set comes close to it: on the
+crossing number, folded arms sit a clear half a shoulder width away from peace, love, respect, a hug
+and standing still, and are the only one on the positive side of it. Folded arms are also not a hug,
+however long they are held, which the built-in rule now knows.*
 
 A hug is the same hands-apart shape as peace but with the arms straight out at shoulder height, so
 the height of the wrists separates them; while a handshake is under way the wave and hug detectors

@@ -67,7 +67,7 @@ WAVE_SWINGS = 3  # hand direction reversals...
 WAVE_WINDOW_S = 2.0  # ...within this long
 WAVE_MIN_SWING = 0.12  # each swing at least this fraction of the shoulder width (side to side, relative to the shoulder)
 # The PLUR handshake, done with arms instead of fingers: peace (both arms up in a V, hands apart),
-# love (hands together at chest or higher, making a heart), unity (hands clasped low in front), and
+# love (hands together at chest or higher, making a heart), unity (arms folded across the chest), and
 # respect (one arm held out to it, offering the bracelet). Finger poses are beyond what the pose
 # model gives us at this distance, but these four read clearly from arm angles and where the wrists
 # are, and the sequence matters more than any one of them: each step only counts after the one before.
@@ -79,7 +79,7 @@ PEACE_MIN_SEP = 1.0  # wrists at least this far apart, in shoulder widths
 PEACE_MIN_ABOVE = 0.0  # ...and above the shoulder line, which a hug's arms are not
 TOGETHER_SEP = 0.7  # wrists this close count as hands together
 HEART_MIN_ABOVE = -0.3  # hands together at chest height or higher (in shoulder widths, + is above the shoulders)
-CLASP_MAX_ABOVE = -0.7  # ...and right down in front of them, arms in a V, for the clasp
+CROSS_MIN = 0.12  # unity: each wrist this far past the body midline, in shoulder widths, toward the other side
 RESPECT_FOREARM_DEG = 35.0  # the raised fist: forearm within this of straight up
 RESPECT_MIN_ABOVE = -0.25  # ...with the fist up around head level
 RESPECT_OTHER_DEG = 40.0  # ...and the other arm hanging down
@@ -93,8 +93,9 @@ RESPECT_OTHER_DEG = 40.0  # ...and the other arm hanging down
 # A HUG is trainable too, and is the one that matters most: arms out wide and a double peace sign held
 # out at 45 are nearly the same shape to a pair of arm angles, which is why it kept reading a handshake
 # as a cuddle. Teaching it both, and letting the NEAREST prototype win, is what actually separates them.
-PLUR_FEATURES = ("hi_deg", "lo_deg", "sep", "above", "hi_forearm", "lo_forearm")
-PLUR_TOL = {"hi_deg": 25.0, "lo_deg": 25.0, "sep": 0.5, "above": 0.4, "hi_forearm": 35.0, "lo_forearm": 35.0}
+PLUR_FEATURES = ("hi_deg", "lo_deg", "sep", "above", "hi_forearm", "lo_forearm", "cross")
+PLUR_TOL = {"hi_deg": 25.0, "lo_deg": 25.0, "sep": 0.5, "above": 0.4, "hi_forearm": 35.0,
+            "lo_forearm": 35.0, "cross": 0.35}
 PLUR_TRAIN_MIN = 6  # readings needed before a trained pose is worth keeping
 PLUR_TRAIN_KEEP = 5  # ...and the last this many goes at a pose are kept and averaged
 TRAINABLE = PLUR_STEPS + ("hug",)
@@ -181,7 +182,9 @@ class ArmSigns:
         # A taught pose answers this outright: if what they are doing looks most like the hug it was
         # shown, it is a hug; if it looks most like a handshake pose, it is not one, whatever the arm
         # angles would otherwise have said. Untaught, it falls back to the old "both arms straight out".
-        hugging = (shown == "hug") if shown is not None else (a.left == "out" and a.right == "out")
+        # Arms folded across the chest read as "out" on both sides, which is unity, not an open hug — so
+        # the built-in rule checks they are open as well as out. (A taught hug answers this outright.)
+        hugging = (shown == "hug") if shown is not None else (a.left == "out" and a.right == "out" and not crossed(a))
         if hugging:
             self.watching_until = now + SIGN_WATCH_S
             if self._out_since == 0.0 or now - self._out_last >= HUG_REARM_S:
@@ -246,7 +249,29 @@ def plur_features(a: Arms) -> dict[str, float]:
         "above": (sh_y - _mid(hand["l"], hand["r"])[1]) / scale,
         "hi_forearm": _forearm_deg(p[hi + "_elbow"], hand[hi]),
         "lo_forearm": _forearm_deg(p[lo + "_elbow"], hand[lo]),
+        "cross": _crossing(p, hand, scale),
     }
+
+
+def crossed(a: Arms) -> bool:
+    """Are the arms folded across the body? Nobody hugs with their arms folded."""
+    return plur_features(a)["cross"] >= CROSS_MIN
+
+
+def _crossing(p: dict, hand: dict, scale: float) -> float:
+    """How far the arms are crossed over the body, in shoulder widths. Negative means arms held apart.
+
+    Measured against the SHOULDERS, which are the landmarks this model is surest about — a wrist on the
+    far side of the body from its own shoulder is a big, unambiguous displacement, where "are these two
+    hands near each other" asks the model about exactly the points it is worst at. It also does not care
+    which way somebody is facing: the sign comes from where their own shoulder is.
+    """
+    mid = _mid(p["l_shoulder"], p["r_shoulder"])[0]
+    out = []
+    for side in ("l", "r"):
+        toward = 1.0 if p[side + "_shoulder"][0] < mid else -1.0  # ...the other side of the body
+        out.append((hand[side][0] - mid) * toward / scale)  # + once the wrist is past the midline
+    return float(sum(out) / 2.0)
 
 
 def runs_of(value) -> list[dict[str, float]]:
@@ -281,7 +306,7 @@ def trained_pose(a: Arms, trained: dict[str, list[dict[str, float]]]) -> str | N
         d = 0.0
         for k, tol in PLUR_TOL.items():
             if k not in proto:
-                break
+                continue  # taught before this number existed: it just does not have an opinion on it
             gap = abs(f[k] - float(proto[k])) / tol
             if gap > 1.0:
                 break
@@ -301,9 +326,9 @@ def plur_pose(a: Arms, trained: dict[str, dict[str, float]] | None = None) -> st
     All four are read from arm angles and where the wrists are, which is what this model gives us
     reliably at across-the-tent distance. Peace is arms up at 45 with the hands apart (a hug is the
     same hands-apart shape but with the arms straight out, so the height of the wrists separates
-    them); love is the hands together up at the chest; unity is the same hands, lowered right down
-    in front; respect is one arm raised and bent so the forearm stands straight up, fist at head
-    height, with the other arm down.
+    them); love is the hands together up at the chest; unity is the arms folded across the chest, each
+    wrist past the midline onto the other side of the body; respect is one arm raised and bent so the
+    forearm stands straight up, fist at head height, with the other arm down.
     """
     if trained:
         shown = trained_pose(a, trained)
@@ -320,11 +345,12 @@ def plur_pose(a: Arms, trained: dict[str, dict[str, float]] | None = None) -> st
         above = (sh_y - _mid(p["l_wrist"], p["r_wrist"])[1]) / scale  # + = hands above the shoulders
         if min(l_deg, r_deg) >= PEACE_MIN_DEG and sep >= PEACE_MIN_SEP and above >= PEACE_MIN_ABOVE:
             return "peace"
-        if sep <= TOGETHER_SEP:
-            if above >= HEART_MIN_ABOVE:
-                return "love"
-            if above <= CLASP_MAX_ABOVE:
-                return "unity"
+        if sep <= TOGETHER_SEP and above >= HEART_MIN_ABOVE:
+            return "love"
+    # unity: arms folded across the chest, each wrist past the midline onto the other side of the body
+    if _crossing(p, {s_: (p[s_ + "_wrist"] if p.get(s_ + "_wrist_ok") else p[s_ + "_elbow"]) for s_ in ("l", "r")},
+                 scale) >= CROSS_MIN:
+        return "unity"
     # the raised fist: one forearm standing straight up with the hand about head high, the other arm down
     for side, deg, other in (("l", l_deg, r_deg), ("r", r_deg, l_deg)):
         if other >= RESPECT_OTHER_DEG or not p.get(side + "_wrist_ok"):

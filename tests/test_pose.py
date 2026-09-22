@@ -158,8 +158,9 @@ PLUR_POSES = {
     "peace": lambda t: _plur_arms(t, 135.0, 135.0, (55.0, 60.0), (195.0, 60.0)),
     # hands together up at the chest
     "love": lambda t: _plur_arms(t, 100.0, 100.0, (120.0, 95.0), (133.0, 95.0)),
-    # hands clasped right down in front, arms in a V
-    "unity": lambda t: _plur_arms(t, 25.0, 25.0, (120.0, 175.0), (133.0, 175.0)),
+    # arms folded across the chest: each wrist past the midline, onto the other side of the body
+    # (the person's left shoulder is at image-RIGHT of the midline for someone facing the robot)
+    "unity": lambda t: _plur_arms(t, 55.0, 55.0, (145.0, 118.0), (105.0, 118.0)),
     # right arm up and bent, forearm straight up, fist at head height; left arm down
     "respect": lambda t: _plur_arms(t, 10.0, 120.0, (95.0, 180.0), (165.0, 80.0),
                                     l_elbow=(100.0, 140.0), r_elbow=(163.0, 125.0)),
@@ -311,3 +312,31 @@ def test_a_pose_is_averaged_over_its_last_few_goes_and_one_bad_go_cannot_spoil_i
     signs2.trained = {"peace": good(0)}
     assert trained_pose(_shaped(0.0, 58.0, 56.0, (112.0, 78.0), (140.0, 76.0)), signs2.trained) == "peace"
     assert signs2.add_training("peace", good(1)) == 2
+
+
+def test_unity_is_folded_arms_read_off_the_shoulders_not_the_hands():
+    """Hands clasped low in front was the worst pose this model could be asked for: wrists are the
+    landmarks it is least sure about, low hands sit near the edge of the frame, and 'both arms down with
+    the hands near each other' is barely distinguishable from standing still. Folded arms are measured
+    against the SHOULDERS, which it is surest about, and nothing else looks like them."""
+    from festival_pet.pose import CROSS_MIN, ArmSigns, crossed, plur_features, plur_pose
+
+    folded = lambda t=0.0: _plur_arms(t, 55.0, 55.0, (145.0, 118.0), (105.0, 118.0))  # noqa: E731
+    assert plur_pose(folded()) == "unity"
+
+    # the crossing number separates it from everything else by a mile, and only it is positive
+    everything = {name: plur_features(make(0.0))["cross"] for name, make in PLUR_POSES.items()}
+    everything["hug"] = plur_features(HUG_ARMS(0.0))["cross"]
+    everything["resting"] = plur_features(_plur_arms(0.0, 10.0, 10.0, (95.0, 180.0), (155.0, 180.0)))["cross"]
+    assert everything["unity"] >= CROSS_MIN
+    assert all(v < 0.0 for k, v in everything.items() if k != "unity"), everything
+    assert min(everything["unity"] - v for k, v in everything.items() if k != "unity") > 0.4
+
+    # it does not care which way round somebody is standing: the sign comes from their own shoulders
+    mirrored = _plur_arms(0.0, 55.0, 55.0, (105.0, 118.0), (145.0, 118.0), shoulder=-50.0)
+    assert plur_features(mirrored)["cross"] >= CROSS_MIN
+
+    # and folded arms are not a hug, however long they are held: nobody hugs with their arms folded
+    assert crossed(folded()) and not crossed(HUG_ARMS(0.0))
+    signs = ArmSigns()
+    assert [g for g in (signs.feed(folded(t * 0.1), t * 0.1) for t in range(60)) if g] == []
