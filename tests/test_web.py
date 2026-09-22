@@ -7,6 +7,7 @@ import threading
 import time
 
 import numpy as np
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -950,10 +951,14 @@ def test_a_move_that_spins_the_body_unwinds_instead_of_snapping_back():
     pet.stop()
 
 
-def test_the_offered_ear_is_turned_to_face_the_person_and_the_other_stays_safe():
+@pytest.mark.parametrize("side,turn_sign", [(0, -1.0), (1, 1.0)])
+def test_the_offered_ear_is_turned_to_face_the_person_and_the_other_stays_safe(side, turn_sign):
     """Offering an ear used to leave it out at the side of the head, pointing past whoever was standing
     there, and with the other ear loaded and gated the two looked nearly the same: you could not tell
-    which one was on offer."""
+    which one was on offer.
+
+    Then the head turned the wrong way for both sides: antenna 0 is its LEFT ear, but the offer pose still
+    had the old '0 is right' sign in it, so presenting an ear swung it away from the person."""
     from festival_pet.motion import OFFER_RAD, OFFER_YAW
 
     pet = _pet()
@@ -961,21 +966,22 @@ def test_the_offered_ear_is_turned_to_face_the_person_and_the_other_stays_safe()
     comp.set_gaze((0.0, 0.0))
     pet.set_bracelets([0, 1], 1000.2)  # wearing one on each ear
     pet.touch.update = lambda *a, **k: False  # type: ignore[assignment]  nobody is putting one on yet
-    pet.start_kandi(1000.2, 1)  # the LEFT ear is offered
+    pet.start_kandi(1000.2, side)
     now = 1000.2
     for _ in range(80):
         pet.step(now)
         now += 0.05
     head, ants, _ = comp.sample(now, 0.02)
-    # offering its left: the head turns to its RIGHT of wherever it had been looking, which is what swings
-    # that ear round to the front instead of leaving it pointing off past them
+    # the head turns AWAY from the offered ear — its right for the left ear, its left for the right one —
+    # which is what swings that ear round to the front instead of leaving it pointing off past them
     # (not the full OFFER_YAW to the degree: the head can only turn so far on the body, which is fine —
-    #  what matters is that it turns that way at all, where before it turned not at all)
-    turn = _euler(head)[2] - comp._still_yaw
-    assert -OFFER_YAW * 1.3 < turn < -OFFER_YAW * 0.5
-    assert abs(ants[1] - -OFFER_RAD) < 0.05  # the left antenna is the post, tipped toward them
+    #  what matters is that it turns that way at all, where before it turned the other way)
+    turn = (_euler(head)[2] - comp._still_yaw) * turn_sign
+    assert OFFER_YAW * 0.5 < turn < OFFER_YAW * 1.3
+    post = OFFER_RAD if side == 0 else -OFFER_RAD  # antenna 0 stands up +, antenna 1 stands up -
+    assert abs(ants[side] - post) < 0.05  # the offered antenna is the post, tipped toward them
     # the other ear is wearing one of its own, so it stays up where that is safe rather than leaning away
-    assert abs(ants[0]) < 0.5
+    assert abs(ants[1 - side]) < 0.5
     pet.stop()
 
 

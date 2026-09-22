@@ -1159,7 +1159,7 @@ class Pet:
         ease = max(0.0, tilt - back)
         # The head turns AWAY from the giving side, the same as when it offers one: that is what brings that
         # ear round to the front, where their hand is, instead of leaving it out at the side of the head.
-        comp.hold = (aim + OFFER_YAW * (-1.0 if side else 1.0) * ease, KANDI_GIVE_PITCH * ease, roll * ease, now + 0.3)
+        comp.hold = (aim + OFFER_YAW * (1.0 if side else -1.0) * ease, KANDI_GIVE_PITCH * ease, roll * ease, now + 0.3)
         down_at = KANDI_GIVE_POINT_S + KANDI_GIVE_TILT_S + KANDI_GIVE_LOWER_S
         drop = max(0.0, min(1.0, (u - KANDI_GIVE_POINT_S - KANDI_GIVE_TILT_S) / KANDI_GIVE_LOWER_S)) * (1.0 - back)
         deg = ANTENNA_UP_DEG + (ANTENNA_SHED_DEG - ANTENNA_UP_DEG) * drop

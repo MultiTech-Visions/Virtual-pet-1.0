@@ -612,7 +612,7 @@ class MotionComposer:
         self.still_until = 0.0  # holding dead still (someone is putting something on it)
         self._still = 0.0
         self._still_yaw = 0.0  # where it was looking when it froze: held there, rather than tracking a moving target
-        self.offer_side: int | None = None  # 0 right, 1 left: the antenna held out for a bracelet while still
+        self.offer_side: int | None = None  # antenna index (0 is its LEFT ear) held out for a bracelet while still
         self.loaded = [False, False]  # antennas wearing a bracelet (right, left): held near vertical so it cannot slide off
         self.gentle_until = 0.0  # ...and for a moment after a trade, everything moves smaller
         self._gentle = 0.0
@@ -954,11 +954,14 @@ class MotionComposer:
                 # ...and the other one leans back out of the way, unless it is wearing one of its own, in
                 # which case it stays up where a bracelet is safe and the tilt does the telling instead.
                 away = 0.0 if self.loaded[other] else OFFER_AWAY_RAD
-                sign = 1.0 if self.offer_side == 0 else -1.0  # right antenna: forward is +; left: forward is -
+                sign = 1.0 if self.offer_side == 0 else -1.0  # antenna 0: forward is +; antenna 1: forward is -
                 want_r = sign * (OFFER_RAD if self.offer_side == 0 else away)
                 want_l = sign * (away if self.offer_side == 0 else OFFER_RAD)
                 want_roll = -sign * OFFER_ROLL
-                want_yaw = sign * OFFER_YAW
+                # Antenna 0 is its LEFT ear, and yaw is positive to its left, so offering that one has to turn
+                # the head NEGATIVE — to its right. Getting this backwards swings the offered ear away from
+                # whoever is standing there instead of round to meet them, which is what it used to do.
+                want_yaw = -sign * OFFER_YAW
             yaw = yaw * (1 - k) + (self._still_yaw + want_yaw) * k
             pitch = pitch * (1 - k) + STILL_PITCH * k
             roll = roll * (1 - k) + want_roll * k
