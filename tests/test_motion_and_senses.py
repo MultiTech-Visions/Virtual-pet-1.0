@@ -349,28 +349,44 @@ def test_point_gesture_points_with_that_antenna():
 def test_ear_holds_park_an_antenna_and_expire():
     from festival_pet.motion import ANTENNA_NEUTRAL
 
+    def settle(m, t, seconds=1.2):
+        """A hold is eased in and travels at a limited rate — it does not teleport — so give it a moment."""
+        ants = None
+        while t < t + seconds:
+            _, ants, _ = m.sample(t, 0.02)
+            t += 0.02
+            if t >= settle.end:
+                return ants, t
+        return ants, t
+
     m = MotionComposer()
-    m.ears_away(0, 1.0, hold_s=2.0)
-    _, ants, _ = m.sample(1.1, 0.02)
-    assert ants[0] == -m.EAR_AWAY[0] and abs(ants[1] - ANTENNA_NEUTRAL[1]) < 0.3  # right parked far back, left free
-    m.ears_away(0, 1.5, hold_s=2.0)
-    _, ants, _ = m.sample(1.6, 0.02)
-    assert ants[0] == -m.EAR_AWAY[1]  # keep-away alternates: now forward
-    m.ears_tuck(1, 2.0, hold_s=5.0)
-    _, ants, _ = m.sample(2.1, 0.02)
-    assert ants[1] == -m.EAR_TUCK  # left antenna over the head (its sign flipped: forward)
-    _, ants, _ = m.sample(8.0, 0.02)
-    assert m.ear_hold == [None, None] and abs(ants[1] - ANTENNA_NEUTRAL[1]) < 0.3  # expired
-    m.request_gesture("swat", 8.0, 3, side=1.0)
-    _, ants, _ = m.sample(8.3, 0.02)
+    m.ears_away(0, 1.0, hold_s=4.0)
+    settle.end = 2.2
+    ants, t = settle(m, 1.0)
+    assert abs(ants[0] - -m.EAR_AWAY[0]) < 0.05 and abs(ants[1] - ANTENNA_NEUTRAL[1]) < 0.3  # 0 parked far back, 1 free
+    m.ears_away(0, t, hold_s=4.0)
+    settle.end = t + 1.2
+    ants, t = settle(m, t)
+    assert abs(ants[0] - -m.EAR_AWAY[1]) < 0.05  # keep-away alternates: now forward
+    m.ears_tuck(1, t, hold_s=5.0)
+    settle.end = t + 1.2
+    ants, t = settle(m, t)
+    assert abs(ants[1] - -m.EAR_TUCK) < 0.05  # antenna 1 over the head (its sign flipped: forward)
+    _, ants, _ = m.sample(12.0, 0.02)
+    assert m.ear_hold == [None, None]
+    for k in range(80):  # ...and handed back, eased, not snapped
+        _, ants, _ = m.sample(12.0 + k * 0.02, 0.02)
+    assert abs(ants[1] - ANTENNA_NEUTRAL[1]) < 0.3  # expired
+    m.request_gesture("swat", 14.0, 3, side=1.0)
+    _, ants, _ = m.sample(14.3, 0.02)
     assert ants[1] < ANTENNA_NEUTRAL[1] - 0.5  # the left antenna sweeps forward to bat
     # the nuzzle is a circle, not a push: the face goes up-and-forward, over, then down-and-back, twice
     from festival_pet.motion import NUZZLE_CIRCLES, NUZZLE_S
 
-    m.request_gesture("nuzzle", 10.0, 3)
+    m.request_gesture("nuzzle", 16.0, 3)
     xs, pitches = [], []
-    t = 10.0
-    while t < 10.0 + NUZZLE_S:
+    t = 16.0
+    while t < 16.0 + NUZZLE_S:
         head, _, _ = m.sample(t, 0.02)
         xs.append(head[0, 3])
         pitches.append(_euler(head)[1])
@@ -401,13 +417,18 @@ def test_antennas_as_arms_read_literally_and_follow_fast():
     for i in range(118, 125):
         _, ants, _ = m.sample(i * 0.02, 0.02)
     assert abs(ants[0]) < 0.6 and abs(ants[1]) < 0.6
-    m.ear_clock(0, 0.0, 2.5)  # the clock hand still wins on its antenna
-    _, ants, _ = m.sample(2.52, 0.02)
-    assert ants[0] == m.EAR_CLOCK_DOWN
+    t = 2.5  # the clock hand still wins on its antenna — eased in, so give it a moment to get there
+    while t < 4.0:
+        m.ear_clock(0, 0.0, t)
+        _, ants, _ = m.sample(t, 0.02)
+        t += 0.02
+    assert abs(ants[0] - m.EAR_CLOCK_DOWN) < 0.05
     m.show_arms(None)
-    for i in range(130, 230):
-        _, ants, _ = m.sample(i * 0.02, 0.02)
-    assert abs(ants[0] - ANTENNA_NEUTRAL[0]) < 0.3 and abs(ants[1] - ANTENNA_NEUTRAL[1]) < 0.3  # let go: back to normal
+    end = t + 3.0  # let go: eased back to normal, not snapped back
+    while t < end:
+        _, ants, _ = m.sample(t, 0.02)
+        t += 0.02
+    assert abs(ants[0] - ANTENNA_NEUTRAL[0]) < 0.3 and abs(ants[1] - ANTENNA_NEUTRAL[1]) < 0.3
 
 
 def test_imu_rub_calibration_sets_the_floor_between_rest_and_a_rub():

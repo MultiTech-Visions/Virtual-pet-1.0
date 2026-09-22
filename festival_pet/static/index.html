@@ -300,12 +300,12 @@
       <button class="act" onclick="ctl('plur', false)">Stop</button>
     </div>
     <div class="btns" style="margin:8px 0">
-      <button class="act" id="tr-left" onclick="tradeEar(1)">Trade left ear</button>
-      <button class="act" id="tr-right" onclick="tradeEar(0)">Trade right ear</button>
+      <button class="act" id="tr-left" onclick="tradeEar(0)">Trade left ear</button>
+      <button class="act" id="tr-right" onclick="tradeEar(1)">Trade right ear</button>
     </div>
     <div class="btns" style="margin:8px 0">
-      <button class="act" id="br-left" onclick="toggleEar(1)">Left ear: empty</button>
-      <button class="act" id="br-right" onclick="toggleEar(0)">Right ear: empty</button>
+      <button class="act" id="br-left" onclick="toggleEar(0)">Left ear: empty</button>
+      <button class="act" id="br-right" onclick="toggleEar(1)">Right ear: empty</button>
     </div>
     <div class="sub">Left and right are the robot's own. A trade button runs the whole exchange from that ear and counts down while it waits; press it again to stop. The ear toggles stay on through a trade, on the assumption you will hang a replacement on it.</div>
     <label>Shed tilt <span id="kroll-v"></span>° <span class="sub">(how far it leans to drop one. If it tilts the wrong ear down, use a negative number.)</span></label>
@@ -358,9 +358,10 @@
         <input type="password" id="dev-pass" placeholder="passphrase" style="flex:1;min-width:16em;font-size:15px">
         <button class="act" id="dev-onoff" onclick="devToggle()">Turn the console on</button>
       </div>
-      <label>3 · Install Claude Code on the robot, if it is not there yet <span class="sub">(needs Node 18+ and the internet; one command, once)</span></label>
+      <label>3 · Install, if they are not there yet <span class="sub">(both need the internet, both are once. Node first — Claude Code is a Node program. If apt gives you a Node older than 18, the terminal below is a real shell: <code>curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs</code>. Watch the output; if it asks for a password, type it there.)</span></label>
       <div class="btns">
-        <button class="act" onclick="devRun(devInstall)">Install Claude Code</button>
+        <button class="act" onclick="devRun('sudo apt-get update && sudo apt-get install -y nodejs npm && node --version')">1 · Install Node</button>
+      <button class="act" onclick="devRun(devInstall)">2 · Install Claude Code</button>
         <button class="act big" onclick="devRun('claude')">Start Claude Code</button>
         <button class="act" onclick="devRun('')">Plain shell</button>
         <button class="act" onclick="devRun('python3 scripts/petctl.py watch')">Watch what it sees</button>
@@ -511,11 +512,12 @@ let mimeOn = false, mimeKind = 'head', singing = false, danceAlong = true, kandi
 // One button per ear does the whole exchange from that ear, and cancels it while it is running.
 let training = false;
 function toggleTrain() { ctl('train_plur', training ? false : true); }
-function tradeEar(i) { if (kandiBusy && kandiSide === i) ctl('kandi', false); else ctl('kandi', i ? 'left' : 'right'); }
+const SIDES = ['left', 'right'];  // antenna 0 is the robot's LEFT ear, as the hardware numbers them
+function tradeEar(i) { if (kandiBusy && kandiSide === i) ctl('kandi', false); else ctl('kandi', SIDES[i]); }
 function toggleEar(i) {
-  const on = [wearing.includes('right'), wearing.includes('left')];
+  const on = SIDES.map(name => wearing.includes(name));
   on[i] = !on[i];
-  ctl('bracelet', on[0] && on[1] ? 'both' : on[0] ? 'right' : on[1] ? 'left' : 'none');
+  ctl('bracelet', on[0] && on[1] ? 'both' : on[0] ? SIDES[0] : on[1] ? SIDES[1] : 'none');
 }
 function toggleSinging() { singing = !singing; ctl('singing', singing); $('sing-btn').textContent = 'Singing: ' + (singing ? 'on' : 'off'); }
 function toggleDanceAlong() { danceAlong = !danceAlong; ctl('dance_along', danceAlong); $('dance-btn').textContent = 'Dance-along: ' + (danceAlong ? 'on' : 'off'); }

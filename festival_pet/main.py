@@ -138,9 +138,9 @@ ANTENNA_UP_DEG, ANTENNA_SHED_DEG = 175.0, 5.0  # the antenna as an "arm": up is 
 PLUR_TRAIN_READY_S = 3.0  # "get into the pose" before it starts looking
 PLUR_TRAIN_WATCH_S = 2.5  # ...then this long of readings, whose medians become the prototype
 PLUR_TRAIN_GAP_S = 1.2  # ...then a breath, so the "got it" lands before the next pose is called for
-PLUR_CLOCK_EAR = 0  # the RIGHT antenna runs the countdown: upright is a full window, horizontal is out of time
-PLUR_DOWN_EAR = 1  # ...and the left one is laid right down out of the way, so there is one thing to read
-PLUR_DOWN_RAD = 2.3  # (left antenna: positive is back and down)
+PLUR_CLOCK_EAR = 1  # the RIGHT antenna runs the countdown: upright is a full window, horizontal is out of time
+PLUR_DOWN_EAR = 0  # ...and the left one is laid right down out of the way, so there is one thing to read
+PLUR_DOWN_RAD = -2.3  # (antenna 0, the left one: negative is back and down)
 PLUR_FOCUS_S = 2.0  # it keeps paying attention this long after the last thing that happened
 COMBO_TAPS = 4  # left right left right on the dancing layer...
 COMBO_WINDOW_S = 1.0  # ...this fast: stop dancing
@@ -151,14 +151,24 @@ def _same_pose(a: dict, b: dict) -> bool:
     return all(abs(a[k] - b[k]) <= tol for k, tol in PLUR_TOL.items() if k in a and k in b)
 
 
+# Antenna 0 is the robot's LEFT ear and antenna 1 its right — the order the hardware reports and takes
+# them in. Every side name in this file goes through here, because getting it backwards means the page
+# says "left" and the other ear moves, which is exactly what it used to do.
+SIDE_NAMES = ("left", "right")
+
+
+def _side_name(i: int) -> str:
+    return SIDE_NAMES[i]
+
+
 def _side_arg(value) -> int | None:
-    """A control's antenna argument: "right" -> 0, "left" -> 1, true -> None (let the pet choose)."""
+    """A control's antenna argument: a side name -> its index, true -> None (let the pet choose)."""
     if value is True:
         return None
-    side = {"right": 0, "left": 1}.get(str(value).lower())
-    if side is None:
-        raise ValueError(f"antenna must be 'left' or 'right', not '{value}'")
-    return side
+    name = str(value).lower()
+    if name not in SIDE_NAMES:
+        raise ValueError(f"antenna must be {' or '.join(repr(x) for x in SIDE_NAMES)}, not '{value}'")
+    return SIDE_NAMES.index(name)
 
 
 class RobotIO(Protocol):
@@ -472,8 +482,8 @@ class Pet:
         self._song_t0 = 0.0  # when the audio actually starts, so the choreography lines up with the bars
         self._song_move = ""
         # The kandi trade: which antenna is out (or wearing one), and the clocks for each stage
-        self.kandi_on = [False, False]  # antennas wearing a bracelet (right, left): what it can trade away
-        self.kandi_side: int | None = None  # 0 right, 1 left
+        self.kandi_on = [False, False]  # antennas wearing a bracelet (left, right): what it can trade away
+        self.kandi_side: int | None = None  # 0 left, 1 right
         self._kandi_offer_until = 0.0
         self._kandi_got_at = 0.0  # when something landed on the offered antenna (0 = still waiting)
         self._kandi_give_t0 = 0.0  # when the giving-one-back routine started (0 = not running)
@@ -1115,7 +1125,7 @@ class Pet:
         """
         loaded = [i for i in (0, 1) if self.kandi_on[i]]
         if side is not None and side not in (0, 1):
-            raise ValueError(f"antenna side must be 0 (right) or 1 (left), not {side}")
+            raise ValueError(f"antenna side must be 0 ({SIDE_NAMES[0]}) or 1 ({SIDE_NAMES[1]}), not {side}")
         give = side if side is not None and self.kandi_on[side] else (loaded[0] if loaded else None)
         if give is None:
             self.start_kandi(now, side)
@@ -1126,9 +1136,9 @@ class Pet:
         self._kandi_shed = False
         self.p.composer.loaded[give] = False  # the upright gate has to be open by the time the antenna comes down
         self._kandi_offer_until = self._kandi_got_at = 0.0
-        self.p.behavior._think(now, f"here — this one's for you, off my {'left' if give else 'right'} ear")
+        self.p.behavior._think(now, f"here — this one's for you, off my {_side_name(give)} ear")
         self._dispatch(Action("sound", "fanfare", 4), now)  # da da-da DA: everyone look, something is happening
-        self.actions_log.append((now, "kandi", f"giving the one on the {'left' if give else 'right'} antenna"))
+        self.actions_log.append((now, "kandi", f"giving the one on the {_side_name(give)} antenna"))
 
     def _kandi_give(self, now: float) -> None:
         """Shed a bracelet off an antenna, a step at a time, by tilting that ear's base down to be the
@@ -1175,13 +1185,13 @@ class Pet:
         if side is None:
             side = 0 if not self.kandi_on[0] else 1
         if side not in (0, 1):
-            raise ValueError(f"antenna side must be 0 (right) or 1 (left), not {side}")
+            raise ValueError(f"antenna side must be 0 ({SIDE_NAMES[0]}) or 1 ({SIDE_NAMES[1]}), not {side}")
         self.kandi_side = side
         self._kandi_offer_until = now + KANDI_OFFER_S
         self._kandi_got_at = 0.0
         self.p.composer.hold_still(now, KANDI_OFFER_S + KANDI_SETTLE_S, offer=side)
-        self.p.behavior._think(now, f"here: my {'left' if side else 'right'} ear. I'll hold still, slide it on")
-        self.actions_log.append((now, "kandi", f"offering the {'left' if side else 'right'} antenna"))
+        self.p.behavior._think(now, f"here: my {_side_name(side)} ear. I'll hold still, slide it on")
+        self.actions_log.append((now, "kandi", f"offering the {_side_name(side)} antenna"))
         return side
 
     def _focus(self, obs: Observation, now: float, left_s: float | None = None, window_s: float = 1.0) -> None:
@@ -1336,12 +1346,12 @@ class Pet:
         it move smaller for a moment, which is worth it right after one has been put on."""
         for i in sides:
             if i not in (0, 1):
-                raise ValueError(f"antenna side must be 0 (right) or 1 (left), not {i}")
+                raise ValueError(f"antenna side must be 0 ({SIDE_NAMES[0]}) or 1 ({SIDE_NAMES[1]}), not {i}")
         self.kandi_on = [0 in sides, 1 in sides]
         self.p.composer.loaded = list(self.kandi_on)
         if gentle:
             self.p.composer.gentle_until = now + KANDI_GENTLE_S
-        worn = [n for i, n in enumerate(("right", "left")) if self.kandi_on[i]]
+        worn = [n for i, n in enumerate(SIDE_NAMES) if self.kandi_on[i]]
         self.actions_log.append((now, "kandi", "wearing: " + (", ".join(worn) if worn else "nothing")))
 
     def _kandi_wait(self, obs: Observation, now: float) -> None:
@@ -1373,7 +1383,7 @@ class Pet:
         self._kandi_offer_until = 0.0
         comp.release_still()  # the antenna and head ease back to normal, slowly
         self.set_bracelets(sorted({*[i for i in (0, 1) if self.kandi_on[i]], self.kandi_side}), now, gentle=True)
-        beh._think(now, f"I'm wearing it. on my {'left' if self.kandi_side else 'right'} ear. careful now")
+        beh._think(now, f"I'm wearing it. on my {_side_name(self.kandi_side)} ear. careful now")
         self._dispatch(Action("sound", "tada", 3), now)
         self._dispatch(Action("gesture", "nod", 2), now)  # a nod, not a dance: there is a bracelet on there
         beh.mood.social = min(1.0, beh.mood.social + 0.2)
@@ -1656,11 +1666,11 @@ class Pet:
                                                 "watching": self.signs.watching and now < self.signs.watching_until,
                                                 "plur": None if not (self.signs.plur_step or self._kandi_offer_until) else {"step": self.signs.plur_step, "next": PLUR_STEPS[self.signs.plur_step] if 0 < self.signs.plur_step < len(PLUR_STEPS) else None},
                                                 "features": {k: round(x, 2) for k, x in plur_features(o.arms).items()}},
-            "kandi": {"offering": self._kandi_offer_until > 0.0, "side": None if self.kandi_side is None else ("left" if self.kandi_side else "right"),
+            "kandi": {"offering": self._kandi_offer_until > 0.0, "side": None if self.kandi_side is None else _side_name(self.kandi_side),
                       "waiting_s": round(max(0.0, self._kandi_offer_until - now), 1) if self._kandi_offer_until else None,
                       "got_it": self._kandi_got_at > 0.0, "step": self.signs.plur_step,
                       "giving": self._kandi_give_t0 > 0.0, "roll_deg": self.kandi_roll_deg,
-                      "wearing": [n for i, n in enumerate(("right", "left")) if self.kandi_on[i]],
+                      "wearing": [n for i, n in enumerate(SIDE_NAMES) if self.kandi_on[i]],
                       "settling_s": round(max(0.0, comp.gentle_until - now), 1) if comp.gentle_until > now else None,
                       "step_name": PLUR_STEPS[min(self.signs.plur_step, len(PLUR_STEPS) - 1)],
                       "by_hand": now < self._plur_hold_until, "damp": comp.kandi_damp, "trained": {k: {**{n: round(x, 2) for n, x in prototype(runs_of(v)).items()}, "goes": len(runs_of(v))}
@@ -1792,7 +1802,7 @@ class Pet:
         elif cmd == "ask_kandi":  # just the asking half: hold an ear out, give nothing away
             self.start_kandi(now, _side_arg(value))
         elif cmd == "bracelet":  # which antennas are wearing one: "none", "right", "left" or "both"
-            sides = {"none": [], "off": [], "right": [0], "left": [1], "both": [0, 1]}.get(str(value).lower() if value is not True else "both")
+            sides = {"none": [], "off": [], SIDE_NAMES[0]: [0], SIDE_NAMES[1]: [1], "both": [0, 1]}.get(str(value).lower() if value is not True else "both")
             if sides is None:
                 raise ValueError(f"bracelets must be none, left, right or both, not '{value}'")
             self.set_bracelets(sides, now)

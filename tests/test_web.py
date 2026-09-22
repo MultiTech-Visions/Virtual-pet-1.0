@@ -679,7 +679,7 @@ def test_kandi_falls_back_to_asking_and_can_be_driven_from_the_page():
     # wearing nothing: there is nothing to give, so the trade is just the asking half
     assert not any(pet.kandi_on)
     assert c.post("/api/control", json={"cmd": "kandi", "value": "left"}).status_code == 200
-    assert not pet._kandi_give_t0 and pet.kandi_side == 1 and pet.p.composer.offer_side == 1
+    assert not pet._kandi_give_t0 and pet.kandi_side == 0 and pet.p.composer.offer_side == 0
     m = c.get("/api/mind").json()["kandi"]
     assert m["offering"] and m["side"] == "left" and m["waiting_s"] > 0 and m["wearing"] == []
     # nobody had one ready: it gives up after the timeout and goes back to normal
@@ -692,7 +692,7 @@ def test_kandi_falls_back_to_asking_and_can_be_driven_from_the_page():
     assert not pet._kandi_offer_until and not pet._kandi_give_t0 and pet.signs.plur_step == 0
     # saying which ears are loaded, for when you move a bracelet onto the body
     assert c.post("/api/control", json={"cmd": "bracelet", "value": "both"}).status_code == 200
-    assert pet.p.composer.loaded == [True, True] and c.get("/api/mind").json()["kandi"]["wearing"] == ["right", "left"]
+    assert pet.p.composer.loaded == [True, True] and c.get("/api/mind").json()["kandi"]["wearing"] == ["left", "right"]
     assert c.post("/api/control", json={"cmd": "bracelet", "value": "none"}).status_code == 200
     assert pet.p.composer.loaded == [False, False]
     assert c.post("/api/control", json={"cmd": "bracelet", "value": "elbow"}).status_code == 400
@@ -1367,7 +1367,7 @@ def test_the_handshake_can_be_walked_through_by_hand_when_it_cannot_see_your_arm
     assert pet._kandi_give_t0 == 0.0
     assert now < pet._plur_hold_until  # ...and it keeps concentrating while you decide
     assert c.post("/api/control", json={"cmd": "kandi", "value": "left"}).status_code == 200
-    assert pet._kandi_give_t0 > 0.0 and pet.kandi_side == 1
+    assert pet._kandi_give_t0 > 0.0 and pet.kandi_side == 0  # antenna 0 IS the robot's left ear
     assert pet._plur_hold_until == 0.0  # the trade takes over from the walk-through
 
     # ...and the page drives exactly that: a step by name, or the next one
@@ -1516,4 +1516,38 @@ def test_the_mind_endpoint_degrades_instead_of_dying():
     assert "whatever the robot has" in j["error"]
     assert j["build"]["version"] and any("_controls" in line or "KeyError" in line for line in j["traceback"])
     assert c.get("/api/health").json()["ok"]
+    pet.stop()
+
+
+def test_nothing_flicks_an_antenna_about_during_a_handshake():
+    """An ear hold takes an antenna over completely, and used to do it in a single tick — with the
+    countdown standing aside for each answering gesture and coming straight back after, an antenna
+    slammed between the top of the head and the bottom of it, over and over, hard enough to startle
+    somebody. It has to arrive no faster than the gestures themselves move."""
+    from festival_pet.behavior import FaceObs
+    from festival_pet.pose import PLUR_STEPS
+
+    pet = _pet()
+    comp = pet.p.composer
+    pet.touch.update = lambda *a, **k: False  # type: ignore[assignment]
+    now = 1000.2
+    for _ in range(60):
+        pet.step(now)
+        now += 0.05
+
+    fastest, prev = [0.0, 0.0], None
+    for _ in PLUR_STEPS:
+        pet.plur_next(now)
+        for _ in range(45):
+            pet._last_obs.face = FaceObs(1, 8.0, 0.0, 0.05, None, 0.0)
+            pet.step(now)
+            _, ants, _ = comp.sample(now, 0.02)
+            if prev is not None:
+                for k in (0, 1):
+                    fastest[k] = max(fastest[k], abs(ants[k] - prev[k]) / 0.06)
+            prev = list(ants)
+            now += 0.06
+    # the antenna the countdown keeps taking over must not move faster than the one nobody is holding
+    assert fastest[0] < fastest[1] * 1.5, f"the held antenna is being flicked about: {fastest}"
+    assert max(fastest) < 8.0, f"too fast for something a foot from somebody's face: {fastest}"
     pet.stop()

@@ -261,6 +261,18 @@ next one or the handshake lapses.
 | **Unity** | arms folded across your chest | the peace routine again — down, then up into the Y |
 | **Respect** | one arm up and bent, forearm and fist straight up at head height, other arm down | a fanfare, and the trade starts |
 
+*Left means its left.* Antenna 0 is the robot's left ear and antenna 1 its right — the order the
+hardware reports and takes them in — and every side name in the app goes through one table, because
+having that backwards means the page says "left" and the other ear moves, which is exactly what it
+used to do.
+
+*And an ear hold no longer flicks.* Parking an antenna somewhere takes it over completely, and it used
+to do that in a single tick and hand it back just as abruptly. With the countdown standing aside for
+each answering gesture and coming straight back afterwards, an antenna slammed between the top of the
+head and the bottom of it, over and over, fast enough to startle whoever was standing there. The
+takeover is eased and rate-limited now, tuned until the fastest antenna move in a whole handshake is
+the *gesture's* own speed with the hold adding nothing on top.
+
 **Concentrating.** From the moment the first pose lands, it stops being a pet: the gaze is pinned on
 whoever is in front of it (and held where they were if the camera loses them for a moment), no glance,
 no hum, no game, no song, and the pose model runs on every frame. Between poses — once its answering
@@ -574,10 +586,13 @@ until you switch it on with a passphrase of at least six characters, and the Web
 passphrase on every connection rather than trusting the page. Turning it off kills the session. Turn it
 off when you are done, and certainly before the festival.
 
-Setup, once, in the tab itself: paste an **API key** (written to a 0600 file on the robot, never
+Setup, once, in the tab itself — there are buttons for each step, and they run in the terminal below
+so you can watch the output and type a password if it asks: paste an **API key** (written to a 0600 file on the robot, never
 logged, never in the trace; the page only ever shows the last four characters), set a **passphrase**,
-then **Install Claude Code** (`npm install -g @anthropic-ai/claude-code`, needs Node 18+ — the tab says
-whether Node is there and which version). After that, **Start Claude Code** and talk to it. xterm.js is
+then **Install Node** (`apt-get install -y nodejs npm`) and **Install Claude Code**
+(`npm install -g @anthropic-ai/claude-code`, which is a Node program, hence the order). The tab says
+whether each is there and which version. If apt gives you a Node older than 18, the terminal is a real
+shell: `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs`. After that, **Start Claude Code** and talk to it. xterm.js is
 vendored into the package rather than loaded from a CDN, because there is no CDN on a campsite.
 
 **`scripts/petctl.py`** is the same API with a short name on it, for a session in that terminal:

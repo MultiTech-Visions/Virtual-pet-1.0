@@ -50,6 +50,10 @@ def arm_rad(deg: float) -> float:
 
 
 ARM_LEVEL_DEG = {"down": 0.0, "out": 90.0, "up": 180.0}  # the three flag positions the arm game shows
+EAR_HOLD_RATE = 3.5  # how fast a hold takes an antenna over, and hands it back (eased, per second)
+EAR_HOLD_SPEED = 4.0  # ...and the fastest the held antenna itself travels, radians per second.
+#                       Tuned until a handshake's fastest antenna move is the GESTURE's own speed and
+#                       the hold adds nothing on top: past that it reads as a flick, and it startles people.
 LEAN_FADE_S = 2.0  # a keypad groove nudge fades out over about this long (a few beats)
 STILL_PITCH = 10.0  # head dipped a little while it holds still: an offered head, and a stable antenna
 OFFER_RAD = 0.14  # the offered antenna: just past vertical, tipped toward them so a bracelet slides down it
@@ -635,6 +639,8 @@ class MotionComposer:
         self.ear_hold: list[float | None] = [None, None]
         self.ear_hold_until = [0.0, 0.0]
         self._ear_away_k = [0, 0]  # keep-away alternates positions per antenna
+        self._ear_level = [0.0, 0.0]  # how much a hold has taken each antenna over, eased
+        self._ear_rad = [ANTENNA_NEUTRAL[0], ANTENNA_NEUTRAL[1]]  # ...and where it is on the way there
         # The antennas as arms (arm_rad): (robot-left deg, robot-right deg) to show, until when; smoothed fast
         # enough to follow a dancer at 120 bpm. An ear hold (the clock hand) still wins on its antenna.
         self.arms: tuple[float, float] | None = None
@@ -895,14 +901,27 @@ class MotionComposer:
             ant_l = ant_l * (1 - self._arms_level) + self._arms_rad[0] * self._arms_level
             ant_r = ant_r * (1 - self._arms_level) + self._arms_rad[1] * self._arms_level
 
-        for i, held in enumerate(self.ear_hold):
-            if held is not None and now < self.ear_hold_until[i]:
-                if i == 0:
-                    ant_r = held
-                else:
-                    ant_l = held
-            elif held is not None:
+        # An ear hold takes an antenna over completely. It used to do so INSTANTLY, and to let go just as
+        # instantly when it expired: with a hold going on and off — the handshake's countdown standing
+        # aside for each answering gesture and coming back after — the antenna slammed between the top of
+        # the head and the bottom of it, over and over, hard enough to startle somebody. So the takeover
+        # is eased in and out, and the antenna travels there at a sane rate instead of teleporting.
+        for i in (0, 1):
+            held, on = self.ear_hold[i], self.ear_hold[i] is not None and now < self.ear_hold_until[i]
+            if held is not None and not on:
                 self.ear_hold[i] = None
+            self._ear_level[i] += ((1.0 if on else 0.0) - self._ear_level[i]) * min(1.0, dt * EAR_HOLD_RATE)
+            if on:
+                step = EAR_HOLD_SPEED * dt
+                self._ear_rad[i] += max(-step, min(step, held - self._ear_rad[i]))
+            elif self._ear_level[i] < 0.01:
+                self._ear_rad[i] = ant_r if i == 0 else ant_l  # not holding: keep it where the pose is
+            k = self._ear_level[i]
+            if k > 0.001:
+                if i == 0:
+                    ant_r = ant_r * (1 - k) + self._ear_rad[0] * k
+                else:
+                    ant_l = ant_l * (1 - k) + self._ear_rad[1] * k
 
         if self.mode == "held":
             # relaxed, a touch curled-in
