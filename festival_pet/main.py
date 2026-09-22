@@ -44,7 +44,8 @@ from festival_pet.motion import BODY_YAW_LIMIT, OFFER_YAW, MotionComposer, turn_
 from festival_pet import songs
 from festival_pet.senses import ImuRubDetector, LoudSoundDetector, PickupDetector, PoseHistory, SelfMotionGate, TouchDetector
 from festival_pet.vision import Sighting
-from festival_pet.pose import PLUR_STEP_WINDOW_S, PLUR_STEPS, PLUR_TOL, PLUR_TRAIN_MIN, ArmSigns, plur_features
+from festival_pet.pose import (PLUR_STEP_WINDOW_S, PLUR_STEPS, PLUR_TOL, PLUR_TRAIN_KEEP, PLUR_TRAIN_MIN,
+                               TRAINABLE, ArmSigns, plur_features, prototype, runs_of)
 from festival_pet.tap_tempo import TapTempo
 from festival_pet.devconsole import DevConsole
 from festival_pet.trace import Recorder
@@ -476,6 +477,7 @@ class Pet:
         self._kandi_got_at = 0.0  # when something landed on the offered antenna (0 = still waiting)
         self._kandi_give_t0 = 0.0  # when the giving-one-back routine started (0 = not running)
         self._kandi_shed = False  # the bracelet has been shaken off the end this time round
+        self._plur_hold_until = 0.0  # being walked through the handshake by hand: keep concentrating
         self.kandi_roll_deg = 25.0  # how far to tilt the head to shed a bracelet; flip the sign if it leans the wrong way
         self._singing_until = 0.0
         self.songs_file: Path | None = None
@@ -736,7 +738,8 @@ class Pet:
         # ---------------- brain
         solo = comp._gesture is not None and comp._gesture.name in SOLO_GESTURES and comp.gesture_active(now)
         performing = now < self._singing_until or self._next_song_at > 0.0  # a gap between songs is still the act
-        trading = self.signs.plur_step > 0 or self._kandi_offer_until > 0.0 or self._kandi_give_t0 > 0.0  # mid-trade: nothing else starts
+        trading = (self.signs.plur_step > 0 or now < self._plur_hold_until
+                   or self._kandi_offer_until > 0.0 or self._kandi_give_t0 > 0.0)  # mid-trade: nothing else starts
         obs.busy = ("mime" if self.mime.active else "plur" if self._training is not None else "sing" if performing
                     else "kandi" if trading else "gesture" if solo else None)
         # Manual groove with a tempo in: we are dancing. The brain treats it like a beat (no games, songs, mirror
@@ -772,8 +775,8 @@ class Pet:
         # pet for a minute — see _focus.
         if self._training is not None:
             self._train_tick(obs, now)
-        elif self.signs.plur_step:
-            left = PLUR_STEP_WINDOW_S - (now - self.signs.plur_at)
+        elif self.signs.plur_step or now < self._plur_hold_until:
+            left = max(PLUR_STEP_WINDOW_S - (now - self.signs.plur_at), self._plur_hold_until - now)
             self._focus(obs, now, left, PLUR_STEP_WINDOW_S)
         elif self._focus_gaze is not None:
             self._focus_gaze = None
@@ -1042,7 +1045,7 @@ class Pet:
         self._song_move = move
         return (self.tap.phase(now), self.tap.bar_phase(now), SONG_GROOVE * songs.energy(move) * self.groove_scale)
 
-    def _plur_step(self, step: str, now: float) -> None:
+    def _plur_step(self, step: str, now: float, trade: bool = True) -> None:
         """One step of the PLUR handshake landed: answer it in kind.
 
         Peace, love, unity, respect. The last one is the one that matters: it stops dead and offers its
@@ -1065,11 +1068,44 @@ class Pet:
         elif step == "respect":
             beh._think(now, "...and respect")
             self._dispatch(Action("sound", "happy", 3), now)
-            self.trade_kandi(now)
+            if trade:
+                self.trade_kandi(now)
+            else:  # being walked through by hand: the ear is somebody's choice, not its own
+                beh._think(now, "...which ear shall I give you?")
+                self._plur_hold_until = now + PLUR_STEP_WINDOW_S
         else:
             raise KeyError(f"unknown PLUR step '{step}'")
         beh._last_interaction = now
         beh.mood.boredom = max(0.0, beh.mood.boredom - 0.15)
+
+    def plur_next(self, now: float, step: str | None = None) -> str:
+        """Walk the handshake by hand, one step per call.
+
+        The pose model is doing its best with someone's arms across a tent in bad light, and when it
+        cannot see the peace sign the whole trade is unreachable — which is no good with somebody
+        standing there holding a bracelet out. This is the same routine driven from the page instead of
+        from the camera: tap for peace, tap for love, tap for unity, tap for respect, then pick the ear.
+        It answers each pose exactly as it would have, countdown and all, so it looks no different to
+        whoever is standing in front of it.
+        """
+        if step in (None, "", "next", True):
+            step = PLUR_STEPS[min(self.signs.plur_step, len(PLUR_STEPS) - 1)]
+        if step not in PLUR_STEPS:
+            raise KeyError(f"unknown PLUR step '{step}'. Known: {', '.join(PLUR_STEPS)}, next")
+        i = PLUR_STEPS.index(step)
+        self.signs.plur_step = (i + 1) % len(PLUR_STEPS)  # so "next" walks on, and respect starts over
+        self.signs.plur_at = now
+        self._plur_hold_until = now + PLUR_STEP_WINDOW_S  # keep concentrating between taps
+        self.actions_log.append((now, "plur", f"{step} (by hand)"))
+        self._plur_step(step, now, trade=False)
+        return step
+
+    def stop_plur(self, now: float) -> None:
+        """Out of the handshake, by hand or because it was a false start."""
+        self.signs.plur_step = 0
+        self._plur_hold_until = 0.0
+        self.p.composer.ears_clear()
+        self.actions_log.append((now, "plur", "handshake stopped"))
 
     def trade_kandi(self, now: float, side: int | None = None) -> None:
         """The whole exchange: give one of its own away, then hold the same ear out for one back.
@@ -1084,6 +1120,7 @@ class Pet:
             self.start_kandi(now, side)
             return
         self.kandi_side = give
+        self._plur_hold_until = 0.0  # the trade takes over from the walk-through
         self._kandi_give_t0 = now
         self._kandi_shed = False
         self.p.composer.loaded[give] = False  # the upright gate has to be open by the time the antenna comes down
@@ -1186,14 +1223,14 @@ class Pet:
         get into it, a beep when it starts watching, two and a half seconds of reading, a beep for yes or
         no, a breath, and straight on to the next one. It focuses the whole way through (see ``_focus``).
         """
-        queue = list(PLUR_STEPS) if step in ("all", "", "true", "True") else [step]
+        queue = list(TRAINABLE) if step in ("all", "", "true", "True") else [step]
         for name in queue:
-            if name not in PLUR_STEPS:
-                raise KeyError(f"unknown PLUR step '{name}'. Known: {', '.join(PLUR_STEPS)}, all")
+            if name not in TRAINABLE:
+                raise KeyError(f"cannot be taught '{name}'. Known: {', '.join(TRAINABLE)}, all")
         self._training = {"queue": queue, "step": "", "phase": "", "until": now, "samples": [], "at": 0.0, "learned": []}
         self._focus_gaze = None
         self._dispatch(Action("sound", "mime_start", 4), now)
-        self.p.behavior._think(now, "teach me the handshake. watch my ear for the countdown")
+        self.p.behavior._think(now, "teach me. watch my ear for the countdown")
         self.actions_log.append((now, "plur", "learning " + ", ".join(queue)))
         self._train_next(now)
 
@@ -1240,18 +1277,21 @@ class Pet:
             step, samples = t["step"], t["samples"]
             if len(samples) >= PLUR_TRAIN_MIN:
                 proto = {k: float(np.median([s[k] for s in samples])) for k in samples[0]}
-                # Two poses it cannot tell apart would make the handshake ambiguous for good, and silently:
-                # it would answer whichever came first in the list every time. Say so instead.
-                clash = [n for n in self.signs.trained if n != step and _same_pose(self.signs.trained[n], proto)]
-                self.signs.trained[step] = proto
+                runs = self.signs.add_training(step, proto)
                 t["learned"].append(step)
+                # Two poses it cannot tell apart would leave the handshake ambiguous for good, and
+                # silently: it would answer whichever came first every time. Say so instead. (Compared
+                # against the AVERAGED pose, which is what it will actually be matching against.)
+                mine = prototype(runs_of(self.signs.trained[step]))
+                clash = [n for n in self.signs.trained
+                         if n != step and _same_pose(prototype(runs_of(self.signs.trained[n])), mine)]
                 if clash:
                     beh._think(now, f"...but that looks the same to me as {', '.join(clash)}. make them more different?")
                     self.actions_log.append((now, "plur", f"{step} looks the same as {', '.join(clash)}"))
-                beh._think(now, f"got it: that's {step}")
+                beh._think(now, f"got it: that's {step}" + (f" (averaged over {runs} goes)" if runs > 1 else ""))
                 self._dispatch(Action("sound", "tada", 4), now)
                 self._dispatch(Action("gesture", "nod", 3), now)
-                self.actions_log.append((now, "plur", f"learned {step} from {len(samples)} readings"))
+                self.actions_log.append((now, "plur", f"learned {step} from {len(samples)} readings ({runs} goes kept)"))
             else:
                 beh._think(now, f"...couldn't see your arms well enough for {step}")
                 self._dispatch(Action("sound", "confused", 4), now)
@@ -1281,6 +1321,7 @@ class Pet:
         """Stop mid-trade (it was started by mistake, or nobody came)."""
         self._kandi_offer_until = self._kandi_got_at = self._kandi_give_t0 = 0.0
         self._kandi_shed = False
+        self._plur_hold_until = 0.0
         self._kandi_regate()
         self.signs.plur_step = 0
         self.p.composer.hold = None
@@ -1612,7 +1653,7 @@ class Pet:
             "mime": self.mime.status(now),
             "arms": None if o.arms is None else {"left": o.arms.left, "right": o.arms.right, "left_deg": round(o.arms.left_deg), "right_deg": round(o.arms.right_deg), "conf": round(o.arms.conf, 2), "shoulder_px": round(o.arms.shoulder_px),
                                                 "watching": self.signs.watching and now < self.signs.watching_until,
-                                                "plur": None if not (self.signs.plur_step or self._kandi_offer_until) else {"step": self.signs.plur_step, "next": PLUR_STEPS[self.signs.plur_step] if self.signs.plur_step else None},
+                                                "plur": None if not (self.signs.plur_step or self._kandi_offer_until) else {"step": self.signs.plur_step, "next": PLUR_STEPS[self.signs.plur_step] if 0 < self.signs.plur_step < len(PLUR_STEPS) else None},
                                                 "features": {k: round(x, 2) for k, x in plur_features(o.arms).items()}},
             "kandi": {"offering": self._kandi_offer_until > 0.0, "side": None if self.kandi_side is None else ("left" if self.kandi_side else "right"),
                       "waiting_s": round(max(0.0, self._kandi_offer_until - now), 1) if self._kandi_offer_until else None,
@@ -1620,7 +1661,8 @@ class Pet:
                       "giving": self._kandi_give_t0 > 0.0, "roll_deg": self.kandi_roll_deg,
                       "wearing": [n for i, n in enumerate(("right", "left")) if self.kandi_on[i]],
                       "settling_s": round(max(0.0, comp.gentle_until - now), 1) if comp.gentle_until > now else None,
-                      "damp": comp.kandi_damp, "trained": {k: {n: round(x, 2) for n, x in v.items()} for k, v in self.signs.trained.items()},
+                      "step_name": PLUR_STEPS[min(self.signs.plur_step, len(PLUR_STEPS) - 1)],
+                      "by_hand": now < self._plur_hold_until, "damp": comp.kandi_damp, "trained": {k: {n: round(x, 2) for n, x in v.items()} for k, v in self.signs.trained.items()},
                       "training": None if self._training is None else {"step": self._training["step"], "phase": self._training["phase"],
                                                                        "queue": list(self._training["queue"]), "learned": list(self._training["learned"]),
                                                                        "left_s": round(max(0.0, self._training["until"] - now), 1),
@@ -1740,6 +1782,11 @@ class Pet:
                 self.cancel_kandi(now)
             else:
                 self.trade_kandi(now, _side_arg(value))
+        elif cmd == "plur":  # walk the handshake by hand: "next", or a step by name; false to stop
+            if value in (False, 0, None, "stop"):
+                self.stop_plur(now)
+            else:
+                return {"ok": True, "step": self.plur_next(now, None if value is True else str(value))}
         elif cmd == "ask_kandi":  # just the asking half: hold an ear out, give nothing away
             self.start_kandi(now, _side_arg(value))
         elif cmd == "bracelet":  # which antennas are wearing one: "none", "right", "left" or "both"
@@ -1766,11 +1813,12 @@ class Pet:
             self.actions_log.append((now, "plur", "forgot trained poses"))
         elif cmd == "plur_trained":  # restoring the lot from the settings file
             if not isinstance(value, dict):
-                raise ValueError("trained PLUR poses must be a mapping of step name to its numbers")
+                raise ValueError("taught poses must be a mapping of pose name to the goes at it")
             for step in value:
-                if step not in PLUR_STEPS:
-                    raise KeyError(f"unknown PLUR step '{step}'. Known: {', '.join(PLUR_STEPS)}")
-            self.signs.trained = {k: {n: float(x) for n, x in v.items()} for k, v in value.items()}
+                if step not in TRAINABLE:
+                    raise KeyError(f"cannot be taught '{step}'. Known: {', '.join(TRAINABLE)}")
+            self.signs.trained = {k: [{n: float(x) for n, x in run.items()} for run in runs_of(v)[-PLUR_TRAIN_KEEP:]]
+                                  for k, v in value.items()}
         elif cmd == "dance_along":
             self.dance_along = bool(value)
         elif cmd == "singing":

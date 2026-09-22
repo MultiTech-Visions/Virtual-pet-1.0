@@ -1053,13 +1053,13 @@ def test_showing_it_a_plur_pose_teaches_it_what_that_pose_looks_like():
     assert len(ticks) > 10 and max(ticks) - min(ticks) > 0.5
     assert set(d for d in downs if d is not None) == {PLUR_DOWN_RAD}  # the other ear is laid down out of the way
     assert set(pet.signs.trained) == {"peace"}
-    assert abs(pet.signs.trained["peace"]["hi_deg"] - 57.0) < 1.0
+    assert abs(pet.signs.trained["peace"][0]["hi_deg"] - 57.0) < 1.0
     assert plur_pose(arms(0.0), pet.signs.trained) == "peace"  # it knows that pose now
     assert "learned peace" in " ".join(n for _, k, n in pet.actions_log if k == "plur")
 
     # it survives a restart, and it can be thrown away again
     settings = pet._settings()
-    assert settings["plur_trained"]["peace"]["hi_deg"] == pet.signs.trained["peace"]["hi_deg"]
+    assert settings["plur_trained"]["peace"][0]["hi_deg"] == pet.signs.trained["peace"][0]["hi_deg"]
     pet2 = _pet()
     pet2.control("plur_trained", settings["plur_trained"])
     assert plur_pose(arms(0.0), pet2.signs.trained) == "peace"
@@ -1130,7 +1130,7 @@ def test_teaching_the_handshake_runs_as_one_routine_and_concentrates():
     running down an antenna so you can see it is still waiting for you."""
     from festival_pet.behavior import FaceObs
     from festival_pet.main import PLUR_CLOCK_EAR, PLUR_TRAIN_GAP_S, PLUR_TRAIN_READY_S, PLUR_TRAIN_WATCH_S
-    from festival_pet.pose import PLUR_STEPS, Arms
+    from festival_pet.pose import TRAINABLE, Arms
 
     def arms(ts):
         pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0), "l_elbow": (100.0, 120.0),
@@ -1143,7 +1143,7 @@ def test_teaching_the_handshake_runs_as_one_routine_and_concentrates():
     pet.train_plur("all", 1000.2)
     now, called, clocks = 1000.2, [], []
     per_step = PLUR_TRAIN_READY_S + PLUR_TRAIN_WATCH_S + PLUR_TRAIN_GAP_S
-    while pet._training is not None and now < 1000.2 + per_step * len(PLUR_STEPS) + 2.0:
+    while pet._training is not None and now < 1000.2 + per_step * len(TRAINABLE) + 2.0:
         obs = Observation(arms=arms(now), face=FaceObs(1, 20.0, -3.0, 0.05, None, 0.0))
         pet._train_tick(obs, now)
         called.append(pet._training["step"] if pet._training else "")
@@ -1154,12 +1154,12 @@ def test_teaching_the_handshake_runs_as_one_routine_and_concentrates():
         now += 0.1
     # it called for all four itself, in order, without being told again
     order = [s for i, s in enumerate(called) if s and (i == 0 or s != called[i - 1])]
-    assert order == list(PLUR_STEPS)
-    assert set(pet.signs.trained) == set(PLUR_STEPS)  # and learned every one of them
+    assert order == list(TRAINABLE)  # the four handshake poses AND the hug they get confused with
+    assert set(pet.signs.trained) == set(TRAINABLE)  # and learned every one of them
     assert pet._training is None and pet.p.composer.ear_hold[PLUR_CLOCK_EAR] is None  # the clock is put away
     ticks = [c for c in clocks if c is not None]
     assert len(ticks) > 40 and max(ticks) - min(ticks) > 0.5  # a countdown really ran, all the way through
-    assert "learning done: 4 pose(s)" in [n for _, k, n in pet.actions_log if k == "plur"]
+    assert f"learning done: {len(TRAINABLE)} pose(s)" in [n for _, k, n in pet.actions_log if k == "plur"]
     pet.stop()
 
 
@@ -1320,4 +1320,61 @@ def test_tapping_the_keypad_turns_manual_groove_on_and_shows_a_tempo():
         now += 0.4
     m = c.get("/api/mind").json()["senses"]["tap"]
     assert abs(m["bpm"] - 150.0) < 1.0 and m["downbeat_known"]
+    pet.stop()
+
+
+def test_the_handshake_can_be_walked_through_by_hand_when_it_cannot_see_your_arms():
+    """The pose model is doing its best with someone's arms across a tent in bad light, and when it
+    cannot see the peace sign the whole trade is unreachable — with somebody standing there holding a
+    bracelet out. So the same routine can be driven from the page instead of from the camera."""
+    from festival_pet.behavior import FaceObs
+    from festival_pet.main import PLUR_CLOCK_EAR
+    from festival_pet.pose import PLUR_STEPS
+
+    pet = _pet()
+    app = FastAPI()
+    install_routes(app, pet)
+    c = TestClient(app)
+    comp = pet.p.composer
+    pet.set_bracelets([0, 1], 1000.2)
+    pet.touch.update = lambda *a, **k: False  # type: ignore[assignment]
+    now = 1000.2
+    for _ in range(60):  # let the wake gesture finish
+        pet.step(now)
+        now += 0.05
+
+    seen = []
+    for expected in PLUR_STEPS:
+        # on the pet's own clock: the page's route stamps with time.time(), which this fake clock is not
+        assert pet.plur_next(now) == expected
+        gestures = set()
+        for _ in range(30):
+            pet._last_obs.face = FaceObs(1, 8.0, 0.0, 0.05, None, 0.0)
+            pet.step(now)
+            if comp.gesture_active(now) and comp._gesture is not None:
+                gestures.add(comp._gesture.name)
+            now += 0.06
+        seen.append((expected, gestures))
+        assert pet._last_obs.busy == "kandi", "it should be concentrating, as it would from the camera"
+    # it answers each pose the way it answers the real thing
+    assert "peace" in seen[0][1] and "heart" in seen[1][1] and "peace" in seen[2][1]
+    for _ in range(60):  # once the answering animation is done, the countdown takes the antennas back
+        pet.step(now)
+        now += 0.06
+    assert comp.ear_hold[PLUR_CLOCK_EAR] is not None  # the countdown runs between taps, as ever
+
+    # respect does NOT pick an ear for you: that is the point of doing it by hand
+    assert pet._kandi_give_t0 == 0.0
+    assert now < pet._plur_hold_until  # ...and it keeps concentrating while you decide
+    assert c.post("/api/control", json={"cmd": "kandi", "value": "left"}).status_code == 200
+    assert pet._kandi_give_t0 > 0.0 and pet.kandi_side == 1
+    assert pet._plur_hold_until == 0.0  # the trade takes over from the walk-through
+
+    # ...and the page drives exactly that: a step by name, or the next one
+    pet.cancel_kandi(now)
+    assert c.post("/api/control", json={"cmd": "plur", "value": "next"}).json()["step"] == "peace"
+    assert c.post("/api/control", json={"cmd": "plur", "value": "respect"}).json()["step"] == "respect"
+    assert c.post("/api/control", json={"cmd": "plur", "value": "cartwheel"}).status_code == 400
+    assert c.post("/api/control", json={"cmd": "plur", "value": False}).status_code == 200
+    assert pet.signs.plur_step == 0 and pet._plur_hold_until == 0.0
     pet.stop()

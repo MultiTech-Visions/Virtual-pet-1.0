@@ -254,3 +254,60 @@ def test_a_pose_can_be_shown_to_it_and_is_then_recognised():
             got.append(r)
         t += 0.1
     assert got == [("plur", "peace")] and signs.plur_step == 1
+
+
+def _shaped(ts, l_deg, r_deg, l_wrist, r_wrist):
+    from festival_pet.pose import arm_level
+    return _plur_arms(ts, l_deg, r_deg, l_wrist, r_wrist)
+
+
+def test_teaching_it_a_hug_is_what_tells_a_hug_from_a_peace_sign():
+    """Arms out wide and a double peace sign held at 45 are nearly the same shape to a pair of arm
+    angles, which is why a handshake kept being read as a cuddle. Teaching it both turns the question
+    from 'is this a peace sign?' into 'which of these is it most like?'."""
+    from festival_pet.pose import ArmSigns, plur_features, plur_pose, trained_pose
+
+    peace = lambda t=0.0: _shaped(t, 58.0, 56.0, (112.0, 78.0), (140.0, 76.0))  # noqa: E731  this person's peace
+    hug = lambda t=0.0: _shaped(t, 92.0, 90.0, (35.0, 100.0), (215.0, 101.0))  # noqa: E731
+
+    assert plur_pose(peace()) != "peace"  # the built-in guess does not fit how they hold it
+    signs = ArmSigns()
+    for i in range(3):  # a few goes each, with the wobble a real person has
+        signs.add_training("peace", plur_features(_shaped(0.0, 58.0 + i * 3, 56.0 - i * 2, (112.0 + i, 78.0 - i), (140.0 - i, 76.0 + i))))
+        signs.add_training("hug", plur_features(_shaped(0.0, 92.0 - i * 2, 90.0 + i * 3, (35.0 + i, 100.0), (215.0 - i, 101.0))))
+    assert trained_pose(peace(), signs.trained) == "peace"
+    assert trained_pose(hug(), signs.trained) == "hug"
+
+    # holding the peace sign is the handshake starting, NOT a hug, however long it is held
+    got = [signs.feed(peace(t * 0.1), t * 0.1) for t in range(40)]
+    assert [g for g in got if g] == [("plur", "peace")]
+    # ...and a hug is still a hug
+    other = ArmSigns()
+    other.trained = signs.trained
+    got = [other.feed(hug(t * 0.1), t * 0.1) for t in range(40)]
+    assert [g for g in got if g] == [("hug",)]
+
+
+def test_a_pose_is_averaged_over_its_last_few_goes_and_one_bad_go_cannot_spoil_it():
+    from festival_pet.pose import PLUR_TRAIN_KEEP, ArmSigns, plur_features, prototype, runs_of, trained_pose
+
+    good = lambda i: plur_features(_shaped(0.0, 58.0 + i, 56.0 - i, (112.0, 78.0), (140.0, 76.0)))  # noqa: E731
+    signs = ArmSigns()
+    for i in range(3):
+        assert signs.add_training("peace", good(i)) == i + 1
+    clean = prototype(runs_of(signs.trained["peace"]))
+    # one go caught mid-move, with the arms nowhere near the pose
+    signs.add_training("peace", plur_features(_shaped(0.0, 150.0, 20.0, (10.0, 10.0), (250.0, 190.0))))
+    spoilt = prototype(runs_of(signs.trained["peace"]))
+    assert abs(spoilt["hi_deg"] - clean["hi_deg"]) < 8.0, "one bad go dragged the whole pose"
+    assert trained_pose(_shaped(0.0, 59.0, 55.0, (112.0, 78.0), (140.0, 76.0)), signs.trained) == "peace"
+
+    for i in range(10):  # it only ever keeps the last few
+        signs.add_training("peace", good(i))
+    assert len(signs.trained["peace"]) == PLUR_TRAIN_KEEP
+
+    # a pose stored the old way, as a single prototype, still loads and still matches
+    signs2 = ArmSigns()
+    signs2.trained = {"peace": good(0)}
+    assert trained_pose(_shaped(0.0, 58.0, 56.0, (112.0, 78.0), (140.0, 76.0)), signs2.trained) == "peace"
+    assert signs2.add_training("peace", good(1)) == 2

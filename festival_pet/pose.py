@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 
 import cv2
 import numpy as np
@@ -89,9 +90,14 @@ RESPECT_OTHER_DEG = 40.0  # ...and the other arm hanging down
 # step's prototype. A reading matches a prototype when every number is within tolerance of it, and a
 # prototype match counts alongside the built-in rules, never instead of them — training only ever widens
 # what it will accept. The two arms are sorted higher-first, so which hand somebody uses never matters.
+# A HUG is trainable too, and is the one that matters most: arms out wide and a double peace sign held
+# out at 45 are nearly the same shape to a pair of arm angles, which is why it kept reading a handshake
+# as a cuddle. Teaching it both, and letting the NEAREST prototype win, is what actually separates them.
 PLUR_FEATURES = ("hi_deg", "lo_deg", "sep", "above", "hi_forearm", "lo_forearm")
 PLUR_TOL = {"hi_deg": 25.0, "lo_deg": 25.0, "sep": 0.5, "above": 0.4, "hi_forearm": 35.0, "lo_forearm": 35.0}
 PLUR_TRAIN_MIN = 6  # readings needed before a trained pose is worth keeping
+PLUR_TRAIN_KEEP = 5  # ...and the last this many goes at a pose are kept and averaged
+TRAINABLE = PLUR_STEPS + ("hug",)
 HUG_HOLD_S = 2.5  # both arms held out this long: a hug
 HUG_REARM_S = 1.0  # the arms have to leave "out" for this long before another hug counts
 SIGN_WATCH_S = 1.5  # a raised or open arm seen this recently keeps the pose model reading every frame
@@ -123,7 +129,19 @@ class ArmSigns:
         self.plur_at = 0.0  # when the last one landed
         self._pose: str | None = None  # the pose being held right now, and since when
         self._pose_since = 0.0
-        self.trained: dict[str, dict[str, float]] = {}  # step -> prototype, from somebody showing it the pose
+        # pose name -> the last few goes at showing it that pose; matched against the median of them
+        self.trained: dict[str, list[dict[str, float]]] = {}
+
+    def add_training(self, name: str, proto: dict[str, float]) -> int:
+        """Remember one go at a pose, keeping the last PLUR_TRAIN_KEEP. Returns how many are held now."""
+        if name not in TRAINABLE:
+            raise KeyError(f"'{name}' is not something it can be taught. Known: {', '.join(TRAINABLE)}")
+        runs = self.trained.setdefault(name, [])
+        if isinstance(runs, dict):  # a single prototype from before there were several
+            runs = self.trained[name] = [runs]
+        runs.append(proto)
+        del runs[:-PLUR_TRAIN_KEEP]
+        return len(runs)
 
     @property
     def watching(self) -> bool:
@@ -131,6 +149,7 @@ class ArmSigns:
 
     def feed(self, a: Arms, now: float) -> tuple | None:
         self.watching_until = 0.0
+        shown = trained_pose(a, self.trained) if self.trained else None
         found = self._plur(a, now)
         if self.plur_step:  # mid-handshake: hold the pose model open, and let the handshake have the arms
             self.watching_until = now + SIGN_WATCH_S
@@ -159,7 +178,11 @@ class ArmSigns:
             if len(self._swings[hand]) >= WAVE_SWINGS and found is None:
                 self._swings[hand].clear()
                 found = ("wave", hand)
-        if a.left == "out" and a.right == "out":
+        # A taught pose answers this outright: if what they are doing looks most like the hug it was
+        # shown, it is a hug; if it looks most like a handshake pose, it is not one, whatever the arm
+        # angles would otherwise have said. Untaught, it falls back to the old "both arms straight out".
+        hugging = (shown == "hug") if shown is not None else (a.left == "out" and a.right == "out")
+        if hugging:
             self.watching_until = now + SIGN_WATCH_S
             if self._out_since == 0.0 or now - self._out_last >= HUG_REARM_S:
                 self._out_since, self._hugged = now, False  # a fresh hold (a short gap in the readings is the same hold)
@@ -226,13 +249,35 @@ def plur_features(a: Arms) -> dict[str, float]:
     }
 
 
-def _trained_pose(a: Arms, trained: dict[str, dict[str, float]]) -> str | None:
-    """Which trained prototype this reading matches, if any: every feature within tolerance, nearest wins."""
+def runs_of(value) -> list[dict[str, float]]:
+    """The goes at a pose, whether it was stored as a list of them or (before there were several) one."""
+    return [value] if isinstance(value, dict) else list(value or [])
+
+
+def prototype(runs: list[dict[str, float]]) -> dict[str, float]:
+    """One pose out of several goes at it: the median of each number, not the mean.
+
+    Somebody's arms wander, the model drops a frame, one go gets caught mid-move. A median across the
+    runs throws a bad one out entirely rather than letting it drag the answer a fifth of the way toward
+    nonsense, which is what an average does with five samples and one outlier.
+    """
+    return {k: float(median([r[k] for r in runs if k in r])) for k in PLUR_FEATURES if any(k in r for r in runs)}
+
+
+def trained_pose(a: Arms, trained: dict[str, list[dict[str, float]]]) -> str | None:
+    """Which taught pose this reading matches, if any: every feature within tolerance, nearest wins.
+
+    Nearest-wins is the whole point once a hug and a peace sign have both been shown to it: they can sit
+    close together and still be told apart, because the question stops being "is this a peace sign?" and
+    becomes "which of the things I have been shown is this most like?".
+    """
     f = plur_features(a)
     best, best_d = None, None
-    for name, proto in trained.items():
-        if name not in PLUR_STEPS:
+    for name, value in trained.items():
+        runs = runs_of(value)
+        if name not in TRAINABLE or not runs:
             continue
+        proto = prototype(runs)
         d = 0.0
         for k, tol in PLUR_TOL.items():
             if k not in proto:
@@ -261,9 +306,11 @@ def plur_pose(a: Arms, trained: dict[str, dict[str, float]] | None = None) -> st
     height, with the other arm down.
     """
     if trained:
-        shown = _trained_pose(a, trained)
-        if shown is not None:
+        shown = trained_pose(a, trained)
+        if shown in PLUR_STEPS:  # a taught hug is not a step of the handshake; ArmSigns.feed reads that
             return shown
+        if shown is not None:
+            return None  # it is something else it has been taught: definitely not a handshake pose
     p = a.points
     scale = max(a.shoulder_px, 1e-6)
     l_deg, r_deg = a.left_deg, a.right_deg

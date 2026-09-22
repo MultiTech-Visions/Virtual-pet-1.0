@@ -269,11 +269,28 @@ runs the countdown**: upright is the whole twelve-second window, horizontal mean
 up on you. One thing moving, and it means one thing. So you can see that it saw your last pose and that it is waiting for the next one, instead
 of it doing the peace thing and then going back to chaos.
 
+**Walking it through by hand.** The pose model is doing its best with somebody's arms across a tent in
+bad light, and when it cannot see the peace sign the whole trade is unreachable — with a person
+standing there holding a bracelet out. So the Kandi card has the same routine driven by taps instead of
+by the camera: tap for peace, tap for love, tap for unity, tap for respect, then pick an ear and it does
+the trade. It answers each pose exactly as it would have — same animation, same countdown on the
+antenna, same concentration — so it looks no different to whoever is in front of it. Respect
+deliberately does *not* choose an ear for you; choosing is the point of doing it by hand.
+
 **Teaching it a pose.** Those rules are a guess at where somebody holds their arms, and a guess is
 all they can be: where *you* hold a double peace sign — out at the sides, up by your head, elbows
 bent, hands toward the middle — is a fact about you, not something to be derived, and if the guess
-is wrong the handshake never starts (and the hug detector grabs it instead). So show it. **Teach the handshake** runs all four as one routine, which is the way to do it: stopping between poses
-to go and press a button is exactly when it loses you. It calls for each pose itself, counts down on the
+is wrong the handshake never starts (and the hug detector grabs it instead). So show it. **Teach the handshake** runs the four poses **and the hug** as one routine, which is the way to do it:
+stopping between poses to go and press a button is exactly when it loses you. The hug is in there
+because it is the one that matters most — arms out wide and a double peace sign held at 45 are nearly
+the same shape to a pair of arm angles, which is why a handshake kept being read as a cuddle. Teaching
+it both changes the question from "is this a peace sign?" to "which of the things I have been shown is
+this most like?", and the nearest one wins, so two poses can sit close together and still be told apart.
+
+Each pose is kept over its **last five goes** and matched against the median of them, not the mean: arms
+wander, the model drops a frame, one go gets caught mid-move, and a median throws a bad go out entirely
+rather than letting it drag the answer a fifth of the way toward nonsense. So do it a few times. The
+card shows how many goes are averaged into each pose. It calls for each pose itself, counts down on the
 antenna while you get into it, beeps when it starts watching, beeps yes or no, takes a breath, and moves
 on — concentrating throughout, as above. (There are per-pose buttons too, if you only want to redo one.)
 Each pose: three seconds to get into it, two and a half of watching, and it keeps the medians of five
