@@ -560,6 +560,12 @@ async function refresh() {
       return;
     }
     d = await r.json();
+    if (d.error) {  // the robot answered but could not build the page's data: show why, keep drawing
+      $('conn').innerHTML = `<b style="color:var(--warm)">the robot is running (v${d.build.version}) but cannot build the page — tell Claude this:</b>`;
+      $('err').textContent = d.error + '\n\n' + (d.traceback || []).join('\n');
+      $('err').classList.remove('hidden');
+      return;
+    }
     $('err').classList.add('hidden');
   } catch (e) { $('conn').textContent = 'offline: ' + e; return; }
   const failed = [];

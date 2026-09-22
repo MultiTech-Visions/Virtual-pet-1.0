@@ -2167,7 +2167,19 @@ def install_routes(app, pet: Pet) -> None:
 
     @app.get("/api/mind")
     def mind() -> dict:
-        return pet.mind()
+        """The page's whole world. It must never fail to answer.
+
+        A 500 here is a page that does not load at all, and no way to find out why — so if building it
+        throws, say so IN the payload instead. The page then still loads, shows the error in red at the
+        top, and every card that does not depend on the broken part carries on. Louder than a crash, not
+        quieter: the exception ends up on the screen rather than in a log nobody can reach.
+        """
+        try:
+            return pet.mind()
+        except Exception as e:  # noqa: BLE001 - deliberate: this endpoint degrades, it does not die
+            logger.exception("building /api/mind failed")
+            return {"error": f"{type(e).__name__}: {e}", "build": build_info(),
+                    "traceback": traceback.format_exc().splitlines()[-12:]}
 
     # The Dev tab's terminal needs xterm.js, which is vendored into the package: there is no network at
     # the festival to fetch it from, and the page has to work with the robot on its own hotspot.

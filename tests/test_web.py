@@ -1451,9 +1451,12 @@ def test_every_field_the_page_reads_exists_in_the_mind_blob():
     script = (Path(__file__).resolve().parents[1] / "festival_pet" / "static" / "index.html").read_text().split("<script>")[-1]
     METHODS = {"map", "join", "length", "filter", "forEach", "toFixed", "toExponential", "includes",
                "toLocaleString", "split", "slice", "replace", "sort", "reduce", "some", "every", "concat"}
+    ONLY_WHEN_BROKEN = {"error", "traceback"}  # the degraded payload: absent, by design, when it works
     missing = []
     for path in sorted(set(re.findall(r"\bd\.([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)", script))):
         head, _, tail = path.partition(".")
+        if head in ONLY_WHEN_BROKEN:
+            continue
         if head not in m:
             missing.append("d." + path)
             continue
@@ -1485,15 +1488,32 @@ def test_a_failure_in_the_api_says_what_it_was_instead_of_hiding_it():
 
     logging.getLogger("festival_pet").addHandler(LOG_RING)
     before = len(LOG_RING.lines)
-    pet._controls = lambda: (_ for _ in ()).throw(KeyError("only on the robot"))  # type: ignore[method-assign]
-    r = c.get("/api/mind")
+    pet.status = lambda: (_ for _ in ()).throw(KeyError("only on the robot"))  # type: ignore[method-assign]
+    r = c.get("/api/status")
     assert r.status_code == 500
     body = r.json()
-    assert "only on the robot" in body["detail"] and body["where"] == "/api/mind"
-    assert any("in mind" in line for line in body["traceback"]), "the traceback has to name the line"
+    assert "only on the robot" in body["detail"] and body["where"] == "/api/status"
+    assert any("status" in line for line in body["traceback"]), "the traceback has to name the line"
     assert body["build"]["version"]  # ...and which build produced it
-    assert len(LOG_RING.lines) > before and any("/api/mind failed" in x for x in LOG_RING.lines)
+    assert len(LOG_RING.lines) > before and any("/api/status failed" in x for x in LOG_RING.lines)
 
     # health still answers, so "is it even running?" is separable from "is the page broken?"
+    assert c.get("/api/health").json()["ok"]
+    pet.stop()
+
+
+def test_the_mind_endpoint_degrades_instead_of_dying():
+    """A 500 here is a page that does not load at all and no way to find out why. If building it throws
+    it must still answer, carrying the reason, so the page can put it on the screen."""
+    pet = _pet()
+    app = FastAPI()
+    install_routes(app, pet)
+    c = TestClient(app, raise_server_exceptions=False)
+    pet._controls = lambda: (_ for _ in ()).throw(KeyError("whatever the robot has"))  # type: ignore[method-assign]
+    r = c.get("/api/mind")
+    assert r.status_code == 200, "it must answer even when it cannot build the answer"
+    j = r.json()
+    assert "whatever the robot has" in j["error"]
+    assert j["build"]["version"] and any("_controls" in line or "KeyError" in line for line in j["traceback"])
     assert c.get("/api/health").json()["ok"]
     pet.stop()
