@@ -148,3 +148,29 @@ def test_petctl_turns_the_mind_blob_into_one_readable_line():
         assert petctl._value("left") == "left" and petctl._value(None) is True
     finally:
         pet.stop()
+
+
+def test_a_session_that_dies_on_its_first_line_says_why(tmp_path):
+    """The Dev tab printed nothing at all when a command failed — just "[session closed]" — so an npm
+    EACCES or a missing binary was indistinguishable from the console being off."""
+    import time
+
+    from festival_pet.devconsole import DevConsole
+
+    d = DevConsole(tmp_path, tmp_path)
+    d.start("exit 42")
+    end = time.monotonic() + 5.0
+    while d.read() and time.monotonic() < end:
+        pass
+    while d.running and time.monotonic() < end:
+        time.sleep(0.02)
+    assert d.ended() == "[the session exited with status 42 — the last lines above say why]"
+
+    d.start("true")
+    end = time.monotonic() + 5.0
+    while d.read() and time.monotonic() < end:
+        pass
+    while d.running and time.monotonic() < end:
+        time.sleep(0.02)
+    assert d.ended() == "[the session finished]"
+    d.stop()

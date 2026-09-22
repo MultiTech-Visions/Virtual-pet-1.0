@@ -39,7 +39,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DEFAULT_SHELL = os.environ.get("SHELL", "/bin/bash")
-INSTALL_CMD = "npm install -g @anthropic-ai/claude-code"
+# npm's global prefix on a Debian/apt node is /usr/local, which the pollen user cannot write: without
+# sudo this dies with EACCES every time. `-i` so sudo asks on this terminal if it wants a password.
+INSTALL_CMD = "sudo -i npm install -g @anthropic-ai/claude-code && claude --version"
 KEY_ENV = "ANTHROPIC_API_KEY"
 MIN_PASSPHRASE = 6
 READ_SIZE = 65536
@@ -56,6 +58,7 @@ class DevConsole:
         self._fd: int | None = None
         self._pid: int | None = None
         self._cmd = ""
+        self._status: int | None = None  # how the last session ended; None while one is up
 
     # ------------------------------------------------------------------ the gate
     def enable(self, passphrase: str) -> None:
@@ -119,13 +122,29 @@ class DevConsole:
         if self._pid is None:
             return False
         try:
-            gone, _ = os.waitpid(self._pid, os.WNOHANG)
+            gone, status = os.waitpid(self._pid, os.WNOHANG)
         except ChildProcessError:
-            gone = self._pid
+            gone, status = self._pid, 0
         if gone:
-            self._reap()
+            self._reap(status)
             return False
         return True
+
+    def ended(self) -> str | None:
+        """Why the last session finished, in a line for the terminal — or None if one is still up.
+
+        A shell that dies on its first line (no such command, sudo refused, npm's EACCES) used to leave
+        the Dev tab showing nothing at all but "[session closed]", which is the least useful thing a
+        terminal can say. The exit status is always worth printing.
+        """
+        if self.running or self._status is None:
+            return None
+        code, sig = self._status >> 8, self._status & 0x7F
+        if sig:
+            return f"[the session was killed by signal {sig}]"
+        if code:
+            return f"[the session exited with status {code} — the last lines above say why]"
+        return "[the session finished]"
 
     def start(self, cmd: str = "", cols: int = 100, rows: int = 30) -> None:
         """Fork a pty running ``cmd`` (a login shell by default). Replaces any session already up."""
@@ -142,13 +161,17 @@ class DevConsole:
             try:
                 os.chdir(self.workdir)
                 os.execvpe(argv[0], argv, env)
-            except Exception:  # pragma: no cover - the child cannot report anything useful
-                os._exit(1)
-        self._pid, self._fd, self._cmd = pid, fd, cmd or "shell"
+            except Exception as e:  # pragma: no cover - runs in the forked child
+                # The pty is this child's stderr, so say it out loud rather than dying silently: a bad
+                # $SHELL is otherwise an empty black box with no clue in it.
+                os.write(2, f"\r\ncould not start {argv[0]}: {e}\r\n".encode())
+                os._exit(127)
+        self._pid, self._fd, self._cmd, self._status = pid, fd, cmd or "shell", None
         self.resize(cols, rows)
         logger.info("dev console started: %s (pid %d)", self._cmd, pid)
 
-    def _reap(self) -> None:
+    def _reap(self, status: int | None = None) -> None:
+        self._status = status
         if self._fd is not None:
             try:
                 os.close(self._fd)
@@ -171,11 +194,12 @@ class DevConsole:
             end = _time.monotonic() + 2.0
             while _time.monotonic() < end:
                 try:
-                    if os.waitpid(pid, os.WNOHANG)[0]:
-                        self._reap()
+                    gone, status = os.waitpid(pid, os.WNOHANG)
+                    if gone:
+                        self._reap(status)
                         return
                 except ChildProcessError:
-                    self._reap()
+                    self._reap(0)
                     return
                 _time.sleep(0.02)
         self._reap()

@@ -804,13 +804,17 @@ function devOpen(cmd) {
     window.addEventListener('resize', () => { if (tab === 'dev') devFit(); });
   }
   devFit();
-  if (sock) { try { sock.close(); } catch (e) {} }
+  // drop the old socket's handlers first: its close fires asynchronously, and '[session closed]'
+  // landing in the middle of the new command's output is how three of them ended up stacked with
+  // nothing else on screen.
+  if (sock) { sock.onclose = null; sock.onmessage = null; try { sock.close(); } catch (e) {} }
+  if (cmd) term.write('\r\n\x1b[38;5;110m$ ' + cmd + '\x1b[0m\r\n');
   const pass = encodeURIComponent(v('dev-pass'));
   const q = `?token=${pass}&cols=${term.cols}&rows=${term.rows}` + (cmd ? '&cmd=' + encodeURIComponent(cmd) : '');
   sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/dev' + q);
   sock.binaryType = 'arraybuffer';
   sock.onmessage = e => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
-  sock.onclose = () => term.write('\r\n[session closed]\r\n');
+  sock.onclose = () => term.write('\r\n[disconnected]\r\n');
 }
 function devFit() { if (fit) { try { fit.fit(); } catch (e) {} } if (sock && sock.readyState === 1) sock.send('\x00resize:' + term.cols + ',' + term.rows); }
 function devSend(d) { if (sock && sock.readyState === 1) sock.send(d); else $('dev-msg').textContent = 'no session: turn the console on first'; }

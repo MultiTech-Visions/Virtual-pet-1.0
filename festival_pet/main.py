@@ -2251,7 +2251,10 @@ def install_routes(app, pet: Pet) -> None:
         async def pump() -> None:  # the terminal talking: read in a thread, the fd is blocking
             while True:
                 data = await loop.run_in_executor(None, d.read)
-                if not data:
+                if not data:  # the terminal is finished: say how it went, or nobody can tell why
+                    why = d.ended()
+                    if why:
+                        await ws.send_text("\r\n" + why + "\r\n")
                     break
                 await ws.send_bytes(data)
 
