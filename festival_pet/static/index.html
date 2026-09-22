@@ -435,7 +435,7 @@ async function btScan() {
   try {
     const r = await fetch('/api/bt/scan', {method: 'POST'}); const j = await r.json();
     if (!r.ok) throw new Error(j.detail);
-    $('bt-list').innerHTML = j.devices.length ? j.devices.map(d => `<div>${d.name} <span class="sub">${d.mac}</span> <button class="act" onclick="btPair('${d.mac}')">pair</button></div>`).join('') : 'nothing found: is it in pairing mode and close by?';
+    $('bt-list').innerHTML = j.devices.length ? j.devices.map(dev => `<div>${dev.name} <span class="sub">${dev.mac}</span> <button class="act" onclick="btPair('${dev.mac}')">pair</button></div>`).join('') : 'nothing found: is it in pairing mode and close by?';
     $('bt-msg').textContent = '';
   } catch (e) { $('bt-msg').textContent = 'scan failed: ' + e.message; }
   $('bt-scan').disabled = false;

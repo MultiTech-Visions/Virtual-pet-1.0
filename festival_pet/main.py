@@ -1662,7 +1662,8 @@ class Pet:
                       "wearing": [n for i, n in enumerate(("right", "left")) if self.kandi_on[i]],
                       "settling_s": round(max(0.0, comp.gentle_until - now), 1) if comp.gentle_until > now else None,
                       "step_name": PLUR_STEPS[min(self.signs.plur_step, len(PLUR_STEPS) - 1)],
-                      "by_hand": now < self._plur_hold_until, "damp": comp.kandi_damp, "trained": {k: {n: round(x, 2) for n, x in v.items()} for k, v in self.signs.trained.items()},
+                      "by_hand": now < self._plur_hold_until, "damp": comp.kandi_damp, "trained": {k: {**{n: round(x, 2) for n, x in prototype(runs_of(v)).items()}, "goes": len(runs_of(v))}
+                                  for k, v in self.signs.trained.items()},
                       "training": None if self._training is None else {"step": self._training["step"], "phase": self._training["phase"],
                                                                        "queue": list(self._training["queue"]), "learned": list(self._training["learned"]),
                                                                        "left_s": round(max(0.0, self._training["until"] - now), 1),

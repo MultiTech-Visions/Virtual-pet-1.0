@@ -1378,3 +1378,89 @@ def test_the_handshake_can_be_walked_through_by_hand_when_it_cannot_see_your_arm
     assert c.post("/api/control", json={"cmd": "plur", "value": False}).status_code == 200
     assert pet.signs.plur_step == 0 and pet._plur_hold_until == 0.0
     pet.stop()
+
+
+def test_the_mind_endpoint_survives_every_state_the_robot_can_be_in():
+    """/api/mind is the whole page. One unhandled value in it is a 500, and a 500 is a page that will
+    not load at all — which is how a single missed edit took the robot's entire interface down."""
+    from festival_pet.behavior import FaceObs
+    from festival_pet.pose import Arms, plur_features
+
+    def arms(ts=0.0):
+        pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0), "l_elbow": (100.0, 120.0),
+               "r_elbow": (150.0, 120.0), "l_wrist": (105.0, 112.0), "r_wrist": (146.0, 110.0),
+               "l_wrist_ok": True, "r_wrist_ok": True}
+        return Arms(ts, 55.0, 57.0, "out", "out", 0.9, 50.0, pts)
+
+    states = {
+        "fresh": lambda p: None,
+        "a pose taught the old way, one prototype": lambda p: p.control("plur_trained", {"peace": plur_features(arms())}),
+        "a pose taught once": lambda p: p.signs.add_training("peace", plur_features(arms())),
+        "a pose taught more times than it keeps": lambda p: [p.signs.add_training("hug", plur_features(arms())) for _ in range(9)],
+        "a pose with no goes recorded": lambda p: p.signs.trained.__setitem__("peace", []),
+        "mid handshake": lambda p: setattr(p.signs, "plur_step", 2),
+        "walked through by hand": lambda p: p.plur_next(1000.5),
+        "being taught": lambda p: p.train_plur("all", 1000.5),
+        "wearing kandi": lambda p: p.set_bracelets([0, 1], 1000.5),
+        "giving one away": lambda p: (p.set_bracelets([0], 1000.5), p.trade_kandi(1000.5)),
+        "asking for one": lambda p: p.start_kandi(1000.5),
+        "arms in view": lambda p: setattr(p._last_obs, "arms", arms()),
+        "a face in view": lambda p: setattr(p._last_obs, "face", FaceObs(1, 5.0, 0.0, 0.05, None, 0.0)),
+        "singing": lambda p: p.sing(1000.5),
+        "asleep": lambda p: setattr(p, "asleep", True),
+        "recording off": lambda p: p.control("record", False),
+    }
+    for name, setup in states.items():
+        pet = _pet()
+        app = FastAPI()
+        install_routes(app, pet)
+        c = TestClient(app)
+        try:
+            setup(pet)
+            pet.step(1000.6)
+            r = c.get("/api/mind")
+            assert r.status_code == 200, f"/api/mind is a {r.status_code} when {name}"
+            json.dumps(r.json())  # and it is serialisable: a numpy bool in there once broke the whole page
+            assert c.get("/api/status").status_code == 200, name
+        finally:
+            pet.stop()
+
+
+def test_every_field_the_page_reads_exists_in_the_mind_blob():
+    """The other half of the same failure: the page reads `d.kandi.by_hand`, the API does not send it,
+    and that card throws. Checked against a pet with everything switched on, so optional things exist."""
+    import re
+    from pathlib import Path
+
+    from festival_pet.behavior import FaceObs
+    from festival_pet.pose import Arms, plur_features
+
+    pet = _pet()
+    pts = {"l_shoulder": (100.0, 100.0), "r_shoulder": (150.0, 100.0), "l_elbow": (100.0, 120.0),
+           "r_elbow": (150.0, 120.0), "l_wrist": (105.0, 112.0), "r_wrist": (146.0, 110.0),
+           "l_wrist_ok": True, "r_wrist_ok": True}
+    a = Arms(1000.5, 55.0, 57.0, "out", "out", 0.9, 50.0, pts)
+    pet.signs.add_training("peace", plur_features(a))
+    pet.set_bracelets([0, 1], 1000.5)
+    pet.sing(1000.5)
+    pet.train_plur("peace", 1000.5)
+    pet._last_obs.arms, pet._last_obs.face = a, FaceObs(1, 5.0, 0.0, 0.05, None, 0.0)
+    pet.step(1000.6)
+    m = pet.mind()
+
+    script = (Path(__file__).resolve().parents[1] / "festival_pet" / "static" / "index.html").read_text().split("<script>")[-1]
+    METHODS = {"map", "join", "length", "filter", "forEach", "toFixed", "toExponential", "includes",
+               "toLocaleString", "split", "slice", "replace", "sort", "reduce", "some", "every", "concat"}
+    missing = []
+    for path in sorted(set(re.findall(r"\bd\.([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)", script))):
+        head, _, tail = path.partition(".")
+        if head not in m:
+            missing.append("d." + path)
+            continue
+        blob = m[head]
+        if not tail or tail in METHODS or not isinstance(blob, dict):
+            continue  # a method call, or a value the page indexes some other way
+        if tail not in blob:
+            missing.append("d." + path)
+    assert not missing, f"the page reads fields /api/mind does not send: {missing}"
+    pet.stop()
