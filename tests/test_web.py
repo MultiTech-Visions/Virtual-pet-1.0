@@ -1275,3 +1275,49 @@ def test_the_black_box_records_a_dropout_and_downloads_as_one_file():
     assert c.post("/api/control", json={"cmd": "clear_trace", "value": True}).status_code == 200
     assert not pet.trace.rows
     pet.stop()
+
+
+def test_every_element_the_page_writes_to_actually_exists():
+    """A `$('typo')` is null, and the statement that touches it throws — which used to stop every card
+    AFTER it from drawing, so half the page silently went stale with no error anyone would notice."""
+    import re
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "festival_pet" / "static" / "index.html").read_text()
+    ids = set(re.findall(r'\bid="([^"]+)"', html))
+    script = html.split("<script>")[-1]
+    referenced = set(re.findall(r"\$\('([^']+)'\)", script))
+    missing = sorted(referenced - ids)
+    assert not missing, f"the page writes to elements that do not exist: {missing}"
+
+
+def test_tapping_the_keypad_turns_manual_groove_on_and_shows_a_tempo():
+    """Keypad and page are one system: any key on the dancing layer switches manual groove on by itself,
+    and the tempo it taps in is what the page reads back. They used to look unrelated from the outside."""
+    pet = _pet()
+    app = FastAPI()
+    install_routes(app, pet)
+    c = TestClient(app)
+    assert not pet.manual_groove and c.get("/api/mind").json()["senses"]["tap"]["bpm"] == 0
+
+    now = 1000.2
+    for _ in range(5):  # tapping 120 bpm on the pad, as the key listener delivers it
+        pet.key_action("tap", now, now)
+        pet.step(now)
+        now += 0.5
+    m = c.get("/api/mind").json()
+    assert m["controls"]["manual_groove"] is True, "the pad turned it on but the page is not told"
+    assert abs(m["senses"]["tap"]["bpm"] - 120.0) < 1.0
+    assert m["senses"]["tap"]["beat"] and m["senses"]["music"]["grooving"]
+    assert pet.p.composer.groove is not None
+
+    # ...and the same clock is what the page's own tap button feeds
+    pet.control("bpm", 0)
+    assert c.get("/api/mind").json()["senses"]["tap"]["bpm"] == 0
+    for _ in range(5):
+        pet.key_action("downbeat", now, now)
+        pet.step(now)
+        now += 0.4
+    m = c.get("/api/mind").json()["senses"]["tap"]
+    assert abs(m["bpm"] - 150.0) < 1.0 and m["downbeat_known"]
+    pet.stop()

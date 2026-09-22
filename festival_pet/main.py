@@ -1653,7 +1653,7 @@ class Pet:
                 "scratch": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.audio.scratch.stats.items()},
                 "head_pet": {"rubbing": self.audio.rub.rubbing, **{k: round(v, 6) for k, v in self.audio.rub.stats.items()}},
             },
-            "controls": {"voice": self.voice, "pickup": self.pickup_enabled, "dance_along": self.dance_along, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.layers, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "kandi_roll": self.kandi_roll_deg, "kandi_damp": comp.kandi_damp, "plur_trained": self.signs.trained, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold},
+            "controls": self._controls(),
             "calibration": self.audio.calibration_result,
             "imu_calibration": self.imu_rub.calibration,
             "face_history": [{"t": round(t - now, 2), "yaw": round(y, 1), "pitch": round(p_, 1), "kind": k, "dancing": d} for t, y, p_, k, d in self.face_history if now - t <= 20.0],
@@ -1662,6 +1662,13 @@ class Pet:
             "recent_actions": [{"t": round(now - t, 1), "a": f"{k}:{n}"} for t, k, n in reversed(self.actions_log[-20:])],
             "memory": self.p.memory.summary(),
         }
+
+    def _controls(self) -> dict:
+        """Every knob and its current value. Its own method because settings are saved on every keypad
+        press, and building the whole mind payload (vision stats, audio history, face history) to read
+        four of these back was a real hitch in the control loop each time somebody tapped a beat."""
+        comp = self.p.composer
+        return {"voice": self.voice, "pickup": self.pickup_enabled, "dance_along": self.dance_along, "ears": self.audio.enabled, "mimic_flip": self.p.composer.mimic_flip, "body_finder": getattr(getattr(self, "vision", None), "body_enabled", None), "groove_scale": self.groove_scale, "manual_groove": self.manual_groove, "keymap": self.keymap.layers, "camera_lag_ms": None if self.pose_history is None else round(self.pose_history.lag_s * 1000), "head_forward_mm": round(comp.forward_shift_m * 1000, 1), "singing": self.singing_enabled, "imu_rub_gyro": self.imu_rub.gyro_lo, "kandi_roll": self.kandi_roll_deg, "kandi_damp": comp.kandi_damp, "plur_trained": self.signs.trained, "bpm": round(self.tap.bpm, 1), **{f"groove_{k}": v for k, v in comp.groove_mix.as_dict().items()}, "scratch_onset_ratio": self.audio.scratch.onset_ratio, "scratch_floor": self.audio.scratch.floor, "rub_level_ratio": self.audio.rub.level_ratio, "rub_flatness_min": self.audio.rub.flatness_min, "rub_floor": self.audio.rub.floor, "match_threshold": self.p.memory.match_threshold}
 
     def control(self, cmd: str, value: str | float | None) -> dict:
         """Manual controls from the web page. Raises on unknown commands / names."""
@@ -1847,7 +1854,7 @@ class Pet:
     _SETTING_KEYS = ("voice", "muted", "pickup", "ears", "dance_along", "mimic_flip", "groove_scale", "manual_groove", "keymap", "camera_lag_ms", "head_forward_mm", "singing", "imu_rub_gyro", "groove_bob", "groove_sway", "groove_body", "groove_ears", "kandi_roll", "kandi_damp", "plur_trained", "scratch_onset_ratio", "scratch_floor", "rub_level_ratio", "rub_flatness_min", "rub_floor", "match_threshold", "body_finder")
 
     def _settings(self) -> dict:
-        c = self.mind()["controls"]
+        c = self._controls()
         return {k: c[k] for k in self._SETTING_KEYS if k in c and c[k] is not None}
 
     def save_settings(self) -> None:

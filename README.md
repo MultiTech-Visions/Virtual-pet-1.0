@@ -509,6 +509,26 @@ between the simulated head and the injected face (≈1°). `Pet` in `main.py` ta
   DoA startle.
 
 
+### One beat clock, not two
+
+The keypad, the page's space bar, the tapped BPM box and the manual-groove toggle are all the same
+clock, and the page now reads it back from the robot rather than remembering what it last did. Any key
+on the keypad's dancing layer turns manual groove on by itself, so the toggle follows the pad rather
+than the other way round; the tempo, the beat and bar, halftime and whether it is actually grooving
+show in one line on the **Controls** tab, on the **Play** tab (where you are standing when you dance
+with it), and in the **keypad card** (where you look when a key does not do what you expected). The
+space bar and **1** work on any tab now, not only on Controls — except in the Dev tab's terminal,
+which wants every key for itself.
+
+Two things behind that were making them look like separate systems. The page drew every card inside
+one `try`, so a single unexpected value anywhere stopped every card *after* it from updating: half the
+page silently went stale, with the only sign a small grey line at the top. Each card now draws inside
+its own guard, the live beat state is drawn first before anything that could fail, and the connection
+line names any card that could not draw. And saving settings — which happens on every keypad press —
+was building the entire mind payload (vision stats, audio history, face history) to read four values
+out of it; it reads the controls directly now, about ten times cheaper, which matters when it is
+happening on the beat.
+
 ### The Dev tab: Claude Code on the robot
 
 Describing the robot's behaviour into a chat window is the slow way to fix it. The Dev tab is a **real
