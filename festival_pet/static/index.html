@@ -569,6 +569,8 @@ async function refresh() {
     $('err').classList.add('hidden');
   } catch (e) { $('conn').textContent = 'offline: ' + e; return; }
   const failed = [];
+  // the song card computes these, and the Mind tab's timers show them too: they outlive that card
+  let sg = null, songRows = {};
   // Every card draws inside its own guard. With one try around the whole lot, a single unexpected null
   // anywhere stopped every card AFTER it from updating — which is exactly what "the tempo isn't showing
   // and the toggle is wrong" looks like from the outside: half a live page, no error you would notice.
@@ -616,8 +618,8 @@ async function refresh() {
     training = !!kd.training;
     $('train-btn').textContent = training ? `Teaching: ${kd.training.step} (tap to stop)` : 'Teach the handshake';
     card('song', () => {
-      const sg = d.song;
-      const songRows = sg.next_in_s === null ? {} : {'song': sg.singing ? `singing ${sg.last.name} (${sg.last.style}, ${sg.last.bpm} bpm) 🎵${sg.section ? ' · ' + sg.section : ''}` : (sg.last ? `last: ${sg.last.name} (${sg.last.style})${sg.last.saved ? ' (saved)' : ''}` : 'none yet'), 'set': sg.set.songs ? `song ${sg.set.songs}${sg.set.watched === null ? '' : `, ${Math.round(sg.set.watched * 100)}% watched`}` + (sg.set.encore_in_s ? ` · encore in ${sg.set.encore_in_s} s` : '') : '—', 'next song': sg.singing ? '—' : (sg.next_in_s > 0 ? `not for ${sg.next_in_s} s` : 'when it feels like one')};
+      sg = d.song;
+      songRows = sg.next_in_s === null ? {} : {'song': sg.singing ? `singing ${sg.last.name} (${sg.last.style}, ${sg.last.bpm} bpm) 🎵${sg.section ? ' · ' + sg.section : ''}` : (sg.last ? `last: ${sg.last.name} (${sg.last.style})${sg.last.saved ? ' (saved)' : ''}` : 'none yet'), 'set': sg.set.songs ? `song ${sg.set.songs}${sg.set.watched === null ? '' : `, ${Math.round(sg.set.watched * 100)}% watched`}` + (sg.set.encore_in_s ? ` · encore in ${sg.set.encore_in_s} s` : '') : '—', 'next song': sg.singing ? '—' : (sg.next_in_s > 0 ? `not for ${sg.next_in_s} s` : 'when it feels like one')};
       $('curiosity').style.width = (m.drives.curiosity * 100) + '%'; $('boredom').style.width = (m.drives.boredom * 100) + '%';
     });
     const ACT = {hangout: '🫧 hanging out', watch: '👀 watching them', look_around: '🔭 looking around', mirror: '🪞 mirror game', mime: '🎭 Simon says', sing: '🎵 singing', rest: '😪 resting', ask_attention: '🥺 wants attention'};

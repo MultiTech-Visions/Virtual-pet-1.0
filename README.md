@@ -586,6 +586,20 @@ There is a **`CLAUDE.md`** at the repo root telling the session all of this, plu
 silent defaults, tests before pushing, why the odd numbers are what they are), so you should not have
 to explain the project every time you start one.
 
+### The page is tested by running it
+
+Three page bugs went out in a row — a field the API stopped sending, a variable trapped inside a card's
+closure, an element id that did not exist — and each one only showed up as a blank or half-frozen page
+on the robot, because nothing ever executed the page's JavaScript. Checking that it *parses* was never
+going to catch a ReferenceError two thirds of the way down.
+
+So `tests/test_page.py` takes the real `/api/mind` payload from a pet with as much switched on as a
+bench can manage — taught poses, kandi on both ears, singing, a tapped tempo, a handshake in progress,
+a face and arms in view — runs `refresh()` in node against a stub DOM, and requires every tab to draw
+without a single error. Plus a fresh robot with nothing going on, for the "or none" branches, and the
+degraded payload, to check the error actually reaches the screen. No browser, about a second. It was
+confirmed against the real bug: put the closure back and it fails, naming it.
+
 ### When the page will not load
 
 The app runs the **installed** package, not the files in a checkout. Pulling new code changes nothing
