@@ -23,6 +23,7 @@ import os
 import queue
 import threading
 import time
+import traceback
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -2130,6 +2131,35 @@ class Merge(BaseModel):
 def install_routes(app, pet: Pet) -> None:
     """Web API behind the pet's page (port 8042). Shared by the app and the tests."""
     from fastapi import HTTPException
+
+    # The Log tab reads this ring. Attaching it here as well as in run() means the log works however the
+    # app was started — the dashboard, a bare python -m, a test — rather than being empty exactly when
+    # somebody needs it.
+    app_log = logging.getLogger("festival_pet")
+    if LOG_RING not in app_log.handlers:
+        app_log.addHandler(LOG_RING)
+        app_log.setLevel(logging.INFO)
+
+    # A 500 from here used to be a blank "Internal Server Error" in the browser and nothing in the app
+    # log — FastAPI logs its own tracebacks to uvicorn's logger, which is not the one the Log tab reads.
+    # So a failure in the one endpoint the whole page depends on left nothing at all to go on. Now the
+    # traceback goes to our log AND comes back in the body: this is a robot on a home network serving a
+    # page with no login, and being able to read the error beats hiding it from ourselves.
+    @app.exception_handler(Exception)
+    async def report_the_actual_error(request, exc):
+        from fastapi.responses import JSONResponse
+
+        tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+        logger.error("%s failed: %s", request.url.path, "".join(tb))
+        return JSONResponse(status_code=500, content={
+            "detail": f"{type(exc).__name__}: {exc}", "where": request.url.path,
+            "build": build_info(), "traceback": [line.rstrip() for line in "".join(tb).splitlines()],
+        })
+
+    @app.get("/api/health")
+    def health() -> dict:
+        """Deliberately trivial: if the page is dead, this says whether the app is alive and which build."""
+        return {"ok": True, "build": build_info(), "asleep": pet.asleep, "loop_age_s": round(time.time() - pet._last, 2)}
 
     @app.get("/api/status")
     def status() -> dict:

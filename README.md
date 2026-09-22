@@ -586,6 +586,30 @@ There is a **`CLAUDE.md`** at the repo root telling the session all of this, plu
 silent defaults, tests before pushing, why the odd numbers are what they are), so you should not have
 to explain the project every time you start one.
 
+### When the page will not load
+
+The app runs the **installed** package, not the files in a checkout. Pulling new code changes nothing
+until it is installed and the app restarted — the single most likely reason a fix appears not to have
+worked:
+
+```bash
+cd ~/Virtual-pet-1.0 && git pull && pip install -e .     # then restart the app from the dashboard
+python3 scripts/doctor.py                                 # and check
+```
+
+`scripts/doctor.py` answers, in order, the things a blank page cannot: is the app running at all
+(`/api/health`), which build is it running (the installed version against this checkout — it says so
+plainly when they differ), what is `/api/mind` actually failing with (the real exception and the last
+lines of its traceback), and what the app log says.
+
+Two supporting changes make that possible. A failure in any `/api` route now logs its traceback to the
+app's own logger — FastAPI logs its tracebacks to uvicorn's logger, which is not the one the Log tab
+reads, so a failure in the one endpoint the whole page depends on used to leave nothing at all to go
+on — and returns it in the response body, which the page then shows in red at the top instead of
+going blank. On a robot on a home network serving a page with no login, being able to read the error
+beats hiding it from ourselves. `/api/health` is deliberately trivial, so "is it even running?" stays
+answerable when everything else is broken.
+
 ### The black box
 
 Debugging a robot through a chat window is guesswork: "it lost me", "it looked at the wall", "it

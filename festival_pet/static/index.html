@@ -56,6 +56,7 @@
 <body>
 <h1>Reachy's Mind <span class="sub" id="ver" style="font-weight:400"></span></h1>
 <div class="sub" id="conn">connecting…</div>
+<pre class="log hidden" id="err" style="border:1px solid #6b2030"></pre>
 <nav>
   <button class="on" data-tab="mind">Mind</button>
   <button data-tab="senses">Senses</button>
@@ -547,8 +548,19 @@ async function refresh() {
       $('log').textContent = l.lines.join('\n'); $('conn').textContent = 'live';
       return;
     }
-    const r = await fetch('/api/mind'); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const r = await fetch('/api/mind');
+    if (!r.ok) {
+      // The robot answered, it just could not build the page's data. Show WHY, here, rather than
+      // leaving a blank page and an error only the browser console knows about.
+      let why = 'HTTP ' + r.status;
+      try { const j = await r.json(); why = (j.detail || why) + (j.traceback ? '\n\n' + j.traceback.slice(-12).join('\n') : ''); } catch (e) {}
+      $('conn').innerHTML = `<b style="color:var(--warm)">the robot is running but /api/mind is failing</b> — tell Claude this:`;
+      $('err').textContent = why;
+      $('err').classList.remove('hidden');
+      return;
+    }
     d = await r.json();
+    $('err').classList.add('hidden');
   } catch (e) { $('conn').textContent = 'offline: ' + e; return; }
   const failed = [];
   // Every card draws inside its own guard. With one try around the whole lot, a single unexpected null

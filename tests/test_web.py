@@ -1464,3 +1464,36 @@ def test_every_field_the_page_reads_exists_in_the_mind_blob():
             missing.append("d." + path)
     assert not missing, f"the page reads fields /api/mind does not send: {missing}"
     pet.stop()
+
+
+def test_a_failure_in_the_api_says_what_it_was_instead_of_hiding_it():
+    """A 500 used to be a blank 'Internal Server Error' in the browser and nothing in the app log —
+    FastAPI logs its own tracebacks to uvicorn's logger, not the one the Log tab reads. So the one
+    endpoint the whole page depends on could fail leaving literally nothing to go on."""
+    import logging
+
+    from festival_pet.main import LOG_RING
+
+    pet = _pet()
+    app = FastAPI()
+    install_routes(app, pet)
+    c = TestClient(app, raise_server_exceptions=False)
+
+    # alive, and says which build it is: a pulled checkout is not the build the robot runs
+    health = c.get("/api/health")
+    assert health.status_code == 200 and health.json()["build"]["version"]
+
+    logging.getLogger("festival_pet").addHandler(LOG_RING)
+    before = len(LOG_RING.lines)
+    pet._controls = lambda: (_ for _ in ()).throw(KeyError("only on the robot"))  # type: ignore[method-assign]
+    r = c.get("/api/mind")
+    assert r.status_code == 500
+    body = r.json()
+    assert "only on the robot" in body["detail"] and body["where"] == "/api/mind"
+    assert any("in mind" in line for line in body["traceback"]), "the traceback has to name the line"
+    assert body["build"]["version"]  # ...and which build produced it
+    assert len(LOG_RING.lines) > before and any("/api/mind failed" in x for x in LOG_RING.lines)
+
+    # health still answers, so "is it even running?" is separable from "is the page broken?"
+    assert c.get("/api/health").json()["ok"]
+    pet.stop()
