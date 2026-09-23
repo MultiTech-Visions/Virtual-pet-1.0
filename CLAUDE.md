@@ -4,6 +4,9 @@ You are probably reading this in a Claude Code session running **on the Reachy M
 tab in the pet's web page, or over SSH). That means you can stop guessing: the robot is right here,
 the app is running, and you can watch what it sees and make it move.
 
+**Read `docs/HANDOFF.md` first.** It is what is broken right now, what changed last, and the
+conventions that keep getting violated — the things a fresh session cannot infer from the code.
+
 ## Look before you theorise
 
 The app serves its API on `http://127.0.0.1:8042`. `scripts/petctl.py` wraps it:
