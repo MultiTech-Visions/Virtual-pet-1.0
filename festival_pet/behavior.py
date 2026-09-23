@@ -19,10 +19,40 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
+from festival_pet.drives import (
+    ASK_CEILING_S,
+    ASK_MIN_INTERVAL_S,
+    BORED_NEW_ACTIVITY,
+    BORED_NEW_FACE,
+    BORED_TOUCH,
+    CURIOSITY_LOUD,
+    CURIOSITY_NEW_FACE,
+    CURIOSITY_NEW_SECTOR,
+    HESITATE_MARGIN,
+    MIN_DWELL_S,
+    Attention,
+    Drives,
+    Situation,
+    choose,
+    signature,
+)
 from festival_pet.hearing import intents_in
 from festival_pet.memory import FaceMemory, Person
 
 State = Literal["SLEEPING", "WAKING", "IDLE", "ENGAGED", "SEARCHING", "HELD"]
+EAR_WINDOW_S = 12.0  # tickles this close together count as one bout
+EAR_TUCK_AFTER = 4  # the tickle that ends the game
+EAR_TUCK_S = 26.0  # how long the sulk lasts, left alone (matches MotionComposer.EAR_TUCK_S)
+EAR_SWAT_S = 1.3  # one swat (GESTURES["swat"]): pokes during it are covered by its taps
+EAR_MAKEUP_S = 3.0  # after the last poke, the nuzzle: keep poking and it keeps batting
+JINGLE_MIN_S, JINGLE_MAX_S = 25.0, 70.0  # how often it hums a made-up little tune to itself while pottering about
+JINGLE_ACTIVITIES = ("look_around", "watch", "hangout")  # scanning, or keeping someone company: the Data-at-the-console moments
+WAVE_COOLDOWN_S = 6.0  # one wave back per wave, not one per swing
+HUG_COOLDOWN_S = 20.0
+BODY_CONFIRM_S = 1.0  # a torso must be seen this long before it is worth looking up at
+BODY_GIVE_UP_S = 6.0  # looking up at a torso this long without finding a face: not a person
+BODY_IGNORE_S = 45.0  # ...and that spot is ignored for this long — but never a spot a face has come from
+BODY_IGNORE_DEG = 25.0
 
 
 def awake_now(state: str) -> bool:
@@ -42,6 +72,7 @@ class FaceObs:
     roll_deg: float = 0.0  # the person's head tilt
     head_yaw_deg: float = 0.0  # where their head is turned (rough)
     head_pitch_deg: float = 0.0
+    smile: float = 0.0  # mouth width / eye distance; 0.8+ is a smile
 
 
 @dataclass
@@ -66,33 +97,81 @@ class Observation:
     music_bpm: float = 0.0  # 0 when no confident beat
     music_confidence: float = 0.0
     dance_bpm: float = 0.0  # someone visibly bobbing at this tempo (0 = nobody dancing)
+    grooving: bool = False  # manual groove with a tempo tapped in: we are dancing, nothing else starts
+    busy: str | None = None  # what the robot layer is running: "mime", "sing", "gesture" (a solo one) or "kandi"
+    arms: object | None = None  # pose.Arms: the person's arms are readable this tick (the arm games need this)
+    waved: str | None = None  # they waved a hand this tick (edge): the PERSON's "left" or "right"
+    hugged: bool = False  # arms held out wide at it for a while (edge): a hug
 
 
 @dataclass
 class Action:
     """A request for the robot layer."""
 
-    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror", "heard", "mimic"]
+    kind: Literal["sound", "gesture", "move", "wake", "sleep", "groove", "mirror", "heard", "mimic", "activity", "ears"]
     name: str
     priority: int = 1  # higher preempts lower for gestures/moves
 
 
-@dataclass
-class Mood:
-    energy: float = 0.8  # 0 exhausted .. 1 bouncy
-    social: float = 0.5  # 0 lonely .. 1 fulfilled
+SPOT_MERGE_DEG = 18.0  # two sightings this close are the same person standing about, not two places
+SPOT_KEEP = 3  # how many places it holds on to: where they were, and the two before that
+SPOT_STALE_S = 180.0  # a place nobody has been for three minutes is not worth going back to
+COMPANY_RECENT_S = 45.0  # somebody was here this recently: do not go wandering off at the walls yet
 
-    def clamp(self) -> None:
-        self.energy = min(1.0, max(0.0, self.energy))
-        self.social = min(1.0, max(0.0, self.social))
+
+@dataclass
+class Spot:
+    """Somewhere a person was actually seen, in world yaw/pitch."""
+
+    yaw: float
+    pitch: float
+    at: float
+    seen: int = 1
+    faces: int = 0  # how many of those sightings were an actual face, not just a torso-shaped thing
+
+
+@dataclass
+class SeenSpots:
+    """Where people have been, most recent first.
+
+    The camera loses faces constantly — someone turns their head, the light changes, it blinks out for a
+    second — and a pet that only remembers ONE last position gives up after five seconds and starts
+    scanning the room, which points the camera at a wall and makes reacquiring them impossible. So every
+    sighting of anybody (a face, a stranger, a torso with arms on it) is filed here, sightings within
+    SPOT_MERGE_DEG are treated as the same place and refreshed rather than duplicated, and when it loses
+    somebody it works back through these three places before it accepts they have gone.
+    """
+
+    spots: list = field(default_factory=list)
+
+    def note(self, yaw: float, pitch: float, now: float, face: bool = False) -> None:
+        for spot in self.spots:
+            if abs(spot.yaw - yaw) <= SPOT_MERGE_DEG:
+                spot.yaw = spot.yaw * 0.7 + yaw * 0.3  # drift with them rather than snapping about
+                spot.pitch, spot.at, spot.seen = pitch, now, spot.seen + 1
+                spot.faces += int(face)
+                self.spots.sort(key=lambda x: -x.at)
+                return
+        self.spots.insert(0, Spot(yaw, pitch, now, faces=int(face)))
+        del self.spots[SPOT_KEEP:]
+
+    def recent(self, now: float) -> list:
+        return [x for x in self.spots if now - x.at <= SPOT_STALE_S]
+
+    def last_at(self) -> float:
+        return max((x.at for x in self.spots), default=-1e9)
+
+    def as_dicts(self, now: float) -> list[dict]:
+        return [{"yaw": round(x.yaw, 1), "pitch": round(x.pitch, 1), "s_ago": round(now - x.at, 1), "seen": x.seen, "faces": x.faces}
+                for x in self.recent(now)]
 
 
 @dataclass
 class Timers:
     """Tunable timing, in seconds."""
 
-    face_lost_grace: float = 2.5
-    search_duration: float = 5.0
+    face_lost_grace: float = 3.5  # the detector drops a face for a second all the time: do not give up on it
+    search_duration: float = 5.0  # per remembered place, so a full sweep of three is three times this
     lonely_after: float = 90.0
     lonely_repeat: float = 45.0
     sleep_after: float = 420.0
@@ -131,7 +210,33 @@ class Behavior:
     timers: Timers = field(default_factory=Timers)
     rng: random.Random = field(default_factory=random.Random)
     state: State = "SLEEPING"
-    mood: Mood = field(default_factory=Mood)
+    mood: Drives = field(default_factory=Drives)
+
+    # the activity layer (drives.py): what it has decided to be doing, and how it got there
+    activity: str = "hangout"
+    runner_up: str | None = None
+    can_sing: bool = False  # the robot layer says whether songs are switched on
+    can_mime: bool = True
+    attention: Attention = field(default_factory=Attention)
+    _activity_since: float = 0.0
+    _activity_prev: str = ""
+    _cool: dict = field(default_factory=dict)  # activity -> earliest time it may be chosen again
+    _last_sig: tuple = ()
+    _last_ask: float = -1e9
+    _margin: float = 1.0
+    _scores: dict = field(default_factory=dict)
+    _close_hold_since: float = 0.0
+    _next_nag: float = 0.0  # ask_attention repeats
+    _nag_company: bool = False
+    _ear_tucked: int | None = None  # which antenna is parked over the head (not in the mood)
+    _ear_seq_at: float = 0.0  # when the swatting is over and the make-up nuzzle starts (pushed back by every poke)
+    _last_swat: float = -1e9
+    _last_wave: float = -1e9
+    _last_hug: float = -1e9
+    _body_first: float = 0.0  # a torso has been in view since (0 = none)
+    _body_last: float = -1e9  # a torso was last in view at
+    _last_sleepy: float = -1e9  # the sleepy noise is rationed
+    _body_ignore: list = field(default_factory=list)  # (yaw, until): spots that turned out not to be people
 
     # bookkeeping
     _state_since: float = 0.0
@@ -141,6 +246,8 @@ class Behavior:
     _last_lonely: float = -1e9
     _next_react: float = 0.0
     _next_glance: float = 0.0
+    _look_until: float = 0.0  # idle look-around: gaze held wide (body turns) until then
+    _look_at: tuple[float, float] = (0.0, 0.0)
     _next_purr: float = 0.0
     _last_touch: float = -1e9
     _engaged_track: int | None = None
@@ -148,6 +255,9 @@ class Behavior:
     _engaged_since: float = 0.0
     _last_seen_yaw: float = 0.0
     _last_seen_pitch: float = 0.0
+    seen_spots: SeenSpots = field(default_factory=SeenSpots)
+    _search_i: int = 0  # which remembered place it is checking
+    _search_next: float = 0.0
     _greeted_track: int | None = None
     _prev_held: bool = False
     _dizzy_until: float = 0.0
@@ -158,7 +268,9 @@ class Behavior:
     _close_since: float = 0.0
     _shy_done_track: int | None = None
     _next_sneeze: float = 0.0
+    _sneeze_show_until: float = 0.0
     _next_sing: float = 0.0
+    _next_jingle: float = 0.0
     _nodding_off: bool = False
     _music_since: float = 0.0
     _music_greeted: bool = False
@@ -196,9 +308,168 @@ class Behavior:
         self._last_face_time = now
         self._next_glance = now + self.rng.uniform(self.timers.idle_glance_min, self.timers.idle_glance_max)
         self._next_sneeze = now + self.rng.uniform(self.timers.sneeze_min, self.timers.sneeze_max)
+        self._next_jingle = now + self.rng.uniform(JINGLE_MIN_S, JINGLE_MAX_S)
+        self._activity_since = now
+
+    # ------------------------------------------------------------------ the activity layer
+    def _situation(self, obs: Observation, now: float) -> Situation:
+        face = obs.face
+        if face is not None and face.area_frac >= self.timers.mimic_min_area:
+            if self._close_hold_since == 0.0:
+                self._close_hold_since = now
+        else:
+            self._close_hold_since = 0.0
+        close = self._close_hold_since != 0.0 and now - self._close_hold_since >= self.timers.mimic_hold
+        return Situation(person=face is not None, close=close, beat=obs.music_bpm > 0 or obs.dance_bpm > 0 or obs.grooving, held=obs.held,
+                         busy=obs.busy, can_sing=self.can_sing, can_mime=self.can_mime and (face is not None or obs.arms is not None))
+
+    def _choose(self, obs: Observation, now: float) -> list[Action]:
+        """Re-decide what to be doing when the situation changes, when a game or song ends, or every so often."""
+        sit = self._situation(obs, now)
+        actions: list[Action] = []
+        if self.activity in ("mime", "sing") and sit.busy != self.activity and now - self._activity_since > 1.0:
+            # the robot layer finished (or refused) it: back to choosing, and not that again for a while
+            self._end_activity(now, cooldown=self.rng.uniform(90.0, 240.0))
+        if sit.busy in ("mime", "sing") and self.activity != sit.busy:
+            self._switch(sit.busy, now)  # started from the page or a keypad: that is what we are doing now
+            return actions
+        if sit.busy is not None:
+            return actions  # a game or a song runs to its end
+        sig = signature(self.mood, sit)
+        changed = sig != self._last_sig and now - self._last_ask >= ASK_MIN_INTERVAL_S
+        if not (changed or now - self._last_ask >= ASK_CEILING_S or self._last_ask == -1e9):
+            return actions
+        # Give what it is doing a fair go: only the situation itself (the first five signature fields), not a
+        # drive creeping over a band edge or the 30 s clock, may cut an activity short of its dwell time.
+        big_change = sig[:5] != self._last_sig[:5] if self._last_sig else True
+        if now - self._activity_since < MIN_DWELL_S.get(self.activity, 0.0) and not big_change:
+            self._last_sig = sig
+            return actions
+        self._last_sig, self._last_ask = sig, now
+        choice = choose(self.mood, sit, self.activity, self._cool, now, self.rng)
+        self.runner_up, self._margin, self._scores = choice.runner_up, choice.margin, choice.scores
+        if choice.activity == self.activity:
+            return actions
+        if choice.margin < HESITATE_MARGIN and choice.runner_up is not None:
+            self._think(now, f"hmm... {choice.activity.replace('_', ' ')}? or {choice.runner_up.replace('_', ' ')}?")
+            actions.append(Action("gesture", "tilt", 1))
+        actions += self._switch(choice.activity, now)
+        return actions
+
+    def _end_activity(self, now: float, cooldown: float) -> None:
+        self._cool[self.activity] = now + cooldown
+        self._activity_prev, self.activity, self._activity_since = self.activity, "hangout", now
+        self._last_sig, self._last_ask = (), -1e9  # re-decide on the next tick
+
+    def _switch(self, new: str, now: float) -> list[Action]:
+        old = self.activity
+        if new != self._activity_prev:  # a genuinely new pastime; bouncing back to the one just left is no relief
+            self.mood.boredom -= BORED_NEW_ACTIVITY
+            self.mood.clamp()
+        if old == "mirror" and self.mimicking:
+            self.mimicking = False
+            self._cool["mirror"] = now + 60.0
+        self._activity_prev, self.activity, self._activity_since = old, new, now
+        self._last_sig = ()
+        out: list[Action] = [Action("activity", new, 0)]
+        why = f"(bored {self.mood.boredom:.1f}, curious {self.mood.curiosity:.1f}, social {self.mood.social:.1f}, energy {self.mood.energy:.1f})"
+        if new == "mirror":
+            self.mimicking, self._mimic_since = True, now
+            self._think(now, f"you're right up close... let's play mirror. I'll copy you {why}")
+            out.append(Action("sound", "mirror_start", 2))
+        elif new == "mime":
+            self._think(now, f"I want to play... Simon says! {why}")
+        elif new == "sing":
+            self._think(now, f"I feel a song coming on {why}")
+        elif new == "look_around":
+            self._think(now, f"what else is around here? {why}")
+            self._next_glance = now
+        elif new == "rest":
+            self._think(now, f"so tired... resting {why}")
+            out.append(Action("gesture", "droop", 1))
+            if now - self._last_sleepy > 120.0:  # the yawn-and-droop noise, at most once in a couple of minutes
+                self._last_sleepy = now
+                out.append(Action("sound", "sleepy", 1))
+        elif new == "ask_attention":
+            self._next_nag = now
+            self._think(now, f"I want some attention {why}")
+        elif new == "watch":
+            self._think(now, f"someone's here, watching them {why}")
+        elif new == "hangout":
+            self._think(now, f"just hanging out {why}")
+        return out
+
+    def _ear_touched(self, i: int, now: float) -> list[Action]:
+        """An antenna ("ear") was pushed, and it is not being petted.
+
+        A little game of keep-away: the touched antenna moves somewhere else and stays there, with a
+        giggle. Keep it up and it is not in the mood: the antenna goes forward over the head and stays.
+        Disturb it there and the other antenna bats at the hand with a nuh-uh-uh; then both come back
+        round, the gaze drops and the head pushes forward into the hand, asking for a pet instead.
+        """
+        side = "left" if i == 1 else "right"
+        self._ear_tickles = self._ear_tickles + 1 if now - self._last_ear_tickle < EAR_WINDOW_S else 1
+        self._last_ear_tickle = now
+        self.mood.social += 0.03
+        if self._ear_tucked is not None:
+            # Every poke while it sulks gets batted: the make-up nuzzle waits until they have stopped.
+            other = 1 - self._ear_tucked
+            self._ear_seq_at = now + EAR_MAKEUP_S
+            if now - self._last_swat < EAR_SWAT_S:
+                return []  # the taps of the last swat are still landing
+            self._last_swat = now
+            self._think(now, f"nuh-uh-uh! I said leave it (batting with my {'left' if other == 1 else 'right'} ear)")
+            return [Action("sound", "no_no", 3), Action("gesture", f"swat:{'+' if other == 1 else '-'}", 3)]
+        if self._ear_tickles >= EAR_TUCK_AFTER:
+            self._ear_tucked = i
+            self._think(now, f"my {side} ear AGAIN. not in the mood. it's going over my head, leave it")
+            return [Action("sound", "annoyed", 3), Action("ears", f"tuck:{i}", 3)]
+        self._think(now, f"eek, my {side} ear! can't catch it")
+        return [Action("sound", self.rng.choice(["giggle", "ticklish"]), 2), Action("ears", f"away:{i}", 3), Action("gesture", f"flinch:{'+' if i == 1 else '-'}", 2)]
+
+    def _body_ignored(self, yaw: float, now: float) -> bool:
+        self._body_ignore = [(y, until) for y, until in self._body_ignore if until > now]
+        return any(abs(yaw - y) < BODY_IGNORE_DEG for y, _ in self._body_ignore)
+
+    def _known_person_spot(self, yaw: float, now: float) -> bool:
+        """Has a FACE actually come from about here? Then it is a place where a person stands, and a torso
+        there with no face on it right now means the detector is struggling, not that it is furniture."""
+        return any(spot.faces and abs(spot.yaw - yaw) <= SPOT_MERGE_DEG for spot in self.seen_spots.recent(now))
+
+    def _nag(self, obs: Observation, now: float) -> list[Action]:
+        """ask_attention: complain alone, beg when someone is near, every 20 s or so."""
+        company = obs.face is not None
+        if now < self._next_nag and not (company and not self._nag_company):
+            return []  # (someone turning up is worth begging at once)
+        self._next_nag, self._nag_company = now + self.rng.uniform(15.0, 25.0), company
+        if company:
+            self._think(now, "hey! over here! play with me?")
+            return [Action("sound", "excited", 2), Action("gesture", "bounce", 2)]
+        self._think(now, "anyone...? so lonely")
+        self._last_lonely = now
+        return [Action("sound", "lonely", 1), Action("gesture", "droop", 1)]
 
     # ------------------------------------------------------------------ helpers
+    def _search_spot(self, now: float) -> tuple[float, float]:
+        """Where to look while searching: the ``_search_i``-th remembered place, newest first.
+
+        Falls back to the single last reading, which is all there was before, when nothing is remembered
+        (a voice or a loud noise turned it, rather than a sighting).
+        """
+        spots = self.seen_spots.recent(now)
+        if not spots:
+            return (self._last_seen_yaw, self._last_seen_pitch)
+        spot = spots[min(self._search_i, len(spots) - 1)]
+        return (spot.yaw, spot.pitch)
+
+    def _enter_searching(self, now: float) -> None:
+        """Start the sweep at the most recently seen place. Every route into SEARCHING comes through here,
+        or the sweep would start half-finished and give up on the first tick."""
+        self._search_i, self._search_next = 0, now + self.timers.search_duration
+
     def _enter(self, state: State, now: float) -> None:
+        if state == "SEARCHING" and self.state != "SEARCHING":
+            self._enter_searching(now)
         self.state = state
         self._state_since = now
 
@@ -218,15 +489,15 @@ class Behavior:
         actions: list[Action] = []
         t = self.timers
 
-        # -- mood drift ----------------------------------------------------------------
-        if self.state == "SLEEPING":
-            self.mood.energy += dt * 0.01
-        else:
-            self.mood.energy -= dt * 0.0006
-        if self.state in ("ENGAGED", "HELD"):
-            self.mood.social += dt * 0.01
-        else:
-            self.mood.social -= dt * 0.0015
+        # -- drives drift ----------------------------------------------------------------
+        self.mood.tick(dt, self.state, self.activity, obs.face is not None)
+        if obs.touched or obs.petted or obs.scratched:
+            self.mood.boredom -= BORED_TOUCH
+        if obs.loud_yaw_deg is not None:
+            self.mood.curiosity -= CURIOSITY_LOUD
+        if obs.face is not None and obs.face.track_id != self._engaged_track:
+            self.mood.boredom -= BORED_NEW_FACE  # a new face is the most interesting thing that can happen
+            self.mood.curiosity -= CURIOSITY_NEW_FACE
         self.mood.clamp()
 
         # -- global interrupts: pickup and touch work in every awake state ---------------
@@ -240,21 +511,29 @@ class Behavior:
             if self.state == "SLEEPING":
                 actions.append(Action("wake", "touch", 5))
                 self._enter("WAKING", now)
-            else:
-                # Ears are ticklish: pull the touched antenna away like a dog flicking its ear, and giggle.
-                self._ear_tickles = self._ear_tickles + 1 if now - self._last_ear_tickle < 6.0 else 1
-                self._last_ear_tickle = now
+            elif obs.petting:
+                # An ear played with while being petted is an ear massage: lean in, no flinch.
                 side = "left" if obs.touched_side == 1 else "right"
-                if self._ear_tickles >= 4:
-                    self._think(now, f"my {side} ear again?! okay that's enough")
-                    actions.append(Action("sound", "annoyed", 3))
-                    actions.append(Action("gesture", "shake_off", 3))
-                    self._ear_tickles = 0
-                else:
-                    self._think(now, f"eek, my {side} ear! ticklish")
-                    actions.append(Action("sound", self.rng.choice(["giggle", "ticklish"]), 2))
-                    actions.append(Action("gesture", f"flinch:{'+' if obs.touched_side == 1 else '-'}", 3))
-                self.mood.social += 0.03
+                self._think(now, f"mm, my {side} ear... keep going")
+                actions.append(Action("sound", self.rng.choice(["purr", "content"]), 3))
+                actions.append(Action("gesture", "lean", 3))
+                self.mood.social += 0.05
+                if self._engaged_person is not None:
+                    self.memory.add_pet(self._engaged_person)
+            else:
+                actions += self._ear_touched(obs.touched_side, now)
+
+        if self._ear_seq_at and now >= self._ear_seq_at:
+            # after the swatting, once they have stopped: the top antenna comes back round, the touched one comes down,
+            # and it asks for a pet instead
+            self._ear_seq_at = 0.0
+            self._ear_tucked = None
+            self._ear_tickles = 0
+            self._think(now, "...okay, okay. pet me instead?")
+            actions += [Action("ears", "clear", 3), Action("gesture", "nuzzle", 3), Action("sound", "curious", 2)]
+        elif self._ear_tucked is not None and now - self._last_ear_tickle > EAR_TUCK_S:
+            self._ear_tucked = None  # left alone long enough: the antenna has come back down on its own (motion.ears_tuck)
+            self._ear_tickles = 0
 
         if obs.petted:
             self._last_interaction = now
@@ -288,6 +567,39 @@ class Behavior:
                 self.mood.energy += 0.03
                 if self._engaged_person is not None:
                     self.memory.add_pet(self._engaged_person)
+
+        # A little tune to itself while it potters about: a counted-in song of console blips, made up on the
+        # spot. Not while it is performing, dancing or being handled, and not with singing switched off.
+        if now >= self._next_jingle:
+            self._next_jingle = now + self.rng.uniform(JINGLE_MIN_S, JINGLE_MAX_S)
+            # Singing off means singing off: a jingle is a little song, so the same switch covers it.
+            if (self.can_sing and awake and self.state != "HELD" and obs.busy is None and not obs.grooving and obs.dance_bpm == 0
+                    and obs.music_bpm == 0 and not self.mimicking and self.activity in JINGLE_ACTIVITIES and self.mood.energy > 0.25):
+                self._think(now, "*hums a little something*")
+                actions.append(Action("sound", "jingle", 1))
+
+        if obs.waved is not None and awake and self.state != "HELD" and now - self._last_wave > WAVE_COOLDOWN_S:
+            self._last_wave = now
+            self._last_interaction = now
+            # wave back with the mirrored antenna: their right hand is on our left
+            self._think(now, f"they're waving their {obs.waved} hand at me! *waves back*")
+            actions.append(Action("sound", "hello_friend" if self._engaged_person is not None else "happy", 3))
+            actions.append(Action("gesture", f"wave:{'+' if obs.waved == 'right' else '-'}", 3))
+            self.mood.social += 0.05
+            self.mood.clamp()
+            if self._engaged_person is not None:
+                self.memory.add_attention(self._engaged_person, 2.0)
+
+        if obs.hugged and awake and self.state != "HELD" and now - self._last_hug > HUG_COOLDOWN_S:
+            self._last_hug = now
+            self._last_interaction = now
+            self._think(now, "arms out... a hug! *nuzzles in*")
+            actions.append(Action("sound", "coo", 3))
+            actions.append(Action("gesture", "hug", 3))
+            self.mood.social += 0.15
+            self.mood.clamp()
+            if self._engaged_person is not None:
+                self.memory.add_pet(self._engaged_person)
 
         if obs.name_heard:
             self._last_interaction = now
@@ -366,6 +678,12 @@ class Behavior:
 
         if obs.face is not None:
             actions.append(Action("mirror", f"{obs.face.roll_deg:.1f}", 0))
+            if self._sneeze_show_until and now >= self._sneeze_show_until:
+                self._sneeze_show_until = 0.0
+                if obs.face.smile >= 0.8:
+                    self._think(now, "they're smiling at my sneeze... hehe")
+                    actions.append(Action("sound", "giggle", 2))
+                    actions.append(Action("gesture", "wiggle", 2))
 
         if pickup_edge:
             self._last_interaction = now
@@ -378,6 +696,16 @@ class Behavior:
             if self._engaged_person is not None:
                 self.memory.add_hold(self._engaged_person)
             self._enter("HELD", now)
+
+        # -- what to be doing ----------------------------------------------------------------
+        if self.state in ("IDLE", "SEARCHING", "ENGAGED"):
+            actions += self._choose(obs, now)
+            if self.activity == "ask_attention":
+                actions += self._nag(obs, now)
+        elif self.activity != "hangout":
+            if self.activity == "mirror" and self.mimicking:
+                self.mimicking = False
+            self._activity_prev, self.activity, self._activity_since = self.activity, "hangout", now
 
         # -- per-state ------------------------------------------------------------------
         if self.state == "SLEEPING":
@@ -420,8 +748,10 @@ class Behavior:
             face = obs.face
             if face is not None:
                 self._last_seen_yaw, self._last_seen_pitch = face.yaw_deg, face.pitch_deg
+                self.seen_spots.note(face.yaw_deg, face.pitch_deg, now, face=True)
                 if now >= self._voice_lock_until:
                     self.gaze = (face.yaw_deg, face.pitch_deg)
+                    self.attention.looked(face.yaw_deg, now)
 
                 gap = now - self._last_face_time
                 if face.track_id == self._engaged_track and t.peekaboo_min_gap < gap < t.peekaboo_max_gap and now - self._last_peekaboo > t.peekaboo_cooldown:
@@ -489,29 +819,22 @@ class Behavior:
                     self.memory.add_attention(self._engaged_person, dt)
                 self._last_interaction = now
 
-                # The mirror game: a close, steady face for a couple of seconds and it goes quiet and copies you.
-                if not self.mimicking:
-                    if face.area_frac >= t.mimic_min_area:
-                        if self._mimic_candidate_since == 0.0:
-                            self._mimic_candidate_since = now
-                        elif now - self._mimic_candidate_since >= t.mimic_hold and obs.dance_bpm == 0:
-                            self.mimicking, self._mimic_since = True, now
-                            self._think(now, "you're right up close... let's play mirror. I'll copy you")
-                            actions.append(Action("sound", "curious", 1))
-                    else:
-                        self._mimic_candidate_since = 0.0
-                elif face.area_frac < t.mimic_exit_area or now - self._mimic_since > t.mimic_max_s or obs.dance_bpm > 0:
+                # The mirror game is chosen by the activity layer (a close face for a couple of seconds makes it
+                # available); it ends when they back away, after a minute, or when a dance starts.
+                if self.mimicking and (face.area_frac < t.mimic_exit_area or now - self._mimic_since > t.mimic_max_s or obs.dance_bpm > 0 or obs.grooving):
                     self.mimicking = False
-                    self._mimic_candidate_since = 0.0
                     self._think(now, "mirror game over")
+                    actions.append(Action("sound", "mirror_end", 2))
                     actions.append(Action("gesture", "wiggle", 1))
+                    self._end_activity(now, cooldown=60.0)
                 if self.mimicking:
                     actions.append(Action("mimic", f"{face.head_yaw_deg:.1f},{face.head_pitch_deg:.1f},{face.roll_deg:.1f}", 0))
                     self._next_react = now + 5.0  # no micro-reactions while mirroring
 
                 # Mirror them: nod back at a nod, shake back at a shake (tilt is mirrored continuously by the body).
                 self._face_hist.append((now, face.yaw_deg, face.pitch_deg))
-                if not self.mimicking and now - self._last_mimic > t.mimic_cooldown:
+                # Not while they (or the music) are moving to a beat: a bob that keeps going is dancing, not a nod.
+                if not self.mimicking and now - self._last_mimic > t.mimic_cooldown and obs.dance_bpm == 0 and obs.music_bpm == 0 and not obs.grooving:
                     mimic = self._detect_nod_or_shake(now)
                     if mimic is not None:
                         self._last_mimic = now
@@ -520,7 +843,9 @@ class Behavior:
                         actions.append(Action("sound", "happy" if mimic == "nod" else "curious", 2))
                         actions.append(Action("gesture", mimic, 2))
 
-                # Periodic micro-reactions while someone is around.
+                # Periodic micro-reactions while someone is around (not while we are dancing with them).
+                if obs.dance_bpm > 0 or obs.grooving:
+                    self._next_react = max(self._next_react, now + 3.0)
                 if now >= self._next_react:
                     self._next_react = now + self.rng.uniform(t.react_min, t.react_max)
                     close = face.area_frac > 0.06
@@ -530,38 +855,80 @@ class Behavior:
                     else:
                         choice = self.rng.choice(["curious", "curious", "happy", "confused"])
                         gesture = {"curious": "tilt", "happy": "nod", "confused": "tilt"}[choice]
-                    if self.mood.energy < 0.25:
-                        choice, gesture = "sleepy", "droop"
-                    actions.append(Action("sound", choice, 1))
-                    actions.append(Action("gesture", gesture, 1))
+                    if self.mood.energy < 0.25 or self.activity == "rest":
+                        if now - self._last_sleepy < 120.0:
+                            continue_quietly = True  # tired: a droop without the noise
+                        else:
+                            continue_quietly = False
+                            self._last_sleepy = now
+                        actions.append(Action("gesture", "droop", 1))
+                        if not continue_quietly:
+                            actions.append(Action("sound", "sleepy", 1))
+                    else:
+                        actions.append(Action("sound", choice, 1))
+                        actions.append(Action("gesture", gesture, 1))
 
-            elif obs.body is not None and self.state != "ENGAGED" and now - self._last_face_time > 2.5:
+            elif (obs.body is not None and self.state != "ENGAGED" and now - self._last_face_time > 2.5 and obs.busy != "mime"
+                  and not self._body_ignored(obs.body.yaw_deg, now)):
                 # Someone's torso is in view but not their face: look up to where the head should be.
+                # A torso has to persist before it is believed (the detector flickers on furniture), and if a
+                # minute of staring finds no face, that spot is not a person and is ignored for a while.
                 self._close_since = 0.0
-                if self._body_since == 0.0:
-                    self._body_since = now
-                    self._think(now, "a body! looking up for the face")
-                self.gaze = (obs.body.yaw_deg, obs.body.pitch_deg)
-                self._last_seen_yaw, self._last_seen_pitch = obs.body.yaw_deg, obs.body.pitch_deg
-                self._last_interaction = now
-                if self.state == "IDLE":
-                    self._enter("SEARCHING", now)
-                    actions.append(Action("gesture", "perk", 1))
-                elif self.state == "SEARCHING":
-                    self._state_since = now  # keep searching while there is a body to look at
+                if self._body_first == 0.0:
+                    self._body_first = now
+                self._body_last = now
+                if now - self._body_first < BODY_CONFIRM_S:
+                    # not believed yet, but worth pausing for: stop the sweep on it so it does not roll by
+                    self.gaze = (obs.body.yaw_deg, obs.body.pitch_deg)
+                    self._look_until = max(self._look_until, now + 1.5)
+                    self._next_glance = max(self._next_glance, now + 1.5)
+                elif (now - self._body_since > BODY_GIVE_UP_S and self._body_since != 0.0
+                      and not self._known_person_spot(obs.body.yaw_deg, now)):
+                    # Blacklisting a spot the face detector merely struggles with is how it ends up refusing
+                    # to look at somebody standing still right in front of it: the face drops out for a few
+                    # seconds, the torso is still there, and it decides the person is furniture. So a place
+                    # a face has actually come from is never written off, however long it loses them for.
+                    self._body_ignore.append((obs.body.yaw_deg, now + BODY_IGNORE_S))
+                    self._think(now, f"no face up there after {BODY_GIVE_UP_S:.0f} s... that's not a person. ignoring it")
+                    self._body_since, self._body_first = 0.0, 0.0
+                    self.gaze = None
+                    if self.state == "SEARCHING":
+                        self._enter("IDLE", now)
+                        self._next_glance = now + 0.5
+                else:
+                    if self._body_since == 0.0:
+                        self._body_since = now
+                        self._think(now, "a body! looking up for the face")
+                    self.gaze = (obs.body.yaw_deg, obs.body.pitch_deg)
+                    self._last_seen_yaw, self._last_seen_pitch = obs.body.yaw_deg, obs.body.pitch_deg
+                    self.seen_spots.note(obs.body.yaw_deg, obs.body.pitch_deg, now)
+                    self._last_interaction = now
+                    if self.state == "IDLE":
+                        self._enter("SEARCHING", now)
+                        actions.append(Action("gesture", "perk", 1))
+                    elif self.state == "SEARCHING":
+                        self._state_since = now  # keep searching while there is a body to look at
             else:  # no face this tick
                 self._close_since = 0.0
-                self._body_since = 0.0
+                if obs.body is None and now - self._body_last > 1.5:
+                    self._body_first = 0.0  # a torso gone for a while (not a blink of the detector): start over
+                    self._body_since = 0.0
                 self._mimic_candidate_since = 0.0
                 if self.mimicking and now - self._last_face_time > 1.0:
                     self.mimicking = False
                     self._think(now, "mirror game over (lost you)")
-                if self.state == "ENGAGED":
+                    actions.append(Action("sound", "mirror_end", 2))
+                    self._end_activity(now, cooldown=60.0)
+                if self.state == "ENGAGED" and (obs.dance_bpm > 0 or obs.grooving or obs.busy in ("mime", "gesture", "kandi")):
+                    pass  # mid-dance, a Simon says move, a solo gesture (bow, sneeze) or a kandi trade: keep the gaze
+                    self._last_face_time = max(self._last_face_time, now - 0.5)  # and the face-lost clock waits too
+                elif self.state == "ENGAGED":
                     if now - self._last_face_time > t.face_lost_grace:
                         engaged_for = now - self._engaged_since
                         self._face_lost_at = self._last_face_time
                         self._enter("SEARCHING", now)
-                        self.gaze = (self._last_seen_yaw, self._last_seen_pitch)
+                        self._enter_searching(now)
+                        self.gaze = self._search_spot(now)
                         self._think(now, f"where did they go? looking where I last saw them ({'miss them' if engaged_for > t.engaged_sad_if_over else 'hm?'})")
                         actions.append(Action("gesture", "search", 2))
                         if engaged_for > t.engaged_sad_if_over:
@@ -569,36 +936,80 @@ class Behavior:
                         else:
                             actions.append(Action("sound", "confused", 2))
                 elif self.state == "SEARCHING":
-                    self.gaze = (self._last_seen_yaw, self._last_seen_pitch)
-                    if now - self._state_since > t.search_duration:
-                        self._engaged_track = None
-                        self._engaged_person = None
-                        self._enter("IDLE", now)
-                        self._think(now, "gave up looking, back to idling")
-                        self.gaze = None
-                        self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
+                    # Work back through where people have actually been, not just the one last reading: a
+                    # face that drops out for optical reasons is usually still standing about where it was,
+                    # or one place over.
+                    self.gaze = self._search_spot(now)
+                    if now >= self._search_next:
+                        self._search_i += 1
+                        self._search_next = now + t.search_duration
+                        if self._search_i < len(self.seen_spots.recent(now)):  # somewhere else to try
+                            self.gaze = self._search_spot(now)
+                            self._think(now, f"not there... checking where else I've seen people (#{self._search_i + 1})")
+                            actions.append(Action("gesture", "search", 1))
+                        else:
+                            self._engaged_track = None
+                            self._engaged_person = None
+                            self._enter("IDLE", now)
+                            self._think(now, "gave up looking, back to idling")
+                            self.gaze = None
+                            self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
                 else:  # IDLE
                     self.gaze = None
+                    continue_glance = False  # ...unless the glance below is a proper look around the room
                     if obs.loud_yaw_deg is not None:
                         self.gaze = (obs.loud_yaw_deg, 0.0)
+                        self._look_until = 0.0
                         actions.append(Action("gesture", "perk", 2))
                         actions.append(Action("sound", "curious", 1))
                         self._next_glance = now + 2.0
-                    elif now >= self._next_glance:
-                        self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
-                        actions.append(Action("gesture", "glance", 0))
+                    elif now >= self._next_glance and self.activity != "rest":
+                        # Somebody was just here. Sweeping off to a wall at 100 degrees is how it loses them
+                        # for good, so while the company is still recent it only checks the places people
+                        # have actually been.
+                        spots = self.seen_spots.recent(now)
+                        if spots and now - self.seen_spots.last_at() < COMPANY_RECENT_S:
+                            spot = spots[self.rng.randrange(min(2, len(spots)))]
+                            self._look_at = (spot.yaw, spot.pitch)
+                            self._look_until = now + self.rng.uniform(2.5, 4.0)
+                            self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
+                            self.attention.looked(spot.yaw, now)
+                        else:
+                            continue_glance = True
+                    if continue_glance:
+                        # Look around properly: a wide gaze target, so the body turns too and it can see
+                        # someone standing right beside it, off camera. (A head-only glance never turned the body.)
+                        if self.activity == "look_around":
+                            # curious: go somewhere it has not looked lately, and LINGER there: the body has to
+                            # get round (it carries the coarse turn) and the camera needs a few seconds on a
+                            # scene to find a face in it. A quick flick saw nothing.
+                            yaw = self.attention.stalest(now, self.rng)
+                            self._next_glance = now + self.rng.uniform(5.0, 8.0)
+                            self._look_until = self._next_glance
+                        else:
+                            yaw = self.rng.choice((-1.0, 1.0)) * self.rng.uniform(35.0, 100.0)
+                            self._next_glance = now + self.rng.uniform(t.idle_glance_min, t.idle_glance_max)
+                            self._look_until = now + self.rng.uniform(2.5, 4.0)
+                        if self.attention.looked(yaw, now):
+                            self.mood.curiosity -= CURIOSITY_NEW_SECTOR  # a real change of scene spends curiosity
+                        self._look_at = (yaw, self.rng.uniform(-6.0, 10.0))
+                        actions.append(Action("gesture", "glance:" + ("+" if yaw > 0 else "-"), 0))
+                    if now < self._look_until:
+                        self.gaze = self._look_at
                     alone_for = now - self._last_interaction
                     if self.mood.energy < 0.3 and not self._nodding_off and alone_for > 30.0 and self.rng.random() < dt * 0.02:
                         self._nodding_off = True
-                        actions.append(Action("sound", "sleepy", 1))
                         actions.append(Action("gesture", "nod_off", 1))
+                        if now - self._last_sleepy > 120.0:
+                            self._last_sleepy = now
+                            actions.append(Action("sound", "sleepy", 1))
                     if alone_for > t.sleep_after or self.mood.energy < 0.08:
                         actions.append(Action("sound", "yawn", 3))
                         actions.append(Action("sleep", "tired", 5))
                         self._think(now, "so tired... going to sleep" if self.mood.energy < 0.08 else f"nobody around for {alone_for / 60:.0f} min, dozing off")
                         self._enter("SLEEPING", now)
                         self._face_first_seen = 0.0
-                    elif alone_for > t.lonely_after and now - self._last_lonely > t.lonely_repeat:
+                    elif alone_for > t.lonely_after and now - self._last_lonely > t.lonely_repeat and self.activity != "ask_attention":
                         self._last_lonely = now
                         actions.append(Action("sound", "lonely", 1))
                         self._think(now, f"alone for {alone_for:.0f} s... lonely")
@@ -607,9 +1018,10 @@ class Behavior:
         if awake and self.state in ("IDLE", "ENGAGED"):
             if now >= self._next_sneeze:
                 self._next_sneeze = now + self.rng.uniform(t.sneeze_min, t.sneeze_max)
-                actions.append(Action("sound", "sneeze", 2))
+                actions.append(Action("sound", "sneeze", 3))
                 self._think(now, "ah... ah... choo!")
-                actions.append(Action("gesture", "sneeze", 2))
+                actions.append(Action("gesture", "sneeze", 3))
+                self._sneeze_show_until = now + 10.6  # motion.SNEEZE_S; after it, a smile in the audience gets a giggle
             elif self.rng.random() < dt * t.hiccup_chance_per_s:
                 actions.append(Action("sound", "hiccup", 1))
                 actions.append(Action("gesture", "hiccup", 1))
@@ -619,7 +1031,9 @@ class Behavior:
         return actions
 
     def _detect_nod_or_shake(self, now: float) -> str | None:
-        """Two or more up/down (nod) or left/right (shake) reversals of 3+ degrees within the last 2 s."""
+        """Two or more up/down (nod) or left/right (shake) reversals of 3+ degrees within the last 2 s,
+        and the head has come to rest in the last half second: a nod is a burst that ends, whereas a bob
+        that keeps going is dancing and belongs to the dance detector."""
         pts = [(t, y, p) for t, y, p in self._face_hist if now - t <= 2.0]
         if len(pts) < 8:
             return None
@@ -629,6 +1043,9 @@ class Behavior:
             dev = [v - base for v in vals]
             if max(dev) - min(dev) < 3.0:
                 continue
+            recent = [d for (t_, _, _), d in zip(pts, dev) if now - t_ <= 0.5]
+            if len(recent) >= 2 and max(recent) - min(recent) > 1.5:
+                continue  # still moving
             # count sign reversals of the deviation, ignoring the small stuff
             signs = [1 if d > 1.0 else -1 if d < -1.0 else 0 for d in dev]
             signs = [x for x in signs if x != 0]
@@ -710,15 +1127,26 @@ class Behavior:
             "engaged_tier": None if self._engaged_person is None else self._engaged_person.tier(),
             "gaze": self.gaze,
             "mimicking": self.mimicking,
+            "activity": self.activity,
+            "runner_up": self.runner_up,
+            "drives": self.mood.as_dict(),
         }
 
     def mind(self, now: float) -> dict:
         """Everything driving the next decision, for the 'inside the mind' page."""
+        spots = self.seen_spots.as_dicts(now)
         t = self.timers
         alone = now - self._last_interaction
         return {
             **self.status(),
+            "seen_spots": spots,  # where people have actually been: what it checks when it loses somebody
+            "searching_spot": (self._search_i + 1) if self.state == "SEARCHING" else None,
             "state_for_s": round(now - self._state_since, 1),
+            "activity_for_s": round(now - self._activity_since, 1),
+            "margin": round(self._margin, 2),
+            "scores": self._scores,
+            "cooldowns": {k: round(v - now) for k, v in self._cool.items() if v > now},
+            "next_decision_in_s": round(max(0.0, self._last_ask + ASK_CEILING_S - now)),
             "alone_for_s": round(alone, 1),
             "lonely_in_s": round(max(0.0, t.lonely_after - alone), 1),
             "sleep_in_s": round(max(0.0, t.sleep_after - alone), 1),

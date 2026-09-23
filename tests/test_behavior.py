@@ -145,15 +145,55 @@ def test_peekaboo_and_shy():
     assert any(a.name == "shy" for a in acts)
 
 
-def test_ear_tickle_flinches_then_gets_annoyed():
+def test_ear_tickles_are_keep_away_then_not_in_the_mood_then_a_swat_and_a_nuzzle():
     b, _ = _brain()
-    acts = _run(b, lambda t: Observation(touched=(t < 0.05), touched_side=1), 0.0, 1.5)
-    flinch = [a for a in acts if a.kind == "gesture" and a.name.startswith("flinch")]
-    assert flinch and flinch[0].name == "flinch:+"
-    for k in range(3):
-        t0 = 1.5 + k * 1.5
-        acts = _run(b, lambda t, t0=t0: Observation(touched=(t < t0 + 0.05), touched_side=0), t0, t0 + 1.5)
-    assert any(a.name == "annoyed" for a in acts)
+    _run(b, lambda t: Observation(), 0.0, 1.0)
+    acts, t = [], 1.0
+    for _ in range(3):  # three tickles on the right ear: keep-away, with a giggle each time
+        acts += b.tick(Observation(touched=True, touched_side=0), t, 0.05)
+        t += 2.0
+        acts += _run(b, lambda t: Observation(), t, t + 1.0)
+        t += 1.0
+    assert [a.name for a in acts if a.kind == "ears"] == ["away:0"] * 3
+    assert sum(1 for a in acts if a.kind == "sound" and a.name in ("giggle", "ticklish")) == 3
+    assert not any(a.name == "annoyed" for a in acts)
+    # the fourth: not in the mood, the ear goes over the head
+    acts = b.tick(Observation(touched=True, touched_side=0), t, 0.05)
+    assert any(a.kind == "ears" and a.name == "tuck:0" for a in acts) and any(a.name == "annoyed" for a in acts)
+    t += 2.0
+    # disturb it there: the LEFT antenna swats, nuh-uh-uh
+    acts = b.tick(Observation(touched=True, touched_side=0), t, 0.05)
+    assert any(a.kind == "sound" and a.name == "no_no" for a in acts) and any(a.kind == "gesture" and a.name == "swat:+" for a in acts)
+    # keep at it and it keeps batting (one swat per poke once the last one's taps have landed), no make-up yet
+    acts = _run(b, lambda t: Observation(), t, t + 1.0) + b.tick(Observation(touched=True, touched_side=0), t + 1.0, 0.05)
+    assert not any(a.kind == "gesture" and a.name == "swat:+" for a in acts)  # mid-swat: covered
+    acts = _run(b, lambda t: Observation(), t + 1.0, t + 2.0) + b.tick(Observation(touched=True, touched_side=0), t + 2.0, 0.05)
+    assert any(a.kind == "gesture" and a.name == "swat:+" for a in acts) and not any(a.name == "nuzzle" for a in acts)
+    t += 2.0
+    # ...only once they stop do both come back round and it asks for a pet instead
+    acts = _run(b, lambda t: Observation(), t, t + 2.0)
+    assert not any(a.name == "nuzzle" for a in acts)
+    acts = _run(b, lambda t: Observation(), t + 2.0, t + 4.0)
+    assert any(a.kind == "ears" and a.name == "clear" for a in acts) and any(a.kind == "gesture" and a.name == "nuzzle" for a in acts)
+    assert b._ear_tucked is None and b._ear_tickles == 0
+
+
+def test_the_sulk_wears_off_on_its_own():
+    from festival_pet.behavior import EAR_TUCK_S
+    from festival_pet.motion import MotionComposer
+
+    assert EAR_TUCK_S == MotionComposer.EAR_TUCK_S == 26.0
+    b, _ = _brain()
+    _run(b, lambda t: Observation(), 0.0, 1.0)
+    t = 1.0
+    for _ in range(4):
+        b.tick(Observation(touched=True, touched_side=1), t, 0.05)
+        t += 3.0
+    assert b._ear_tucked == 1
+    _run(b, lambda t: Observation(), t, t + EAR_TUCK_S + 1.0)
+    assert b._ear_tucked is None and b._ear_tickles == 0
+    acts = b.tick(Observation(touched=True, touched_side=1), t + EAR_TUCK_S + 1.0, 0.05)
+    assert any(a.name == "away:1" for a in acts)  # back to the game, not a swat
 
 
 def test_head_pet_leans_in_and_purrs_while_it_lasts():
@@ -189,15 +229,57 @@ def test_heard_speech_reacts_to_intent_and_logs_it():
     assert not any(a.kind in ("sound", "gesture") for a in acts)
 
 
+def test_a_torso_with_no_face_is_given_up_on_and_ignored():
+    b, _ = _brain()
+    body = FaceObs(-1, 40.0, -20.0, 0.2, None, 0.0)
+    _run(b, lambda t: Observation(), 0.0, 3.0)
+    acts = _run(b, lambda t: Observation(body=body), 3.0, 3.8)
+    assert b.gaze == (40.0, -20.0) and b.state == "IDLE"  # paused on it, but not believed yet (no search, no thought)
+    assert not any("a body!" in txt for _, txt in b.thoughts)
+    _run(b, lambda t: Observation(body=body), 3.8, 5.0)
+    assert b.gaze == (40.0, -20.0) and b.state == "SEARCHING"
+    _run(b, lambda t: Observation(body=body), 5.0, 12.0)
+    assert b.state == "IDLE" and any("not a person" in txt for _, txt in b.thoughts)
+    _run(b, lambda t: Observation(body=body), 12.0, 17.0)
+    assert b.gaze is None or abs(b.gaze[0] - 40.0) > 1.0  # that spot is ignored now
+    other = FaceObs(-1, -80.0, -20.0, 0.2, None, 0.0)
+    _run(b, lambda t: Observation(body=other), 17.0, 20.0)
+    assert b.gaze == (-80.0, -20.0)  # a torso somewhere else is still worth a look
+    assert sum(1 for _, txt in b.thoughts if "a body!" in txt) == 2  # one thought per torso, not per tick
+
+
+def test_a_glimpse_of_a_torso_pauses_the_sweep_and_blinks_do_not_reset_it():
+    b, _ = _brain()
+    b._last_face_time = -10.0
+    b.activity = "look_around"
+    b._look_at, b._look_until, b._next_glance = (120.0, 0.0), 5.0, 5.0
+    body = FaceObs(-1, 40.0, -20.0, 0.2, None, 0.0)
+    b.tick(Observation(body=body), 1.0, 0.05)
+    assert b.gaze == (40.0, -20.0) and b._next_glance >= 2.5  # stopped on it at once, before believing it
+    # the detector blinks for half a second: still the same torso
+    _run(b, lambda t: Observation(), 1.05, 1.5)
+    _run(b, lambda t: Observation(body=body), 1.5, 2.3)
+    assert b.state == "SEARCHING" and any("a body!" in txt for _, txt in b.thoughts)
+
+
+def test_a_solo_gesture_does_not_lose_the_person():
+    b, _ = _brain()
+    face = FaceObs(1, 20.0, -10.0, 0.05, None, 0.0)
+    _run(b, lambda t: Observation(face=face), 0.0, 3.0)
+    assert b.state == "ENGAGED"
+    _run(b, lambda t: Observation(busy="gesture"), 3.0, 9.5)  # a 6 s bow: the camera is everywhere but on them
+    assert b.state == "ENGAGED" and b.gaze == (20.0, -10.0)  # still theirs, still looking where they were
+
+
 def test_body_makes_it_look_up_and_search():
     b, _ = _brain()
     body = FaceObs(-1, 15.0, -20.0, 0.2, None, 0.0)
     _run(b, lambda t: Observation(), 0.0, 3.0)  # no face for a while first (bodies never override a recent face)
-    acts = _run(b, lambda t: Observation(body=body), 3.0, 4.0)
+    acts = _run(b, lambda t: Observation(body=body), 3.0, 4.5)  # a second to believe it
     assert b.state == "SEARCHING" and b.gaze == (15.0, -20.0)
     assert any(a.name == "perk" for a in acts)
-    _run(b, lambda t: Observation(body=body), 4.0, 15.0)
-    assert b.state == "SEARCHING"  # keeps looking as long as the body is there
+    _run(b, lambda t: Observation(body=body), 4.5, 9.0)
+    assert b.state == "SEARCHING"  # keeps looking as long as the body is there (until it gives up on it)
 
 
 def test_sleeping_ignores_faces_but_wakes_on_loud_or_name():
@@ -233,12 +315,28 @@ def test_nods_back_when_the_person_nods():
     b, _ = _brain()
     still = FaceObs(1, 0.0, 0.0, 0.04, None, 0.0)
     _run(b, lambda t: Observation(face=still), 0.0, 3.0)
-    nodding = lambda t: Observation(face=FaceObs(1, 0.0, 6.0 * math.sin(2 * math.pi * 1.5 * t), 0.04, None, 0.0))
+    # a nod is a short burst that ends: two nods, then the head comes to rest
+    nodding = lambda t: Observation(face=FaceObs(1, 0.0, 6.0 * math.sin(2 * math.pi * 1.5 * t) if t < 4.4 else 0.0, 0.04, None, 0.0))
     acts = _run(b, nodding, 3.0, 5.5)
     assert any(a.kind == "gesture" and a.name == "nod" for a in acts)
-    shaking = lambda t: Observation(face=FaceObs(1, 8.0 * math.sin(2 * math.pi * 1.5 * t), 0.0, 0.04, None, 0.0))
+    shaking = lambda t: Observation(face=FaceObs(1, 8.0 * math.sin(2 * math.pi * 1.5 * t) if t < 13.4 else 0.0, 0.0, 0.04, None, 0.0))
     acts = _run(b, shaking, 12.0, 14.5)
     assert any(a.kind == "gesture" and a.name == "shake" for a in acts)
+
+
+def test_a_bob_that_keeps_going_is_not_a_nod():
+    import math
+
+    b, _ = _brain()
+    still = FaceObs(1, 0.0, 0.0, 0.04, None, 0.0)
+    _run(b, lambda t: Observation(face=still), 0.0, 3.0)
+    bobbing = lambda t: Observation(face=FaceObs(1, 0.0, 6.0 * math.sin(2 * math.pi * 2.0 * t), 0.04, None, 0.0))
+    acts = _run(b, bobbing, 3.0, 9.0)
+    assert not any(a.kind == "gesture" and a.name in ("nod", "shake") for a in acts)
+    # and once the dance detector has locked on, no nod-back even if they pause for a beat
+    dancing = lambda t: Observation(face=FaceObs(1, 0.0, 0.0, 0.04, None, 0.0), dance_bpm=120.0)
+    acts = _run(b, dancing, 9.0, 12.0)
+    assert not any(a.kind == "gesture" and a.name in ("nod", "shake") for a in acts)
 
 
 def test_mirror_game_starts_when_close_and_quiet_then_copies():
@@ -263,3 +361,102 @@ def test_visual_dancing_makes_it_groove():
     grooves = [a for a in acts if a.kind == "groove"]
     assert grooves and grooves[-1].name.endswith("|visual")
     assert any(a.name == "excited" for a in acts)
+
+
+def test_dancing_is_not_interrupted_by_reactions_or_a_lost_face():
+    b, _ = _brain()
+    face = FaceObs(1, 0.0, 0.0, 0.05, None, 0.0)
+    _run(b, lambda t: Observation(face=face), 0.0, 3.0)
+    acts = _run(b, lambda t: Observation(face=face, dance_bpm=120.0), 3.0, 20.0)
+    assert any(a.kind == "groove" for a in acts)
+    assert not any(a.kind == "gesture" and a.name in ("tilt", "nod", "wiggle") for a in acts)  # no micro-reactions mid-dance
+    # tracker blinks for 4 s while the dance lock holds: no search, no "where did they go"
+    acts = _run(b, lambda t: Observation(dance_bpm=120.0), 20.0, 24.0)
+    assert b.state == "ENGAGED" and not any(a.kind == "gesture" and a.name == "search" for a in acts)
+
+
+def test_idle_look_around_turns_the_gaze_wide():
+    b, _ = _brain()
+    _run(b, lambda t: Observation(), 0.0, 1.0)
+    wide = []
+    t = 1.0
+    while t < 40.0:
+        b.tick(Observation(), t, 0.05)
+        if b.gaze is not None:
+            wide.append(b.gaze[0])
+        t += 0.05
+    assert wide and max(abs(y) for y in wide) >= 35.0  # not a 22-degree head flick: a proper turn
+    assert any(y > 0 for y in wide) and any(y < 0 for y in wide)
+
+
+def test_ear_played_with_while_petted_is_enjoyed_not_flinched():
+    b, _ = _brain()
+    _run(b, lambda t: Observation(), 0.0, 1.0)
+    acts = b.tick(Observation(touched=True, touched_side=1, petting=True), 1.0, 0.05)
+    names = [(a.kind, a.name) for a in acts]
+    assert ("gesture", "lean") in names and not any(n.startswith("flinch") for k, n in names if k == "gesture")
+    acts = b.tick(Observation(touched=True, touched_side=1), 10.0, 0.05)
+    assert any(k == "gesture" and n.startswith("flinch") for k, n in [(a.kind, a.name) for a in acts])
+
+
+def test_it_hums_a_made_up_jingle_while_pottering_about_but_not_mid_performance():
+    from festival_pet.behavior import JINGLE_MAX_S
+
+    b, _ = _brain()
+    b.activity = "look_around"
+    b.mood.energy = 0.8
+    jingles = lambda acts: [a for a in acts if a.kind == "sound" and a.name == "jingle"]  # noqa: E731
+    # a jingle is a little song, so the singing switch covers it: off means off
+    assert not jingles(_run(b, lambda t: Observation(), 0.0, JINGLE_MAX_S * 3, dt=0.5))
+    b, _ = _brain()
+    b.activity, b.mood.energy, b.can_sing = "look_around", 0.8, True
+    acts = _run(b, lambda t: Observation(), 0.0, JINGLE_MAX_S * 3, dt=0.5)
+    assert jingles(acts), "nothing hummed in three windows"
+    assert len(jingles(acts)) <= 5  # now and then, not chattering
+    # not while it is performing, dancing, grooving, held or flat out
+    b._next_jingle = 0.0
+    for obs in (Observation(busy="mime"), Observation(busy="sing"), Observation(grooving=True),
+                Observation(music_bpm=120.0, music_confidence=0.7), Observation(dance_bpm=120.0), Observation(held=True)):
+        b._next_jingle = 0.0
+        assert not jingles(b.tick(obs, 500.0, 0.5))
+    # nor while it is busy with a game as its activity, or too tired
+    b.activity, b._next_jingle = "mime", 0.0
+    assert not jingles(b.tick(Observation(), 600.0, 0.5))
+    b.activity, b.mood.energy, b._next_jingle = "watch", 0.1, 0.0
+    assert not jingles(b.tick(Observation(), 700.0, 0.5))
+
+
+def test_it_remembers_where_people_have_been_and_checks_back_before_giving_up():
+    """The face detector drops out constantly for optical reasons. Remembering one last position and
+    scanning the room five seconds later points the camera at a wall, which is how it used to lose
+    somebody standing right in front of it."""
+    from festival_pet.behavior import COMPANY_RECENT_S, SPOT_KEEP, SPOT_MERGE_DEG
+
+    b, _ = _brain()
+    t = 0.0
+    for yaw in (10.0, 12.0, -40.0, 70.0):  # three places: the first two are the same person shifting about
+        _run(b, lambda _t, y=yaw: Observation(face=FaceObs(1, y, 0.0, 0.05, None, 0.0)), t, t + 4.0)
+        t += 4.0
+    spots = b.seen_spots.recent(t)
+    assert len(spots) == 3 <= SPOT_KEEP and abs(spots[0].yaw - 70.0) < SPOT_MERGE_DEG  # newest first
+    assert min(abs(x.yaw - 11.0) for x in spots) < SPOT_MERGE_DEG  # 10 and 12 merged into one place
+
+    # lose them: it works back through the places rather than giving up after the first
+    checked, end = [], t + b.timers.face_lost_grace + b.timers.search_duration * 3 + 1.0
+    while t < end:
+        b.tick(Observation(), t, 0.1)
+        if b.state == "SEARCHING":
+            checked.append(round(b.gaze[0]))
+        t += 0.1
+    assert len({y for y in checked}) == 3, "it only checked one place"
+    assert b.state == "IDLE"  # ...and it does eventually accept they have gone
+
+    # right after company it checks the remembered places, it does not swing off at a wall
+    b.seen_spots.note(25.0, 0.0, t)
+    b.activity, b._next_glance, b._look_until = "hangout", t, 0.0
+    for _ in range(20):
+        t += 0.1
+        b.tick(Observation(), t, 0.1)
+        if b.gaze is not None:
+            assert abs(b.gaze[0]) < 80.0, "wandered off to a wall with somebody just there"
+    assert COMPANY_RECENT_S > 30.0

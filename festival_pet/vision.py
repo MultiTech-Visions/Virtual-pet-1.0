@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 
 from festival_pet.memory import FaceMemory, Person
+from festival_pet.pose import Arms, PoseReader
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,19 @@ FORGET_AFTER = 4.0  # seconds before a returning face nearby counts as a new tra
 ASSOC_MAX_NORM = 0.35  # max normalised centre jump to keep associating a track
 UNKNOWN_VOTES_TO_ENROLL = 3  # consecutive "no match" embeddings before we create a new person
 BODY_INTERVAL = 0.4  # person detection only when no face is visible, ~2.5x per second
+POSE_IDLE_INTERVAL = 0.5  # arms read twice a second while someone is about (for the page, and to know a game is on)
+POSE_LIVE_INTERVAL = 0.0  # every frame while an arm game or the dance-along needs them
+POSE_ROI_MAX_AGE = 1.5  # a confident pose is the next region of interest for this long; then the detector is asked again
+POSE_SOMEONE_S = 2.0  # idle arm reads only while a face or a torso was seen this recently
+FACE_TOP_FRAC = 0.32  # Where the face is aimed to sit, down the frame, WHILE THE ARMS ARE ACTUALLY NEEDED
+#                       (a game, the handshake, teaching it a pose, the dance-along). The camera is in the
+#                       head, so centring the face points the lens at it and leaves the shoulders and
+#                       elbows out of the bottom of the picture; dropping the aim fits the person in.
+#                       Not a free win, so it is not on by default: it pushes the face toward the top of
+#                       the frame, where it is harder to detect, and an aim point below the picture is
+#                       outside what the lens calibration can honestly unproject. Hence the clamp below,
+#                       and hence 0.32 rather than a quarter.
+FACE_AIM_MAX_FRAC = 0.94  # never aim below this much of the way down the frame: past the edge is made up
 
 
 @dataclass
@@ -78,8 +92,11 @@ class BodyFinder:
         self._anchors = _blazepose_anchors()
         self._score = score_threshold
 
-    def detect(self, frame_bgr: np.ndarray) -> list[tuple[float, float, float, float, float]]:
-        """Return person boxes (x1, y1, x2, y2, score) in the frame's pixel coordinates."""
+    def detect(self, frame_bgr: np.ndarray) -> list[tuple[float, float, float, float, float, np.ndarray]]:
+        """Return people as (x1, y1, x2, y2, score, keypoints) in the frame's pixel coordinates.
+
+        keypoints is 4 x 2: hip centre, full-body point, shoulder centre, upper-body point (MediaPipe's
+        region-of-interest pair for the pose landmarker is the first two)."""
         h, w = frame_bgr.shape[:2]
         scale = max(h, w)
         ratio = self.INPUT / scale
@@ -101,8 +118,9 @@ class BodyFinder:
         xy1 = (cxy - wh / 2) * scale - [pad_l / ratio, pad_t / ratio]
         xy2 = (cxy + wh / 2) * scale - [pad_l / ratio, pad_t / ratio]
         boxes = np.concatenate([xy1, xy2], axis=1)
+        kps = (regs[0, keep, 4:12].reshape(-1, 4, 2) / self.INPUT + self._anchors[keep][:, np.newaxis, :]) * scale - [pad_l / ratio, pad_t / ratio]
         idx = cv2.dnn.NMSBoxes([(float(b[0]), float(b[1]), float(b[2] - b[0]), float(b[3] - b[1])) for b in boxes], score[keep].astype(np.float32), self._score, 0.3)
-        return [(*map(float, boxes[i]), float(score[keep][i])) for i in np.asarray(idx).ravel()]
+        return [(*map(float, boxes[i]), float(score[keep][i]), kps[i].astype(np.float64)) for i in np.asarray(idx).ravel()]
 
 
 @dataclass
@@ -123,6 +141,7 @@ class Sighting:
     head_pitch_deg: float = 0.0  # + = looking down (rough)
     cx: float = 0.0  # normalised centre in [-1, 1], for rhythm detection
     cy: float = 0.0
+    smile: float = 0.0  # mouth width / eye distance (see smile_from_landmarks)
 
 
 def head_pose_from_landmarks(row: np.ndarray) -> tuple[float, float, float]:
@@ -144,6 +163,16 @@ def head_pose_from_landmarks(row: np.ndarray) -> tuple[float, float, float]:
     ratio = (ny - eye_mid[1]) / face_h  # ~0.55 frontal
     pitch = 120.0 * (ratio - 0.55)
     return max(-45.0, min(45.0, yaw)), max(-30.0, min(30.0, pitch)), roll
+
+
+def smile_from_landmarks(row: np.ndarray) -> float:
+    """Mouth width over eye distance: ~0.6-0.7 neutral, 0.8+ a real smile (rough; landmarks, not a model)."""
+    rex, rey, lex, ley, nx, ny, mrx, mry, mlx, mly = (float(v) for v in row[4:14])
+    eye_dist = max(1.0, math.hypot(lex - rex, ley - rey))
+    return math.hypot(mlx - mrx, mly - mry) / eye_dist
+
+
+SMILE_RATIO = 0.8
 
 
 def _jpeg(crop_bgr: np.ndarray) -> bytes:
@@ -188,6 +217,80 @@ class FaceDetector:
         return np.asarray(faces, dtype=np.float32)
 
 
+REFINE_SIZE = 192
+ROLL_STEP = 15.0  # the rotation search tries prev-step, prev, prev+step and fits a parabola through the scores
+ROLL_MAX = 45.0
+ROLL_MIN_SCORE = 0.5  # below this in every rotation, the close-up found nothing: keep the coarse row
+
+
+def _detect_rotated(detector: "FaceDetector", big: np.ndarray, angle_deg: float) -> tuple[np.ndarray | None, np.ndarray]:
+    """Detect on the crop rotated by ``angle_deg`` (OpenCV's sense: + is counter-clockwise on screen).
+
+    Returns (the face nearest the crop's centre or None, the 2x3 rotation matrix used).
+    """
+    h, w = big.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle_deg, 1.0)
+    rot = cv2.warpAffine(big, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    faces = detector.detect(rot)
+    if len(faces) == 0:
+        return None, M
+    centre = np.array([w / 2, h / 2])
+    return faces[int(np.argmin(np.linalg.norm(faces[:, :2] + faces[:, 2:4] / 2 - centre, axis=1)))], M
+
+
+def refine_landmarks(detector: "FaceDetector", small: np.ndarray, row: np.ndarray, roll_prev: float = 0.0) -> tuple[np.ndarray, float, bool]:
+    """Re-detect the face on an upscaled crop of its box, searching the roll, and return
+    (the row with the close-up's landmarks, roll in degrees, whether the close-up found a face).
+
+    At a few metres a face is 30-50 px wide in the detection frame and the five landmarks sit on
+    single pixels: the head-pose estimate built on them is mostly noise. A square crop with margin,
+    blown up to REFINE_SIZE, gives the same detector three or four times the pixels per feature.
+
+    Roll: YuNet's landmarks come from an upright-face prior and stay a level box when the head
+    rolls, so the eye line says nothing. But the detector's SCORE peaks when the face it sees is
+    upright, so the crop is detected at three rotations around the last roll and a parabola through
+    the scores gives the rotation that uprights the face; the roll is the negative of that. The
+    landmarks of that uprighted detection, rotated back, are the yaw / pitch input.
+
+    Sign matches the eye-line estimate: roll + = clockwise on screen (their head top toward image-right),
+    which is also OpenCV's positive rotation direction, so roll == the rotation that uprights them.
+    """
+    h, w = small.shape[:2]
+    x, y, bw, bh = (float(v) for v in row[:4])
+    side = max(bw, bh) * 1.8
+    cx, cy = x + bw / 2, y + bh / 2
+    x0, y0 = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+    x1, y1 = int(min(w, cx + side / 2)), int(min(h, cy + side / 2))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return row, 0.0, False
+    crop = small[y0:y1, x0:x1]
+    scale = REFINE_SIZE / max(crop.shape[0], crop.shape[1])
+    big = cv2.resize(crop, (max(2, int(crop.shape[1] * scale)), max(2, int(crop.shape[0] * scale))), interpolation=cv2.INTER_CUBIC)
+
+    centre_angle = max(-ROLL_MAX, min(ROLL_MAX, roll_prev))  # the rotation that uprighted them last time
+    angles = (centre_angle - ROLL_STEP, centre_angle, centre_angle + ROLL_STEP)
+    hits = [_detect_rotated(detector, big, a) for a in angles]
+    scores = [0.0 if f is None else float(f[14]) for f, _ in hits]
+    if max(scores) < ROLL_MIN_SCORE:
+        return row, 0.0, False
+    top = max(scores)
+    k = 1 if scores[1] >= top - 1e-6 else int(np.argmax(scores))  # ties go to the centre: no drift on a flat curve
+    face, M = hits[k]
+    # a parabola through the three scores puts the peak between the samples
+    s0, s1, s2 = scores
+    denom = s0 - 2 * s1 + s2
+    offset = 0.0 if abs(denom) < 1e-6 else max(-1.0, min(1.0, 0.5 * (s0 - s2) / denom))
+    best_angle = angles[1] + offset * ROLL_STEP if k == 1 else angles[k]
+    roll = max(-ROLL_MAX, min(ROLL_MAX, best_angle))
+
+    inv = cv2.invertAffineTransform(M)
+    pts = face[4:14].reshape(5, 2)
+    pts = pts @ inv[:, :2].T + inv[:, 2]  # back into the unrotated crop
+    out = row.copy()
+    out[4:14] = (pts / scale + np.array([x0, y0])).reshape(-1)
+    return out, roll, True
+
+
 class Vision:
     """Background perception thread. ``latest()`` returns the current sighting or None."""
 
@@ -200,11 +303,21 @@ class Vision:
         get_head_pose: Callable[[], np.ndarray],
         recognise: bool = True,
         person_model: Path | None = None,
+        pose_model: Path | None = None,
     ) -> None:
         self.detector = FaceDetector(yunet_model)
+        self.refiner = FaceDetector(yunet_model, score_threshold=0.5)  # for the close-up crops (its own input size)
+        self.refined = False  # the last sighting's landmarks came from a close-up
+        self._roll_prev = 0.0  # the rotation search starts from where the head was last frame
         self.recognizer = FaceRecognizer(sface_model, memory) if recognise else None
         self.body = BodyFinder(person_model) if person_model is not None else None
         self.body_enabled = True
+        # Arms (pose.py): needs the person detector for its first region of interest, then tracks itself.
+        self.pose = PoseReader(pose_model) if pose_model is not None and person_model is not None else None
+        self.pose_live = False  # the pet asks for every-frame arms while an arm game or the dance-along runs
+        self._arms: Arms | None = None
+        self._last_pose_check = 0.0
+        self._last_someone = 0.0  # when a face or a torso was last seen
         self._active = threading.Event()
         self._active.set()
         self._last_body_check = 0.0
@@ -214,10 +327,23 @@ class Vision:
         self._lock = threading.Lock()
         self._sighting: Sighting | None = None
         self._track: Track | None = None
+        self._last_body_box: tuple | None = None
         self._next_track_id = 1
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self.stats = {"detect_ms": 0.0, "embed_ms": 0.0, "body_ms": 0.0, "frames": 0, "faces": 0, "bodies": 0}
+        self.stats = {"detect_ms": 0.0, "embed_ms": 0.0, "body_ms": 0.0, "pose_ms": 0.0, "frames": 0, "faces": 0, "bodies": 0,
+                      "last_frame_at": 0.0, "no_frame": 0, "errors": 0, "last_error": ""}
+
+    def status(self, now: float) -> dict:
+        """For the page: is the thread alive, is it paused, when did a frame last come, what last went wrong."""
+        t = self._thread
+        return {**self.stats, "alive": t is not None and t.is_alive(), "active": self._active.is_set(), "refined": self.refined,
+                "pose": self.pose is not None, "pose_live": self.pose_live,
+                "frame_age_s": None if not self.stats["last_frame_at"] else round(now - self.stats["last_frame_at"], 1)}
+
+    def latest_arms(self) -> Arms | None:
+        with self._lock:
+            return self._arms
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -232,6 +358,10 @@ class Vision:
     def latest(self) -> Sighting | None:
         with self._lock:
             return self._sighting
+
+    preview: bool = False  # keep a JPEG of each processed (320 px) frame for the page
+    last_jpeg: bytes | None = None
+    capture_now: bool = False  # page asked for one more embedding of the current person
 
     def set_active(self, active: bool) -> None:
         """Pause (camera idle, no CPU) or resume detection."""
@@ -249,6 +379,7 @@ class Vision:
         scale = DETECT_WIDTH / W
         small = cv2.resize(frame_bgr, (DETECT_WIDTH, max(2, int(round(H * scale)) // 2 * 2)), interpolation=cv2.INTER_AREA)
         sh, sw = small.shape[:2]
+        self._last_body_box = None
 
         t0 = time.perf_counter()
         faces = self.detector.detect(small)
@@ -260,9 +391,24 @@ class Vision:
         if chosen is None:
             if self._track is not None and now - self._track.last_seen > FORGET_AFTER:
                 self._track = None
-            return self._body_fallback(small, scale, head_pose, now)
+                self._roll_prev = 0.0
+            sighting = self._body_fallback(small, scale, head_pose, now)
+            if sighting is not None:
+                self._last_someone = now
+            self._read_arms(small, now)
+            self._preview(small, faces, None)
+            return sighting
 
         row, track = chosen
+        self._last_someone = now
+        if self.pose_live:
+            self.refined, roll_search = False, 0.0  # arms every frame: the close-up rotation search is the one thing there is no time for
+        else:
+            row, roll_search, self.refined = refine_landmarks(self.refiner, small, row, self._roll_prev)
+            self.refined = bool(self.refined)  # a numpy bool here broke JSON for the whole page (0.6.5)
+            self._roll_prev = roll_search if self.refined else 0.0
+        self._read_arms(small, now)
+        self._preview(small, faces, row)
         if self.recognizer is not None and self._embedding_due(track, row, now):
             t0 = time.perf_counter()
             self._identify(small, row, track, now)
@@ -271,9 +417,85 @@ class Vision:
         x, y, w, h = row[:4]
         u = (x + w / 2) / scale
         v = (y + h * 0.45) / scale  # aim a little above bbox centre: between the eyes
+        if self.pose_live and self._arms is not None and now - self._arms.ts <= POSE_SOMEONE_S:
+            # Something needs the arms right now, so fit the body in: aim lower, and never past the bottom
+            # of the picture (an aim point outside the frame is extrapolated, and comes back as nonsense).
+            v = min(v + (0.5 - FACE_TOP_FRAC) * H, FACE_AIM_MAX_FRAC * H)
         yaw_p, pitch_p, roll = head_pose_from_landmarks(row)
+        if self.refined:
+            roll = roll_search  # the landmarks' eye line cannot see roll; the rotation search can
         return Sighting(track.track_id, float(u), float(v), track.area_frac, track.person, track.similarity, head_pose, now, roll,
-                        "face", yaw_p, pitch_p, track.cx, track.cy)
+                        "face", yaw_p, pitch_p, track.cx, track.cy, smile_from_landmarks(row))
+
+    def _preview(self, small: np.ndarray, faces: np.ndarray, chosen: np.ndarray | None) -> None:
+        """What it sees, with what it made of it: every face box and its five landmarks (the tracked one in
+        green with its track and person), the torso box in orange. Only drawn when the page is watching:
+        a few rectangles on a 320 px frame, nothing next to the detector itself."""
+        if not self.preview:
+            self.last_jpeg = None
+            return
+        img = small.copy()
+        for row in faces:
+            x, y, w, h = (int(v) for v in row[:4])
+            mine = chosen is not None and np.array_equal(row[:4], chosen[:4])
+            colour = (120, 245, 124) if mine else (200, 200, 200)
+            cv2.rectangle(img, (x, y), (x + w, y + h), colour, 2 if mine else 1)
+            pts = chosen if mine else row  # the tracked face's landmarks are the refined ones
+            for k in range(5):
+                cv2.circle(img, (int(pts[4 + 2 * k]), int(pts[5 + 2 * k])), 2, (255, 200, 80), -1)
+            if mine:
+                yaw_p, pitch_p, roll_p = head_pose_from_landmarks(pts)
+                if self.refined:
+                    roll_p = self._roll_prev
+                cv2.putText(img, f"yaw {yaw_p:+.0f} pitch {pitch_p:+.0f} roll {roll_p:+.0f}{' (close-up)' if self.refined else ''}", (x, min(img.shape[0] - 4, y + h + 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 200, 80), 1, cv2.LINE_AA)
+            if mine and self._track is not None:
+                who = "stranger" if self._track.person is None else f"#{self._track.person.person_id} {self._track.similarity:.2f}"
+                cv2.putText(img, f"t{self._track.track_id} {who}", (x, max(10, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1, cv2.LINE_AA)
+        if self._last_body_box is not None:
+            x1, y1, x2, y2, score = self._last_body_box
+            cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), (80, 170, 255), 1)
+            cv2.putText(img, f"body {score:.2f}", (int(x1), max(10, int(y1) - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (80, 170, 255), 1, cv2.LINE_AA)
+        arms = self._arms
+        if arms is not None:
+            p = arms.points
+            pt = lambda k: (int(p[k][0]), int(p[k][1]))  # noqa: E731
+            pink = (200, 120, 255)
+            cv2.line(img, pt("l_shoulder"), pt("r_shoulder"), pink, 2)
+            for side in ("l", "r"):
+                cv2.line(img, pt(f"{side}_shoulder"), pt(f"{side}_elbow"), pink, 2)
+                if p[f"{side}_wrist_ok"]:
+                    cv2.line(img, pt(f"{side}_elbow"), pt(f"{side}_wrist"), pink, 2)
+            cv2.circle(img, pt("nose"), 3, pink, -1)
+            cv2.putText(img, f"arms L {arms.left} {arms.left_deg:.0f}  R {arms.right} {arms.right_deg:.0f}", (4, img.shape[0] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4, pink, 1, cv2.LINE_AA)
+        self.last_jpeg = _jpeg(img)
+
+    def _read_arms(self, small: np.ndarray, now: float) -> None:
+        """Arms from the pose landmarker: every frame when the pet asks (``pose_live``), else twice a second
+        while someone is about. The region of interest is the last confident pose, or a fresh person
+        detection when there is none (the cost that tracking saves)."""
+        if self.pose is None:
+            return
+        interval = POSE_LIVE_INTERVAL if self.pose_live else POSE_IDLE_INTERVAL
+        due = now - self._last_pose_check >= interval and (self.pose_live or now - self._last_someone <= POSE_SOMEONE_S)
+        if not due:
+            if self._arms is not None and now - self._arms.ts > POSE_SOMEONE_S:
+                with self._lock:
+                    self._arms = None
+            return
+        self._last_pose_check = now
+        t0 = time.perf_counter()
+        roi = self.pose.roi if self.pose.roi is not None and now - self.pose.roi_at <= POSE_ROI_MAX_AGE else None
+        if roi is None:
+            boxes = self.body.detect(small)  # type: ignore[union-attr]  (pose is only built with a person model)
+            self.stats["bodies"] = len(boxes)
+            if boxes:
+                x1, y1, x2, y2, score, kps = max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+                self._last_body_box = (x1, y1, x2, y2, score)
+                roi = (kps[0], kps[1])
+        arms = None if roi is None else self.pose.read_arms(small, roi[0], roi[1], now)
+        self.stats["pose_ms"] = (time.perf_counter() - t0) * 1000.0
+        with self._lock:
+            self._arms = arms
 
     def _body_fallback(self, small: np.ndarray, scale: float, head_pose: np.ndarray, now: float) -> Sighting | None:
         """No face: look for a torso (cheaper rate) and report where the head should be, above it."""
@@ -287,7 +509,10 @@ class Vision:
         if not boxes:
             return None
         sh, sw = small.shape[:2]
-        x1, y1, x2, y2, score = max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+        x1, y1, x2, y2, score, kps = max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+        self._last_body_box = (x1, y1, x2, y2, score)
+        if self.pose is not None and self.pose.roi is None:
+            self.pose.roi, self.pose.roi_at = (kps[0], kps[1]), now  # a free region of interest for the arms
         # The head sits above the torso box: aim a bit above its top edge, clamped to the frame.
         u = (x1 + x2) / 2 / scale
         v = max(1.0, (y1 - 0.15 * (y2 - y1))) / scale
@@ -309,6 +534,8 @@ class Vision:
                 if recently:
                     return None  # someone else; keep waiting for our target briefly
                 track = None  # they left and someone else showed up elsewhere
+        else:
+            track = None  # no track, or one too stale to associate with: lock afresh below
         if track is None:
             i = int(np.argmax(areas))  # new lock: the biggest (closest) face wins
             track = Track(self._next_track_id, 0.0, 0.0, 0.0, now)
@@ -319,10 +546,11 @@ class Vision:
         track.last_seen = now
         return faces[i], track
 
-    @staticmethod
-    def _embedding_due(track: Track, row: np.ndarray, now: float) -> bool:
+    def _embedding_due(self, track: Track, row: np.ndarray, now: float) -> bool:
         if min(row[2], row[3]) < EMBED_MIN_FACE_PX:
             return False
+        if self.capture_now:
+            return True
         if track.person is None and track.unknown_votes < UNKNOWN_VOTES_TO_ENROLL:
             return now - track.last_embed > 0.5
         return now - track.last_embed > EMBED_RECHECK
@@ -331,13 +559,18 @@ class Vision:
         assert self.recognizer is not None
         track.last_embed = now
         emb, crop = self.recognizer.embed(small, row)
+        forced, self.capture_now = self.capture_now, False
         person, sim = self.memory.match(emb)
+        if person is None and forced and track.person is not None:
+            person = track.person  # asked for another view of who we are already with: take it even if it matched badly
         if person is not None:
             track.person, track.similarity = person, sim
             track.unknown_votes = 0
             track.pending_embeddings.clear()
             track.pending_crops.clear()
-            self.memory.reinforce(person, emb, sim)
+            self.memory.reinforce(person, emb, 0.0 if forced else sim)  # forced: keep it whatever the similarity
+            if forced:
+                logger.info("captured another view of person #%d (similarity %.2f)", person.person_id, sim)
             if not self.memory.thumbnail_path(person.person_id).exists():
                 self.memory.set_thumbnail(person, _jpeg(crop))
             return
@@ -369,14 +602,21 @@ class Vision:
                 time.sleep(min(0.02, next_at - now))
                 continue
             next_at = now + DETECT_INTERVAL
-            frame = self._get_frame()
-            if frame is None:
-                continue
-            head_pose = self._get_head_pose()
+            # Everything the camera and the daemon can throw is caught here: an uncaught error would end
+            # this thread and the pet would be blind for the rest of the session with nothing in the log.
             try:
+                frame = self._get_frame()
+                if frame is None:
+                    self.stats["no_frame"] += 1
+                    continue
+                self.stats["last_frame_at"] = time.time()
+                head_pose = self._get_head_pose()
                 sighting = self.process_frame(frame, head_pose, time.time())
-            except Exception:
+            except Exception as e:
+                self.stats["errors"] += 1
+                self.stats["last_error"] = f"{type(e).__name__}: {e}"
                 logger.exception("vision step failed")
+                next_at = now + 0.5  # do not spin on a camera that is down
                 continue
             with self._lock:
                 self._sighting = sighting

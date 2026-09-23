@@ -6,8 +6,11 @@ Pure Python so the thresholds can be unit-tested with synthetic streams.
 from __future__ import annotations
 
 import math
+import threading
+import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Callable
 
 G = 9.81
 
@@ -72,6 +75,121 @@ class PickupDetector:
         elif self.held and now - self._last_motion > self.settle_s:
             self.held = False
         return self.held, shaken
+
+
+class PoseHistory:
+    """Measured head poses over the last couple of seconds, so a camera frame can be paired with the
+    pose from when it was *exposed* rather than when it was read.
+
+    The camera pipeline delivers frames ~100-200 ms late. While the pet bobs, the pose read at
+    detection time is a beat ahead of the image, and the world-frame correction leaves a residual at
+    exactly the tempo the dance detector hunts for: it would hear its own bob. ``lag_s`` is the
+    pipeline latency to compensate; tune it until a still face draws a flat trace while the pet grooves.
+    """
+
+    def __init__(self, live: Callable[[], np.ndarray], lag_s: float = 0.12, keep_s: float = 2.0) -> None:
+        self._live = live
+        self.lag_s = lag_s
+        self._keep = keep_s
+        self._hist: deque[tuple[float, np.ndarray]] = deque()
+        self._lock = threading.Lock()  # written by the control loop, read by the vision thread
+
+    def record(self, now: float, pose: np.ndarray) -> None:
+        with self._lock:
+            self._hist.append((now, pose))
+            while self._hist and now - self._hist[0][0] > self._keep:
+                self._hist.popleft()
+
+    def at(self, t: float) -> np.ndarray:
+        """The recorded pose closest to ``t``; the live pose only before anything was recorded."""
+        with self._lock:
+            if not self._hist:
+                hist = None
+            else:
+                hist = list(self._hist)
+        if hist is None:
+            return self._live()
+        return min(hist, key=lambda e: abs(e[0] - t))[1]
+
+    def lagged(self) -> np.ndarray:
+        """What the vision thread calls: the pose ``lag_s`` ago."""
+        return self.at(time.time() - self.lag_s)
+
+
+class ImuRubDetector:
+    """A hand rubbing the head shows up in the head's IMU as sustained small gyro jitter: too small to be
+    a lift, too steady to be a knock. Deaf-friendly head-pet detection (the mics normally do this)."""
+
+    def __init__(self, gyro_lo: float = 0.12, gyro_hi: float = 1.0, window_s: float = 1.0, need: float = 0.6, release_s: float = 0.7) -> None:
+        self.gyro_lo, self.gyro_hi = gyro_lo, gyro_hi
+        self._win, self._need, self._release = window_s, need, release_s
+        self._hist: deque[tuple[float, bool]] = deque()
+        self._last_in_band = 0.0
+        self.rubbing = False
+        self.stats = {"fraction": 0.0, "rubbing": False}
+        self.calibration: dict | None = None  # {"phase", ...}; see start_calibration
+        self._cal: dict = {}
+
+    def update(self, gyro_mag: float, self_moving: bool, now: float) -> bool:
+        """Returns True on the tick rubbing starts (an edge, for the 'petted' reaction)."""
+        in_band = (not self_moving) and self.gyro_lo <= gyro_mag <= self.gyro_hi
+        self._hist.append((now, in_band))
+        while self._hist and now - self._hist[0][0] > self._win:
+            self._hist.popleft()
+        frac = sum(1 for _, b in self._hist if b) / max(1, len(self._hist))
+        if in_band:
+            self._last_in_band = now
+        started = False
+        if not self.rubbing and frac >= self._need and len(self._hist) >= 10:
+            self.rubbing, started = True, True
+        elif self.rubbing and now - self._last_in_band > self._release:
+            self.rubbing = False
+        self.stats = {"fraction": round(frac, 2), "rubbing": self.rubbing}
+        return started
+
+    # ------------------------------------------------------------------ calibration
+    BASELINE_S = 3.0
+    ACTIVE_S = 4.0
+
+    def start_calibration(self, now: float) -> None:
+        """Measure the gyro at rest, then while the head is rubbed, and set the floor between the two."""
+        self._cal = {"until": now + self.BASELINE_S, "baseline": [], "active": [], "phase": "baseline"}
+        self.calibration = {"phase": f"keep still, hands off, for {self.BASELINE_S:.0f} s"}
+
+    def calibration_step(self, gyro_mag: float, self_moving: bool, now: float) -> bool:
+        """Feed every IMU sample while calibrating. Returns True on the tick it finishes (done or failed)."""
+        c = self._cal
+        if not c or c["phase"] in ("done", "failed"):
+            return False
+        if self_moving:
+            return False  # our own motion is not a reading of anything
+        if c["phase"] == "baseline":
+            c["baseline"].append(gyro_mag)
+            if now >= c["until"]:
+                c["phase"], c["until"] = "active", now + self.ACTIVE_S
+                self.calibration = {"phase": f"NOW rub the head for {self.ACTIVE_S:.0f} s"}
+            return False
+        c["active"].append(gyro_mag)
+        if now < c["until"]:
+            return False
+        base = sorted(c["baseline"])
+        act = sorted(c["active"])
+        if len(base) < 20 or len(act) < 20:
+            c["phase"] = "failed"
+            self.calibration = {"phase": "failed", "reason": "too few IMU samples (is the IMU reporting?)"}
+            return True
+        base_p90 = base[int(0.9 * (len(base) - 1))]
+        act_p25 = act[int(0.25 * (len(act) - 1))]
+        act_p95 = act[int(0.95 * (len(act) - 1))]
+        if act_p25 <= base_p90 * 1.3:
+            c["phase"] = "failed"
+            self.calibration = {"phase": "failed", "reason": f"the rub did not stand out: still {base_p90:.3f}, rubbing {act_p25:.3f} rad/s", "baseline_p90": round(base_p90, 3), "rub_p25": round(act_p25, 3)}
+            return True
+        self.gyro_lo = round(base_p90 + 0.35 * (act_p25 - base_p90), 3)  # just above rest, well under a rub
+        self.gyro_hi = round(max(1.0, act_p95 * 1.5), 3)  # a rub never reads as a lift
+        c["phase"] = "done"
+        self.calibration = {"phase": "done", "baseline_p90": round(base_p90, 3), "rub_p25": round(act_p25, 3), "rub_p95": round(act_p95, 3), "gyro_lo": self.gyro_lo, "gyro_hi": self.gyro_hi}
+        return True
 
 
 class SelfMotionGate:

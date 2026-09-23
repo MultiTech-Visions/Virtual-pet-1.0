@@ -94,16 +94,146 @@ def warble(
 
 def purr(
     duration: float,
-    base: float = 55.0,
-    pulse_rate: float = 22.0,
+    base: float = 330.0,
+    pulse_rate: float = 24.0,
     sample_rate: int = SAMPLE_RATE,
 ) -> np.ndarray:
-    """Low rumbling purr: a low tone amplitude-modulated by a pulse train."""
+    """A rolling "brrr" purr: a mid tone with harmonics, amplitude-modulated by a fast pulse train.
+
+    The carrier sits above 300 Hz on purpose. A real cat purrs at 25-50 Hz with a 50-60 Hz body,
+    but the robot's speaker is tiny and reproduces nothing below ~300 Hz, so a low rumble comes out
+    as silence. The roughness of the 24 Hz pulses is what reads as a purr; the harmonics carry it.
+    """
     t = _time(duration, sample_rate)
-    carrier = np.sin(_TWO_PI * base * t) + 0.5 * np.sin(_TWO_PI * base * 2.01 * t)
-    pulses = 0.55 + 0.45 * np.sin(_TWO_PI * pulse_rate * t)
-    wave = carrier * pulses / 1.5
+    wobble = 1.0 + 0.015 * np.sin(_TWO_PI * 1.7 * t)  # a slow breath in the pitch
+    f = base * wobble
+    carrier = np.sin(_TWO_PI * f * t) + 0.6 * np.sin(_TWO_PI * 2.0 * f * t) + 0.35 * np.sin(_TWO_PI * 3.0 * f * t)
+    pulses = 0.45 + 0.55 * np.clip(np.sin(_TWO_PI * pulse_rate * t), 0.0, None) ** 0.5  # clipped: distinct "rrr" bumps
+    wave = carrier * pulses / 1.95
     return (wave * _envelope(len(t), 0.15, 0.3)).astype(np.float32)
+
+
+def _highpass(x: np.ndarray, times: int = 1) -> np.ndarray:
+    """Crude but cheap: each pass is a one-sample difference, which tilts the noise brighter."""
+    for _ in range(times):
+        x = np.diff(x, prepend=np.float32(x[0]))
+    return x
+
+
+def _decay(n: int, tau: float, sample_rate: int, attack: float = 0.002) -> np.ndarray:
+    """Percussive envelope: near-instant attack, exponential tail. What every drum here wears."""
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    env = np.exp(-t / max(tau, 1e-4))
+    a = max(1, int(attack * sample_rate))
+    env[:a] *= np.linspace(0.0, 1.0, a, dtype=np.float32)
+    return env.astype(np.float32)
+
+
+def kick(sample_rate: int = SAMPLE_RATE, rng: random.Random | None = None) -> np.ndarray:
+    """The "one". A pitch drop with a click on the front.
+
+    A real kick lives at 50 Hz, which this speaker turns into silence, so the drop starts up at
+    440 Hz and the click carries the transient: on a small speaker that is what reads as a kick.
+    """
+    r = rng if rng is not None else random.Random()
+    dur = 0.13
+    n = int(dur * sample_rate)
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    f = 150.0 + (r.uniform(400.0, 480.0) - 150.0) * np.exp(-t / 0.018)  # the drop
+    body = np.sin(np.cumsum(f) * (_TWO_PI / sample_rate)).astype(np.float32) * _decay(n, 0.055, sample_rate)
+    click = _highpass(np.random.default_rng(r.randrange(1 << 30)).standard_normal(int(0.006 * sample_rate)).astype(np.float32), 2)
+    out = body
+    out[: len(click)] += click * 0.5
+    return (out / max(float(np.max(np.abs(out))), 1e-6)).astype(np.float32)
+
+
+def snare(sample_rate: int = SAMPLE_RATE, rng: random.Random | None = None, dur: float = 0.17) -> np.ndarray:
+    """The backbeat: bright noise over a short ring, so it cuts through the wobble."""
+    r = rng if rng is not None else random.Random()
+    n = int(dur * sample_rate)
+    noise = np.random.default_rng(r.randrange(1 << 30)).standard_normal(n).astype(np.float32)
+    body = _highpass(noise, 2) * _decay(n, dur * 0.35, sample_rate)
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    ring = np.sin(_TWO_PI * r.uniform(310.0, 350.0) * t).astype(np.float32) * _decay(n, dur * 0.18, sample_rate)
+    out = body * 0.8 + ring * 0.35
+    return (out / max(float(np.max(np.abs(out))), 1e-6)).astype(np.float32)
+
+
+def hat(sample_rate: int = SAMPLE_RATE, rng: random.Random | None = None, open_: bool = False) -> np.ndarray:
+    """The tick that keeps the time between the kick and the snare."""
+    r = rng if rng is not None else random.Random()
+    dur = 0.11 if open_ else 0.028
+    n = int(dur * sample_rate)
+    noise = np.random.default_rng(r.randrange(1 << 30)).standard_normal(n).astype(np.float32)
+    out = _highpass(noise, 4) * _decay(n, dur * 0.3, sample_rate, attack=0.0008)
+    return (out / max(float(np.max(np.abs(out))), 1e-6)).astype(np.float32)
+
+
+def _moving_filter(
+    duration: float,
+    base: float,
+    cutoff: np.ndarray,
+    sample_rate: int = SAMPLE_RATE,
+    harmonics: int = 12,
+    detune: float = 0.0,
+) -> np.ndarray:
+    """A saw-ish tone (``harmonics`` harmonics of ``base``) through a low-pass that moves over the note.
+
+    ``cutoff`` is one value per sample, in Hz: harmonics above it fade out. This is what makes a wobble
+    or a wah: the pitch never changes, the brightness does. Anything under ~300 Hz is inaudible on the
+    robot's speaker, so ``base`` stays above it and the bass is implied by the harmonics.
+    """
+    t = _time(duration, sample_rate)
+    out = np.zeros(len(t), dtype=np.float64)
+    for h in range(1, harmonics + 1):
+        f = base * h * (1.0 + detune * (h - 1))
+        if f > sample_rate * 0.45:
+            break
+        weight = 1.0 / h / (1.0 + (f / np.maximum(cutoff, 1.0)) ** 4)  # 4-pole-ish roll-off
+        out += weight * np.sin(_TWO_PI * f * t)
+    peak = float(np.max(np.abs(out)))
+    return (out / peak if peak > 1e-9 else out).astype(np.float32)
+
+
+def wub(
+    duration: float,
+    base: float = 330.0,
+    rate: float = 6.0,
+    sample_rate: int = SAMPLE_RATE,
+    depth: float = 1.0,
+) -> np.ndarray:
+    """The wobble: one low note whose filter opens and shuts ``rate`` times a second. Wub wub wub."""
+    t = _time(duration, sample_rate)
+    lfo = 0.5 - 0.5 * np.cos(_TWO_PI * rate * t)  # 0..1
+    cutoff = base * (1.6 + 9.0 * depth * lfo**1.6)
+    wave = _moving_filter(duration, base, cutoff, sample_rate, detune=0.004)
+    amp = 0.55 + 0.45 * lfo
+    return (wave * amp * _envelope(len(t), 0.02, 0.15)).astype(np.float32)
+
+
+def wah(
+    duration: float,
+    base: float = 350.0,
+    sample_rate: int = SAMPLE_RATE,
+    up: bool = True,
+    swings: float = 1.0,
+) -> np.ndarray:
+    """A talking sweep: the filter walks up (or down) the harmonics. Wah, wa-wah."""
+    t = _time(duration, sample_rate)
+    u = t / max(t[-1], 1e-6)
+    shape = np.sin(math.pi * u * swings) if swings > 1.0 else (u if up else 1.0 - u)
+    cutoff = base * (1.5 + 10.0 * shape)
+    wave = _moving_filter(duration, base, cutoff, sample_rate, detune=0.002)
+    return (wave * _envelope(len(t), 0.05, 0.25)).astype(np.float32)
+
+
+def zap(duration: float = 0.12, f_start: float = 2600.0, f_end: float = 420.0, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Pew. A fast fall with a little noise on the front so it cracks."""
+    body = chirp(f_start, f_end, duration, sample_rate, curve=2.2, attack=0.01, release=0.5)
+    click = noise_burst(0.012, sample_rate) * 0.35
+    out = body.copy()
+    out[: len(click)] += click[: len(out)]
+    return out.astype(np.float32)
 
 
 def noise_burst(duration: float, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
@@ -156,7 +286,119 @@ EMOTIONS = (
     "hiccup",
     "sing",  # one blip on the beat
     "tada",  # finished a trick
+    "mirror_start",  # "let's play mirror": two-note rising call
+    "mirror_end",  # the same call, falling
+    "mime_start",  # "do what I do": a three-note fanfare
+    "mime_end",  # the fanfare, closed
+    "mime_cue",  # "watch this" blip before each shown move
+    "yes",  # "you did it": bright double blip
+    "no_no",  # nuh-uh-uh: not in the mood (ears)
+    "huff",  # "no? like THIS": a short exasperated puff
+    "coo",  # a warm, low coo: being hugged
+    "jingle",  # a made-up little tune: console blips that happen to be a song
+    "fanfare",  # da da-da DA: something is about to happen (the kandi trade)
 )
+
+# --------------------------------------------------------------------------- jingles
+# Made-up little tunes of console blips, in the spirit of the beeps that answer Data's "life forms"
+# song: bright, near-pure notes on a small scale, hard attack, quick decay.
+#
+# A bar of beeps is not a tune — it goes by before you have worked out that anything happened. So a
+# jingle is a proper little song: four counted-in taps so you can find the beat, then four (or eight)
+# bars of 4/4 built out of ONE motif — the same rhythm every bar, the pitches moved around it — which
+# is what makes a shape you can follow, hum back, and groove along to.
+JINGLE_SCALE = (0, 2, 4, 7, 9, 12, 14, 16)  # major pentatonic, a bit over an octave
+# Low enough to sit under the piercing range and still above the ~300 Hz the speaker gives up on. A pure
+# tone up at 2 kHz carries across a field and drills into whoever is next to it; these keep the top note
+# under about 1.3 kHz.
+JINGLE_BASES = (440.0, 466.2, 493.9, 523.3)  # A4, Bb4, B4, C5
+JINGLE_BPM = (96, 104, 112, 120)
+JINGLE_COUNT_IN = 4  # taps before it starts: one bar of "here is where the beat is"
+JINGLE_TICK_HZ = 880.0  # the count-in tap: above the tune, so it is plainly not part of it
+JINGLE_TICK_S = 0.04
+JINGLE_GAIN, JINGLE_TICK_GAIN = 0.34, 0.16  # it hums to ITSELF: quiet enough not to carry across the field
+# One bar of eighths: 1 = a note starts here, 0 = the note before it holds on.
+JINGLE_RHYTHMS = (
+    (1, 0, 1, 0, 1, 0, 1, 0),
+    (1, 0, 1, 1, 1, 0, 1, 0),
+    (1, 1, 1, 0, 1, 0, 1, 1),
+    (1, 0, 1, 0, 1, 1, 1, 0),
+    (1, 1, 0, 1, 1, 0, 1, 0),
+    (1, 0, 0, 1, 1, 0, 1, 0),
+)
+# Which bar is which. "A*" is A with its last note pulled home to the root: the ending.
+JINGLE_FORMS = (("A", "A", "B", "A*"), ("A", "A", "B", "A", "A", "B", "C", "A*"))
+JINGLE_FORM_WEIGHTS = (3, 1)  # mostly the short one; the long one is a treat
+
+
+def jingle_notes(rng: random.Random) -> tuple[list[tuple[float, float, float, str]], float]:
+    """Make up a jingle. Returns ([(start s, frequency Hz, length s, "tick" | "note")], bpm).
+
+    Pure scheduling, no audio, so the tempo can be handed to the body as well as to the speaker.
+    """
+    base = rng.choice(JINGLE_BASES)
+    bpm = float(rng.choice(JINGLE_BPM))
+    beat = 60.0 / bpm
+    step = beat / 2.0  # eighths
+    rhythm = rng.choice(JINGLE_RHYTHMS)
+    degree = rng.randrange(len(JINGLE_SCALE) - 3)
+    motif = []
+    for _ in range(sum(rhythm)):
+        motif.append(degree)
+        degree = max(0, min(len(JINGLE_SCALE) - 1, degree + rng.choice((-2, -1, 1, 1, 2, 2, 3))))
+    shifts = {"A": 0, "A*": 0, "B": rng.choice((-3, -2, 2, 3)), "C": rng.choice((-4, -1, 1, 4))}
+    form = rng.choices(JINGLE_FORMS, weights=JINGLE_FORM_WEIGHTS)[0]
+
+    out: list[tuple[float, float, float, str]] = []
+    t = 0.0
+    for k in range(JINGLE_COUNT_IN):  # one, two, three, four — the "1" a fifth higher so you know where it is
+        out.append((t, JINGLE_TICK_HZ * (1.5 if k == 0 else 1.0), JINGLE_TICK_S, "tick"))
+        t += beat
+    for name in form:
+        degrees = [max(0, min(len(JINGLE_SCALE) - 1, d + shifts[name])) for d in motif]
+        if name.endswith("*"):
+            degrees[-1] = 0  # home
+        i = 0
+        for slot, hit in enumerate(rhythm):
+            if not hit:
+                continue
+            held = 1
+            while slot + held < len(rhythm) and not rhythm[slot + held]:
+                held += 1  # the rests after a note are that note still ringing
+            out.append((t + slot * step, base * 2 ** (JINGLE_SCALE[degrees[i]] / 12.0), step * held * 0.85, "note"))
+            i += 1
+        t += len(rhythm) * step
+    return out, bpm
+
+
+def render_jingle(rng: random.Random, sample_rate: int = SAMPLE_RATE) -> tuple[np.ndarray, float]:
+    """Audio for a made-up jingle, and the tempo it is in (so the body can bob along with it)."""
+    notes, bpm = jingle_notes(rng)
+    end = max(t + d for t, _, d, _ in notes) + 0.12
+    out = np.zeros(int(end * sample_rate), dtype=np.float32)
+    for t, f, d, kind in notes:
+        # A softer attack takes the edge off: the hard click on the front of a near-pure tone is most of
+        # what makes it sting. The harmonic content stays, to give the speaker something to work with.
+        blip = tone(f, d, sample_rate, harmonics=0.22, attack=0.07, release=0.5)
+        i = int(t * sample_rate)
+        j = min(len(out), i + len(blip))
+        out[i:j] += blip[: j - i] * (JINGLE_TICK_GAIN if kind == "tick" else JINGLE_GAIN)
+    return out, bpm
+
+# What each sound means, for the lexicon on the Play tab.
+MEANINGS = {
+    "hello_new": "oh? hi! (a stranger)", "hello_friend": "hi again! (a friend)", "hello_bestie": "YOU! (a bestie)", "content": "mm, being held or petted", "happy": "pleased", "excited": "very pleased (a bestie, a party)",
+    "curious": "hm? what's that?", "giggle": "that tickles / that's funny", "surprised": "oh!", "confused": "where did you go?",
+    "sad": "aw... / you left", "lonely": "nobody has visited for a while", "sleepy": "running out of energy", "yawn": "about to nod off",
+    "wake": "waking up", "dizzy": "you shook me", "annoyed": "stop that / come ON", "low_battery": "battery low",
+    "name": "huh? me?", "ticklish": "belly scratch", "shy": "you are staring at me", "sneeze": "achoo", "hiccup": "hic",
+    "sing": "singing along to the beat", "tada": "finished a trick", "purr": "being petted, content",
+    "mirror_start": "let's play mirror: I'll copy you", "mirror_end": "mirror game over",
+    "mime_start": "Simon says: do what I do", "mime_end": "Simon says is over", "mime_cue": "watch this move",
+    "yes": "you did it!", "huff": "no? like THIS. again", "no_no": "nuh-uh-uh: leave my ears alone",
+    "coo": "aww... a hug", "jingle": "a little song it just made up, counted in so you can join",
+    "fanfare": "da da-da DA: kandi trade starting",
+}
 
 
 def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
@@ -216,7 +458,7 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
             chirp(j(600, 700), j(450, 550), j(0.2, 0.3), sr, curve=0.7),
         )
     elif emotion == "purr":
-        out = purr(j(1.2, 2.2), base=j(50, 65), pulse_rate=j(18, 26), sample_rate=sr)
+        out = purr(j(1.2, 2.2), base=j(300, 370), pulse_rate=j(20, 27), sample_rate=sr)
     elif emotion == "giggle":
         parts = []
         f = j(1000, 1300)
@@ -302,14 +544,66 @@ def render_phrase(emotion: str, rng: random.Random | None = None, sample_rate: i
             tone(j(650, 750), j(0.06, 0.1), sr, harmonics=0.1),
         )
     elif emotion == "sneeze":
+        # Timed to motion.g_sneeze (10.6 s): 1.2 s of nothing (look down, shake), three rising inhales 1.2 s apart,
+        # a rising wind-up squeak, the choo at 5.4 s, a groggy low note during the recovery.
+        inhale = lambda f0, f1, d: chirp(f0, f1, d, sr, curve=2.0, attack=0.5, release=0.3)  # noqa: E731
         out = concat(
-            chirp(j(500, 600), j(1200, 1500), j(0.25, 0.35), sr, curve=2.5, attack=0.6),  # ah... ah...
-            silence(0.04, sr),
-            noise_burst(j(0.12, 0.18), sr),  # choo
-            chirp(j(1400, 1800), j(500, 600), j(0.12, 0.18), sr, curve=0.5),
+            silence(1.2, sr),
+            inhale(j(500, 560), j(800, 900), 0.4), silence(0.8, sr),
+            inhale(j(650, 720), j(1050, 1150), 0.45), silence(0.75, sr),
+            inhale(j(850, 950), j(1500, 1700), 0.5), silence(0.7, sr),
+            chirp(j(1200, 1400), j(2200, 2600), 0.5, sr, curve=1.5, attack=0.3, release=0.1),  # wind-up
+            silence(0.1, sr),
+            noise_burst(j(0.18, 0.24), sr),  # choo
+            chirp(j(1400, 1800), j(450, 550), j(0.18, 0.24), sr, curve=0.5),
+            silence(0.9, sr),
+            tone(j(380, 440), j(0.35, 0.45), sr, harmonics=0.15, attack=0.3, release=0.5),  # ugh
         )
+    elif emotion in ("mirror_start", "mirror_end"):
+        up = emotion == "mirror_start"
+        a, b = (j(700, 760), j(1050, 1150)) if up else (j(1050, 1150), j(700, 760))
+        out = concat(tone(a, 0.14, sr, harmonics=0.2), silence(0.04, sr), tone(b, 0.22, sr, harmonics=0.2))
+    elif emotion in ("mime_start", "mime_end"):
+        up = emotion == "mime_start"
+        fs = (j(600, 640), j(800, 840), j(1000, 1060)) if up else (j(1000, 1060), j(800, 840), j(600, 640))
+        notes = [tone(f, 0.11, sr, harmonics=0.3) for f in fs]
+        out = concat(notes[0], silence(0.03, sr), notes[1], silence(0.03, sr), notes[2], silence(0.05, sr), warble(fs[2], 0.25, rate=10, depth=0.05, sample_rate=sr))
+    elif emotion == "mime_cue":
+        out = concat(tone(j(1300, 1400), 0.06, sr, harmonics=0.4), silence(0.05, sr), tone(j(1300, 1400), 0.06, sr, harmonics=0.4))
+    elif emotion == "yes":
+        out = concat(chirp(j(900, 1000), j(1400, 1500), 0.09, sr), silence(0.04, sr), chirp(j(1300, 1400), j(1900, 2000), 0.12, sr))
+    elif emotion == "no_no":
+        # three short falling "nuh"s, each a step lower, a small wobble on the last: a cute telling-off
+        f0 = j(760, 840)
+        out = concat(
+            chirp(f0, f0 * 0.86, 0.09, sr, release=0.4), silence(0.06, sr),
+            chirp(f0 * 0.92, f0 * 0.79, 0.09, sr, release=0.4), silence(0.06, sr),
+            warble(f0 * 0.8, 0.16, rate=14, depth=0.06, sample_rate=sr),
+        )
+    elif emotion == "huff":
+        out = concat(tone(j(420, 480), 0.08, sr, harmonics=0.5, attack=0.02, release=0.3), noise_burst(j(0.22, 0.28), sr))
     elif emotion == "hiccup":
         out = concat(tone(j(500, 600), 0.03, sr, attack=0.02, release=0.3), chirp(j(900, 1100), j(1500, 1900), 0.06, sr, curve=1.8))
+    elif emotion == "coo":
+        # a warm "ooo-oo": two slow, low, gently sliding notes with a soft wobble, then a purr that trails off
+        f0 = j(380, 440)
+        out = concat(
+            chirp(f0, f0 * 1.12, j(0.5, 0.7), sr, curve=0.8, attack=0.2, release=0.4),
+            silence(0.05, sr),
+            warble(f0 * 0.95, j(0.6, 0.8), rate=5, depth=0.03, sample_rate=sr),
+            purr(j(0.8, 1.1), base=f0 * 0.9, pulse_rate=j(18, 22), sample_rate=sr) * np.float32(0.6),
+        )
+    elif emotion == "jingle":
+        out = render_jingle(r, sr)[0]
+    elif emotion == "fanfare":
+        # da   da-da   DA: a short call, two quick pick-up notes, and the long one it lands on, an octave up
+        f0 = j(520, 560)
+        out = concat(
+            tone(f0, 0.17, sr, harmonics=0.45, attack=0.02, release=0.25), silence(0.09, sr),
+            tone(f0 * 1.26, 0.10, sr, harmonics=0.45, attack=0.02, release=0.3), silence(0.02, sr),
+            tone(f0 * 1.5, 0.10, sr, harmonics=0.45, attack=0.02, release=0.3), silence(0.02, sr),
+            warble(f0 * 2.0, 0.5, rate=9, depth=0.05, sample_rate=sr),
+        )
     elif emotion == "sing":
         out = tone(j(1100, 1700), j(0.06, 0.09), sr, harmonics=0.3)
     elif emotion == "tada":

@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 python -m pip install -r installer/requirements.txt
 rm -rf build/installer_stage && mkdir -p build/installer_stage/app
-cp -r festival_pet scripts pyproject.toml README.md build/installer_stage/app/
+cp -r festival_pet dashboard scripts pyproject.toml README.md build/installer_stage/app/
 find build/installer_stage -name "__pycache__" -type d -exec rm -rf {} + || true
 SEP=":"; [[ "${OS:-}" == "Windows_NT" ]] && SEP=";"
 python -m PyInstaller --noconfirm --clean --onefile --windowed \

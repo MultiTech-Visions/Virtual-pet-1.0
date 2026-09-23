@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reachy_dashboard"
+version = "1.8.4"
+description = "The Reachy Mini web dashboard (port 8000) that reachy-mini 1.9.0 removed, re-mounted onto the current daemon."
+requires-python = ">=3.11"
+# fastapi and jinja2 are already dependencies of reachy-mini's daemon; installed with --no-deps into its venv.
+dependencies = []
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["reachy_dashboard*"]
+
+[tool.setuptools.package-data]
+reachy_dashboard = ["static/**/*", "templates/**/*"]

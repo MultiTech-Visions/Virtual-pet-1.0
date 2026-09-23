@@ -16,6 +16,7 @@ import json
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from dataclasses import fields as dataclasses_fields
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +37,7 @@ class Person:
     attention_seconds: float = 0.0  # cumulative time the pet spent engaged with them
     pets: int = 0  # antenna touches / cuddles while this person was engaged
     holds: int = 0  # times picked up while this person was engaged
+    kandi: int = 0  # PLUR handshakes traded with this person
     affection: float = 0.0  # 0..1, grows with positive interaction, decays slowly
     nickname_seed: int = field(default=0)  # stable seed so the pet's "song" for them is consistent
 
@@ -72,7 +74,8 @@ class FaceMemory:
             data = json.load(f)
         if data["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"Memory file schema {data['schema_version']} != {SCHEMA_VERSION}: {self.path}")
-        self.people = {int(k): Person(**v) for k, v in data["people"].items()}
+        fields = {f.name for f in dataclasses_fields(Person)}
+        self.people = {int(k): Person(**{a: b for a, b in v.items() if a in fields}) for k, v in data["people"].items()}
         self._next_id = data["next_id"]
 
     def save(self, force: bool = False) -> None:
@@ -212,6 +215,12 @@ class FaceMemory:
         person.affection = min(1.0, person.affection + 0.08)
         self._dirty = True
 
+    def add_kandi(self, person: Person) -> None:
+        """A whole PLUR handshake, which is about the biggest thing anyone does with it: worth a lot."""
+        person.kandi += 1
+        person.affection = min(1.0, person.affection + 0.25)
+        self._dirty = True
+
     def summary(self) -> dict:
         """Small dict for the status page."""
         return {
@@ -226,10 +235,12 @@ class FaceMemory:
                         "attention_s": round(p.attention_seconds, 1),
                         "pets": p.pets,
                         "holds": p.holds,
+                        "kandi": p.kandi,
                         "affection": round(p.affection, 2),
                         "first_seen": p.first_seen,
                         "last_seen": p.last_seen,
                         "has_face": self.thumbnail_path(p.person_id).exists(),
+                        "views": len(p.embeddings),
                     }
                     for p in self.people.values()
                 ),

@@ -42,7 +42,7 @@ GITHUB_ZIP = "https://github.com/MultiTech-Visions/Virtual-pet-1.0/archive/refs/
 DEFAULT_BRANCH = "claude/reachy-festival-robot-xqb2ao"
 
 # Files worth shipping; everything else in the repo (tests, fixtures, git) stays home.
-SHIP = ("festival_pet", "scripts", "pyproject.toml", "README.md")
+SHIP = ("festival_pet", "dashboard", "scripts", "pyproject.toml", "README.md")
 
 
 def source_root() -> Path | None:
@@ -79,10 +79,29 @@ def _add_file(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
     tar.addfile(info, io.BytesIO(data))
 
 
+def git_commit(root: Path) -> str | None:
+    """Short commit of the checkout, if this is one and git is around."""
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def build_stamp(root: Path) -> bytes:
+    """festival_pet/_build.py: what exactly got uploaded, shown on the Mind page and in the app log."""
+    built = time.strftime("%Y-%m-%d %H:%M")
+    return f'"""Written by the installer at upload time."""\n\nCOMMIT = {git_commit(root)!r}\nBUILT = {built!r}\n'.encode()
+
+
 def make_tarball(root: Path) -> bytes:
-    """Tar the shippable parts of the app into memory."""
+    """Tar the shippable parts of the app into memory, plus a build stamp."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        stamp = build_stamp(root)
+        info = tarfile.TarInfo("festival_pet/_build.py")
+        info.size, info.mtime, info.mode = len(stamp), int(time.time()), 0o644
+        tar.addfile(info, io.BytesIO(stamp))
         for name in SHIP:
             path = root / name
             if not path.exists():
@@ -90,7 +109,7 @@ def make_tarball(root: Path) -> bytes:
             files = [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file())
             for f in files:
                 rel = f.relative_to(root).as_posix()
-                if "__pycache__" in rel or rel.endswith(".pyc"):
+                if "__pycache__" in rel or rel.endswith(".pyc") or rel == "festival_pet/_build.py":
                     continue
                 _add_file(tar, f, rel)
     return buf.getvalue()
@@ -145,7 +164,8 @@ class Robot:
                     self.log("  " + line)
         code = chan.recv_exit_status()
         if check and code != 0:
-            raise RuntimeError(f"command failed ({code}): {cmd}")
+            tail = "".join(out).strip().splitlines()[-8:]
+            raise RuntimeError(f"command failed ({code}): {cmd}" + ("\n  " + "\n  ".join(tail) if tail else ""))
         return code, "".join(out)
 
     def daemon_status(self) -> dict:
@@ -184,6 +204,12 @@ class Robot:
 
     def setup(self) -> None:
         self.run(f"bash {REMOTE_DIR}/scripts/setup_offline.sh")
+
+    def restore_dashboard(self) -> None:
+        """Put the web dashboard back on port 8000; the script is root-only, so the SSH password goes to sudo on stdin."""
+        import shlex
+
+        self.run(f"printf '%s\\n' {shlex.quote(self.password)} | sudo -S -p '' bash {REMOTE_DIR}/scripts/restore_dashboard.sh")
 
     def _api(self, method: str, path: str, body: dict | None = None) -> dict | list | None:
         data = None if body is None else json.dumps(body).encode()
@@ -245,7 +271,8 @@ class Steps:
         assert self.source is not None
         tar = make_tarball(self.source)
         self.robot.upload(tar)
-        return f"{len(tar) // 1024} KB sent"
+        commit = git_commit(self.source)
+        return f"v{source_version(self.source)}" + (f" ({commit})" if commit else "") + f", {len(tar) // 1024} KB sent"
 
     def run_setup(self) -> str:
         before = self.robot.installed_version()
@@ -253,7 +280,11 @@ class Steps:
         after = self.robot.installed_version()
         if after is None:
             raise RuntimeError("setup finished but the app is not installed in the apps venv")
-        return f"v{before or '—'} → v{after}"
+        return f"v{before or '—'} → v{after}" + (" (same version number: the Mind page header shows the upload time)" if before == after else "")
+
+    def restore_dashboard(self) -> str:
+        self.robot.restore_dashboard()
+        return f"http://{self.robot.host}:{self.robot.daemon_port}"
 
     def startup_and_start(self) -> str:
         msgs = []
@@ -272,6 +303,7 @@ class Steps:
             ("Gather the app files", self.gather_source),
             ("Upload to the robot", self.upload),
             ("Install on the robot (can take a few minutes)", self.run_setup),
+            ("Restore the port-8000 web dashboard & restart the daemon", self.restore_dashboard),
             ("Set as start-up app & start", self.startup_and_start),
         ]
 
@@ -285,8 +317,8 @@ def run_gui() -> None:
 
     root = tk.Tk()
     root.title("Festival Pet installer for Reachy Mini")
-    root.geometry("640x620")
-    root.minsize(560, 520)
+    root.geometry("640x720")
+    root.minsize(560, 560)
 
     frm = ttk.Frame(root, padding=14)
     frm.pack(fill="both", expand=True)
@@ -312,11 +344,20 @@ def run_gui() -> None:
     ttk.Checkbutton(opts, text="Make it the app that starts when an antenna is touched", variable=set_startup).pack(anchor="w")
     ttk.Checkbutton(opts, text="Start the pet right after installing", variable=start_now).pack(anchor="w")
 
+    # The button bar is packed BEFORE the progress and log areas, at the bottom: whatever grows above it
+    # (the step list appears when Install is pressed) squeezes the log, never the buttons.
+    status = tk.StringVar(value="")
+    bottom = ttk.Frame(frm)
+    bottom.pack(side="bottom", fill="x")
+    ttk.Label(bottom, textvariable=status, foreground="#2a7").pack(side="left")
+    go = ttk.Button(bottom, text="Install / Update")
+    go.pack(side="right")
+
     steps_frame = ttk.LabelFrame(frm, text="Progress", padding=8)
     steps_frame.pack(fill="x", pady=(8, 4))
     step_labels: list[tk.StringVar] = []
 
-    log_box = tk.Text(frm, height=10, font=("Menlo" if sys.platform == "darwin" else "Consolas", 9), state="disabled", wrap="word")
+    log_box = tk.Text(frm, height=6, font=("Menlo" if sys.platform == "darwin" else "Consolas", 9), state="disabled", wrap="word")
     log_box.pack(fill="both", expand=True, pady=(4, 6))
     q: queue.Queue = queue.Queue()
 
@@ -341,13 +382,6 @@ def run_gui() -> None:
                 go.configure(state="normal")
                 status.set(payload)
         root.after(100, pump)
-
-    status = tk.StringVar(value="")
-    bottom = ttk.Frame(frm)
-    bottom.pack(fill="x")
-    ttk.Label(bottom, textvariable=status, foreground="#2a7").pack(side="left")
-    go = ttk.Button(bottom, text="Install / Update")
-    go.pack(side="right")
 
     def worker() -> None:
         for w in steps_frame.winfo_children():

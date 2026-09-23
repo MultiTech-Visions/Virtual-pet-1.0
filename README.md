@@ -28,7 +28,8 @@ is the one-time setup below.
 | Being stared at | same face very close for 14 s | goes shy: looks away, antennas fold, peeks back |
 | Empathy | the person's head tilt (eye line) | slowly mirrors the tilt; nods back 2–4 times when you nod, shakes back when you shake |
 | Mirror game | a face filling the frame (≥ 8 %) and holding for 2 s | goes quiet and copies your head pose (yaw, pitch, roll estimated from the five face landmarks), mirror-image by default (flip on the Controls tab); ends when you back away or after a minute |
-| Dancing (seen) | the tracked face/body bobbing rhythmically at 50–150 BPM for 2.5 s | dances along at the tempo it sees; no microphone needed |
+| Dancing (seen) | the tracked face/body bobbing rhythmically at 50–150 BPM for 2.5 s, measured in the world frame so the pet's own bobbing does not pollute it | dances along at the tempo it sees; no microphone needed. Once locked it keeps dancing for 8 bars (min 16 s) after the rhythm was last confirmed; mid-dance there are no micro-reactions, nod-backs or lost-face searches for that person. The tempo it sees is handed to the tap clock below. **How to dance for it:** face it, stay in frame, bob your head (or shoulders, so the head goes with them) up and down a few centimetres on a steady beat for ~4 s. Hands are invisible to it |
+| Tapped beat | the **Groove** card on the Controls tab | tap the beat (or the space bar) and tap "1" on the first beat of a bar; with *Manual groove* on it dances to that clock, ignoring what it hears or sees, accenting beat 1 and changing style only at 4-bar phrase turns. Grooving is all it does then: no Simon says, song, mirror game or nod-copying starts, and switching manual groove on cuts a song or game that is already running. Dials for head bob, head sway, body sway and antennas shape every groove |
 | Time | – | energy drains while awake, refills asleep; lonely after 90 s alone, nods off, sleeps after 7 min; rare sneezes and hiccups |
 | Sleep | – | nests its head using the SDK's sleep pose, then **motors off** and **camera paused**. The ears stay on: its name, a loud voice after quiet, a head pet or an ear tickle wake it (motors on, head lifts) |
 
@@ -77,7 +78,9 @@ festival_pet/
   hearing.py    Vosk name / trick-word spotting
   sounds.py     procedural droid vocalisations
   static/       tiny status page served at http://reachy-mini.local:8042
+dashboard/      the port-8000 web dashboard Pollen removed in reachy-mini 1.9.0, re-mounted onto the daemon
 scripts/setup_offline.sh   one-time install + model/move-library download on the robot
+scripts/restore_dashboard.sh   puts the web dashboard back on http://reachy-mini.local:8000
 scripts/sim_harness.py     drives the whole pet against the SDK's MuJoCo simulator
 tests/                     pytest suite for everything that does not need the robot
 ```
@@ -95,7 +98,8 @@ tests/                     pytest suite for everything that does not need the ro
    offline once the models are cached).
 3. It uploads the app files bundled inside the installer (or, if you untick that box, the
    latest from GitHub), runs the setup script on the robot, streams its output into the
-   window, then makes the pet the start-up app and starts it.
+   window, puts the web dashboard back on port 8000 (restarting the daemon), then makes the
+   pet the start-up app and starts it.
 
 Run it again whenever there is a new version: the same steps upgrade in place. On macOS the
 first launch may need right-click → Open (unsigned app). Developers can also run it from
@@ -112,13 +116,313 @@ ssh pollen@reachy-mini.local 'bash /home/pollen/festival_pet/scripts/setup_offli
 ```
 
 The script installs the app into the daemon's apps venv (`/venvs/apps_venv`), downloads
-the two OpenCV Zoo ONNX models (~39 MB) and the Vosk small English model (~40 MB) into
+the four OpenCV Zoo ONNX models (~57 MB, pinned by SHA-256 so they are fetched once and
+only again if the pin changes) and the Vosk small English model (~40 MB) into
 `~/.local/share/festival_pet/models/`, caches the
 `pollen-robotics/reachy-mini-emotions-library` dataset, and runs a load check.
 
 Then open the dashboard at `http://reachy-mini.local:8000`, find **festival_pet** in the
 installed apps and start it. The pet's own page ("Reachy's Mind") is at
 `http://reachy-mini.local:8042`.
+
+### The web dashboard on port 8000 (removed by Pollen, put back here)
+
+reachy-mini 1.9.0 deleted the daemon's web dashboard: `http://reachy-mini.local:8000` now
+shows "Web Dashboard Deprecated, download the Reachy Mini Control app". The REST API behind
+it is unchanged, so `dashboard/` ships the last dashboard Pollen released (1.8.4, minus its
+"deprecated soon" banner) as a package, `reachy_dashboard`, that runs the same daemon with
+the dashboard mounted back on. The installer does this on every run; by hand, on the robot:
+
+```bash
+sudo bash /home/pollen/festival_pet/scripts/restore_dashboard.sh
+```
+
+It installs the package into the daemon's venv (`/venvs/mini_daemon`, no dependency
+changes), rewrites the daemon's `launcher.sh` so it runs `python -u -m reachy_dashboard`
+instead of `python -u -m reachy_mini.daemon.app.main` (same arguments, same daemon), and
+restarts the daemon. Apps, app store, move player, volume, Wi‑Fi (`/settings`), daemon
+update, logs (`/logs`) all work as before. A daemon update from the dashboard rewrites
+`launcher.sh`, so run the script (or the installer) again afterwards. To undo: reverse the
+`-m` edit in `launcher.sh` and restart the daemon.
+
+## Play tab: Simon says (head and arms), dance-along, singing
+
+**Simon says, head** ("do what I do", the close-up game): start it from the Play tab (or a keypad
+key mapped to `mime`). It plays a three-note fanfare, then shows a head move (look left/right/up/down,
+tilt left/right; 3–5 of them, random every game, never the same twice in a row), returns to your
+face and watches your head for 4 s. Copy it as in a mirror (flip with the mirror-game direction
+switch) and it chirps "yes", perks, stores a fresh view of your face, and shows the next one.
+Ignore it and it shows the move again, bigger, with a huff; ignore that and it shows it a third
+time with an annoyed shake; ignore that and it droops, sulks and gives up. Do the whole set and it
+does a ta-da. If it loses your face for 5 s it looks around, confused, and stops. Up and down are
+left out when it is looking steeply up or down at you (the camera cannot read them from there).
+
+**Simon says, arms** (flag signals): the antennas are its arms, read literally: laid back = arm
+down, horizontal in front = arm out, straight up = arm up. It shows one flag position, you copy it
+(as in a mirror), then it shows that one and a second, you copy both in order, and so on up to
+five, like the old Simon toy. Your arms are read by the MediaPipe pose model behind the person
+detector (`festival_pet/pose.py`): shoulder, elbow and wrist, as an angle from hanging down, in
+three levels (down under 50°, out, up over 130°). When it cannot see your arms (too close: a face
+that fills the frame has no arms in it, or the pose model is unsure) it plays the head game
+instead. The Play tab shows what it reads of your arms and what it is waiting for.
+
+**Dance-along**: while there is a beat (someone seen dancing, music heard, or the tapped clock
+with manual groove on) and your arms can be read, the antennas copy your arms live, as in a
+mirror, fast enough for 120 bpm (the pose runs on every camera frame then, and the close-up face
+work is skipped). Every eight beats it takes two beats for a riff of its own (alternating, pumping
+or a wave), then goes back to copying. Off during Simon says, library moves and sleep; switch it
+off on the Play tab.
+
+**Waves and hugs** (from the same arm reading, whenever no game or dance-along is using the
+arms): wave a hand above shoulder height, three swings side to side within two seconds, and it
+waves back with the mirrored antenna (your right hand, its left) — a proper parade wave, HEY OVER
+HERE: it lifts that side of its head and turns the other way, which swings that antenna round to
+the front, then sweeps it slowly through a big arc either side of upright, three times over three
+seconds, while the other antenna leans back out of the picture. Hold
+both arms out wide at it for 2.5 s and that is a hug: antennas open wide, head lowered and turned
+aside to nuzzle in, body rocking about five degrees, with a warm coo. A raised or open arm makes
+the pose model read every frame for a moment (a wave cannot be told from a stretch at the idle
+rate); the Play tab's "your arms" row shows "watching" then. One wave back per six seconds, one
+hug per twenty.
+
+**Jingles**: now and then while it is pottering about (looking around, watching someone, hanging
+out) it hums a little song it just made up, out of bright, near-pure console blips on a pentatonic
+scale — in the spirit of the beeps that answer Data's "life forms" song. A bar of beeps is not a
+tune; it is over before you have worked out that anything happened. So a jingle is a proper little
+song, and a QUIET one — it hums it to itself, and a near-pure tone up at 2 kHz carries across a field
+and drills into whoever is standing next to it, so both the level and the pitch are kept down (top note
+about 1.2 kHz, a third of the level of its other sounds, a soft attack instead of a click). Structure:
+**four counted-in taps** at the top (the "1" a fifth higher) so you can find the beat, then
+**four bars of 4/4** — eight, now and then — built out of ONE motif, the same rhythm every bar with
+the pitches moved around it, in an AAB-A shape that ends on the root. It sets its own bob clock to
+the jingle's tempo from the count-in, so you can groove along with it rather than wonder what that
+noise was. 96–120 bpm. Every 25–70 s, never mid-performance, mid-dance, while being held, or when
+it is flat out. No switch: it is just something it does. The Jingle button on the Play tab plays
+one on demand, and "jingle" is in the lexicon.
+
+**Songs** are *bass* music. (There was a second kind, a drumline of beeps on two pitches; next to
+these it was just annoying, so it is gone. A saved drumline song is dropped when the repertoire
+loads rather than kept as one it can no longer play.)
+
+*Bass* is built the way the genre is, because without that there is nothing to follow. 140 bpm with
+a sparse halftime kit underneath — kick on the 1, snare on the 3, hats on the offbeats, over a
+two-bar loop, in one of three kits — so there is always a backbeat to count against while the bass
+does the strange part. On top of it, a held note whose filter opens and shuts a fixed number of
+times per beat (one, two or three, always locked to the grid), or wahs, lasers or offbeat stabs.
+
+Arrangements are built from four-bar phrases by a small grammar, so no two songs have the same
+shape — four days of festival is a lot of songs to sit through. The grammar is what keeps them
+followable: every song counts you in with a bar or two of kit alone, every drop has a build in
+front of it and lands on a phrase line, a breakdown always builds back into another drop, and every
+song has an ending. Within that it picks its own phrases (count-in, drop, ride, breakdown, outro,
+each in two variants), how many, which three bass voices fill the A/B/C slots, and a riff that moves
+the bass note around under each phrase. Songs run 21 to 41 seconds, some with one drop and some with
+two.
+
+The speaker reproduces nothing under about 300 Hz, so the bass note sits at 310–370 Hz and the
+harmonics with the moving filter do the talking; an actual sub would come out as silence. The kick
+is a 440→150 Hz drop with a click on the front, and the click is what carries it. The body bobs at
+half the song tempo, on the 1 and the 3, which is both the halftime feel and as fast as the neck
+wants to move.
+
+**Playing it with the body**: the head bobs on the (halftime) beat for the whole song — harder through
+a drop, barely at all through a breakdown — and the antennas play the *phrasing*, because the bar list
+is the arrangement and the body can read it as well as the speaker can: a lazy low sway through the
+intro, both antennas climbing all the way up through a build and arriving with the drop, slamming down
+and up on every beat of the drop itself, thrown back and forth through a fill, folded away in a
+breakdown, and held straight up on the last hit. Every song has a different bar list, so every
+performance is choreographed differently. The Mind tab names the section it is in.
+
+(The head not moving at all during a song was a bug: the brain clears the groove every tick, and the
+beat tracker cannot hear the robot's own song because the mics go deaf while it plays, so nothing ever
+put it back. It also throws its own antennas about hard enough to trip the ear-touch detector, so
+touches are ignored for the length of a performance — otherwise it flinched at its own showmanship.)
+
+**Performing**: a song on its own is just a song — it sings its little song and is pleased with
+itself, a wiggle and a happy beep. But it watches the audience while it plays: a face in view with
+their head pointed at it counts as watching, and if more than half the song was watched it lines up
+another one after a short pause ("they're still watching! one more"). After the second, a third is
+a one-in-three rarity, so it stays special. Only a set of two or three earns the full house bow —
+turn 30° right, bow, 30° left, bow, centre, bow — which means that when you see the big routine, it
+means something. The Mind tab shows the set: which song it is on, what fraction of it is being
+watched, and when the encore lands.
+
+**Trading kandi (PLUR)**: at a festival, people will want to trade bracelets with it, so it knows
+the handshake. Finger poses are past what the pose model can give at across-the-tent distance, so
+it reads the four steps from arm positions instead, and the sequence is what makes it reliable:
+each step only counts after the one before, held half a second, with twelve seconds to get to the
+next one or the handshake lapses.
+
+| Step | You | It |
+|---|---|---|
+| **Peace** | both arms up at 45°, hands well apart and above your shoulders | antennas sink all the way down, then rise together into a Y and bounce; excited chirp |
+| *(between each)* | — | left ear laid right down, right ear standing up and falling toward horizontal as your twelve seconds run out |
+| **Love** | hands together up at your chest, making a heart | both antennas swing back past vertical and cross over behind its head, a coo |
+| **Unity** | arms folded across your chest | the peace routine again — down, then up into the Y |
+| **Respect** | one arm up and bent, forearm and fist straight up at head height, other arm down | a fanfare, and the trade starts |
+
+*Left means its left.* Antenna 0 is the robot's left ear and antenna 1 its right — the order the
+hardware reports and takes them in — and every side name in the app goes through one table, because
+having that backwards means the page says "left" and the other ear moves, which is exactly what it
+used to do.
+
+*And an ear hold no longer flicks.* Parking an antenna somewhere takes it over completely, and it used
+to do that in a single tick and hand it back just as abruptly. With the countdown standing aside for
+each answering gesture and coming straight back afterwards, an antenna slammed between the top of the
+head and the bottom of it, over and over, fast enough to startle whoever was standing there. The
+takeover is eased and rate-limited now, tuned until the fastest antenna move in a whole handshake is
+the *gesture's* own speed with the hold adding nothing on top.
+
+**Concentrating.** From the moment the first pose lands, it stops being a pet: the gaze is pinned on
+whoever is in front of it (and held where they were if the camera loses them for a moment), no glance,
+no hum, no game, no song, and the pose model runs on every frame. Between poses — once its answering
+animation has finished, so the two never fight — the **left antenna lies right down and the right one
+runs the countdown**: upright is the whole twelve-second window, horizontal means it is about to give
+up on you. One thing moving, and it means one thing. So you can see that it saw your last pose and that it is waiting for the next one, instead
+of it doing the peace thing and then going back to chaos.
+
+**Walking it through by hand.** The pose model is doing its best with somebody's arms across a tent in
+bad light, and when it cannot see the peace sign the whole trade is unreachable — with a person
+standing there holding a bracelet out. So the Kandi card has the same routine driven by taps instead of
+by the camera: tap for peace, tap for love, tap for unity, tap for respect, then pick an ear and it does
+the trade. It answers each pose exactly as it would have — same animation, same countdown on the
+antenna, same concentration — so it looks no different to whoever is in front of it. Respect
+deliberately does *not* choose an ear for you; choosing is the point of doing it by hand.
+
+**Teaching it a pose.** Those rules are a guess at where somebody holds their arms, and a guess is
+all they can be: where *you* hold a double peace sign — out at the sides, up by your head, elbows
+bent, hands toward the middle — is a fact about you, not something to be derived, and if the guess
+is wrong the handshake never starts (and the hug detector grabs it instead). So show it. **Teach the handshake** runs the four poses **and the hug** as one routine, which is the way to do it:
+stopping between poses to go and press a button is exactly when it loses you. The hug is in there
+because it is the one that matters most — arms out wide and a double peace sign held at 45 are nearly
+the same shape to a pair of arm angles, which is why a handshake kept being read as a cuddle. Teaching
+it both changes the question from "is this a peace sign?" to "which of the things I have been shown is
+this most like?", and the nearest one wins, so two poses can sit close together and still be told apart.
+
+Each pose is kept over its **last five goes** and matched against the median of them, not the mean: arms
+wander, the model drops a frame, one go gets caught mid-move, and a median throws a bad go out entirely
+rather than letting it drag the answer a fifth of the way toward nonsense. So do it a few times. The
+card shows how many goes are averaged into each pose. It calls for each pose itself, counts down on the
+antenna while you get into it, beeps when it starts watching, beeps yes or no, takes a breath, and moves
+on — concentrating throughout, as above. (There are per-pose buttons too, if you only want to redo one.)
+Each pose: three seconds to get into it, two and a half of watching, and it keeps the medians of five
+numbers: the two arm angles (sorted higher-first, so which
+hand you use never matters), how far apart your hands are, how far above your shoulders they are,
+and how far each forearm is off straight up. A reading matches when every number is within tolerance
+of one it has been shown — and if two poses come out measuring the same, it says so rather than leaving
+the handshake quietly ambiguous. What it learns is **added** to the built-in rules, never substituted for
+them, so training only ever widens what it will accept — and the card shows the five numbers live,
+so you can watch what it makes of you before you teach it anything.
+
+*Unity used to be hands clasped low in front, and it was the worst pose this model could be asked for:
+wrists are the landmarks it is least sure about, low hands sit near the edge of the frame, and "both
+arms down with the hands together" is barely distinguishable from standing still. Folded arms put each
+wrist on the far side of the body from its own shoulder — a big displacement measured against the
+**shoulders**, which the model is surest about — and nothing else in the set comes close to it: on the
+crossing number, folded arms sit a clear half a shoulder width away from peace, love, respect, a hug
+and standing still, and are the only one on the positive side of it. Folded arms are also not a hug,
+however long they are held, which the built-in rule now knows.*
+
+A hug is the same hands-apart shape as peace but with the arms straight out at shoulder height, so
+the height of the wrists separates them; while a handshake is under way the wave and hug detectors
+stand down anyway.
+
+**The exchange.** On *respect* it trades, both ways. It is wearing bracelets on its antennas (tell
+it which ears are loaded on the Controls tab), so first it gives one:
+
+1. A fanfare — da da-da DA — so everyone nearby knows something is happening.
+2. It raises the loaded ear, looks at you, and turns its head *away* from that side, which is what
+   swings that ear round to the front where your hand is rather than leaving it off to one side.
+3. It rolls its head over until that ear's base is the lowest part of the head.
+4. It lowers that antenna, slowly, until the bracelet runs off the tip — then **jiggles it**, four
+   and a half times a second, down at the bottom: the antennas have a helical twist near the base
+   and a bracelet catches on it, and the flicks bounce it off the end. It giggles as it goes.
+5. It holds there a moment while you take it, then comes back up level.
+
+The ear *toggle* stays on through all this, on the assumption you will hang a replacement on it;
+only the upright gate is lifted, for as long as the trade runs.
+
+Then it asks for one back on the same ear: that antenna goes to just past vertical and tipped
+toward you, the head turns away from that side again to present it, the other ear leans out of the
+way — unless it is wearing one of its own, in which case it stays safely upright and the tilt does
+the telling instead — and it **freezes** — no breathing, no groove, no
+gestures — so you can slide one down the wire and let gravity take it to the head. It knows the
+bracelet landed because the antenna gets pushed off its commanded angle, which is the same detector
+that feels an ear tickle; that touch is swallowed rather than passed to the brain, or it would
+flinch at exactly the wrong moment. It waits ten seconds in case you are digging one out of a bag,
+then gives up gently. Two seconds after one lands it eases the antenna and head back to normal.
+
+Wearing one is not a special mode: a **loaded antenna is held within 26° of vertical whenever the head
+is tilted**, which is all a bracelet needs to stay on through a whole dance. The tilt is the condition
+because the tilt is the physics: shedding one takes a roll *and* a lowering, and with the head level a
+bracelet sits at the base of a lowered antenna quite happily. That is also what leaves the antennas free
+to do a full peace sign or cross behind its head while it is wearing two. The bracelet itself still swings, though, and a big move throws it about, so
+while it is wearing one its head movement is damped by the **steadiness** slider (half, by default):
+everything is pulled back toward where its gaze is pointed, so it still follows you about, it just
+stops flinging the bracelets around. A pose it is deliberately holding — the trade, a Simon says
+move — is never damped. The twenty seconds right after a trade take a bit more out of it, to settle. Trades are counted per person and are worth a lot of affection, so a
+trader becomes a bestie fast.
+
+Both the give and the ask are driven through overrides that already existed — `hold` for the head
+pose (Simon says shows poses with it) and `show_arms` for absolute antenna angles (the arm game) —
+so there is no third way of moving the head to keep in step with the rest.
+
+The **Kandi trading** card on the Play tab is two rows of two: trade left / trade right on top,
+the per-ear loaded toggles under them. A trade button runs the whole exchange from that ear and
+counts down while it waits; press it again to stop. Below them: the **shed tilt** and **steadiness**
+sliders and the four **teach** buttons. Which way the head has to lean to make a given ear the low point is a fact about the
+real robot, so it is a signed number you can set from the page: if it tilts the wrong ear down, use
+a negative value.
+
+**Lexicon**: every sound with what it means, tap to hear; it lives on the Controls tab under
+"Puppet it". Distinct calls: a rising two-note for "let's play mirror" (falling for "mirror
+over"), the fanfare for Simon says, a double blip before each shown move, a bright "yes", a
+puffed "huff".
+
+**Sneeze**: 10.6 s. It stops looking at you, looks down with the antennas laid right back, gives
+a little shake, lifts three times with rising inhales while the antennas climb a step each time,
+whips them up and crossed with a squeak, then CHOO: head down hard, antennas out wide; slow
+recovery with a droop, then a clearing shake. If you are smiling at it afterwards, it giggles.
+
+## A keypad in someone's hand
+
+Any Bluetooth (or USB) keyboard the robot is paired with is a hand controller: the app reads
+`/dev/input` directly, so a key press reaches the pet in a millisecond with the kernel's own
+timestamp, and a tapped beat is not smeared by radio latency. The four-key PCsensor MK424 is
+the intended one (sends A B C D, PIN 1234, its "S" button is its own mode key and is ignored);
+any keyboard works for trying it out.
+
+Controls tab, **Keypad** card:
+
+- *Scan for keyboards* lists what is discoverable; *pair* pairs, trusts (auto-reconnect) and
+  connects with the PIN in the box. Paired devices are listed with a *forget* button. Needs
+  `bluetoothctl` on the robot (`apt install bluez` while online if the card says it is missing).
+- Layers: the MK424 has three layers (its LED colour shows which is on), four keys each; the
+  pet uses the first two and ignores the third. One tap = one action (set the pad not to
+  auto-repeat); there are no hold actions. The actions are fixed per layer; type the key code
+  each key sends (press it, read "last key").
+  1. **Dancing**: groove left · tap the beat · tap the "1" · groove right. Any key on this
+     layer turns manual groove on. Left / right say which way to groove, they do not point it:
+     it leans that way (head roll and yaw, one antenna forward and one back, about 5° of body)
+     and keeps dancing with whoever it is with, fading over a couple of seconds. Keep tapping
+     the same way and the lean grows to full and it tilts its head over as well (at most every
+     2 s). The body never turns away from the person. Left-right-left-right within a second (a
+     fighting-game combo) stops the dancing: manual groove off, the tempo cleared. A tempo
+     tapped faster than 150 bpm grooves at halftime (every other beat, on the "1" and "3" once
+     the "1" is known): the daemon does not smooth the 50 Hz targets, and a full bob every
+     0.4 s rattles.
+  2. **Petting** (one press of the pad's mode key from dancing lands here): head pat · chin
+     scratch · ear rub · belly rub. A press does not fire an animation. It keeps a hand on the
+     robot for a moment (the same continuous fold-and-lean a real rub gets) and tops up a
+     build-up, so drumming on all four keys like a fidget toy reads as one long cuddle rather
+     than a fit of gestures. The build-up passes four marks, each once per session and never
+     closer together than 2.5 s: a curious perk, a contented lean, a purring snuggle, and
+     melted. It ebbs away over about 6 s once you stop, and a gap of 3 s starts a fresh
+     session. Every press counts toward being its friend (at most one every 2 s).
+- Any key counts as interaction, so the pet does not get lonely while someone plays with it.
+
+The restore script adds the `pollen` user to the `input` and `bluetooth` groups (needed to read
+keyboards and to pair); that takes effect when the daemon restarts, which the script does.
 
 ## Wi‑Fi at the festival: let the robot be the hotspot
 
@@ -140,7 +444,7 @@ Polls the app twice a second. Tabs:
   listening-for-trick window), a running **thought stream** in plain language ("someone said
   my name from the left! listening for a trick for 8 s", "it's person #4 (friend, visit 3),
   greeting them"), and the last actions.
-- **Senses** – what the eyes, ears and body report right now, a live 20 s microphone chart
+- **Senses** – what the eyes, ears and body report right now (fixed rows, nothing jumps), a live 20 s chart of where the person is (world yaw/pitch, the dance amplitude floor and when it thinks they are dancing), a live 20 s microphone chart
   (loudness, head-rub energy, belly-scratch band energy, flatness, with the current floors
   drawn as dashed lines) and one-tap **Calibrate** buttons for head pets and belly scratches:
   stay quiet 3 s, touch for 3 s, and the thresholds are set from what it heard (it refuses
@@ -151,12 +455,18 @@ Polls the app twice a second. Tabs:
   (the first tapped is kept; embeddings and stats combine). **Forget** a single person, or
   everyone.
 - **Controls** – wake/sleep, mute, pickup on/off, body finder on/off, **ears on/off** (stops all
-  microphone processing, for dead mics or CPU), mirror-game direction, groove intensity,
-  face-match strictness, speaker volume, shut down / reboot, and a puppet panel: every sound,
-  gesture and library move as a tap-to-fire button. All switches and sliders are remembered
-  across restarts (`~/.local/share/festival_pet/settings.json`).
+  microphone processing, for dead mics or CPU; also hides the microphone cards and "what it heard"), mirror-game direction, groove intensity, a head-forward slider (slides the head
+  forward by up to N mm as it looks up, so the back of the head clears the body; default 12),
+  face-match strictness, speaker volume, shut down / reboot, a **Groove** card (manual groove
+  on/off, *Tap beat* / *Tap "1"* buttons with a live bpm / beat / bar readout, a BPM box, and
+  head-bob / head-sway / body-sway / antenna dials), and a puppet panel: every sound, gesture
+  and library move as a tap-to-fire button. Library moves are recorded body-forward; they are
+  turned with the body's current heading when played, so they work while it faces you sideways.
+  All switches and sliders are remembered across restarts (`~/.local/share/festival_pet/settings.json`).
 - **Log** – the app's own log ring (last 400 lines). The daemon's per-app log is on the
   dashboard too.
+
+With ears off, every microphone card on Senses is hidden.
 
 API: `GET /api/mind`, `GET /api/log?n=`, `GET /api/catalog`, `POST /api/control {cmd, value}`,
 `GET /api/people/{id}/face.jpg`, `DELETE /api/people/{id}`, `POST /api/people/merge {keep, other}`.
@@ -186,6 +496,14 @@ the robot boots asleep and **touching an antenna wakes it and launches the pet**
   the head feels sluggish, raise `DETECT_INTERVAL` in `vision.py`.
 - Set `PLAY_LIBRARY_SOUNDS = True` in `main.py` to hear Pollen's sidecar sounds with the
   library moves instead of the pet's own beeps.
+
+## Which version is on the robot?
+
+The Mind page header shows `vX.Y.Z`; the first line of the app log (Log tab) adds the commit
+and upload time. The version is `pyproject.toml`'s and is bumped with every change that is
+pushed; the commit and upload time come from a stamp the installer writes at upload time, so
+two uploads of the same version are still told apart. The installer's own steps print the
+version it is sending and `v<before> → v<after>` after installing.
 
 ## Development
 
@@ -227,3 +545,182 @@ between the simulated head and the injected face (≈1°). `Pet` in `main.py` ta
 - Behaviour ideas borrowed from community apps (desk_pet_bird, reachy_baby_yoda, recognizer,
   Reachy-companion): energy/social drives, priority-preempting gestures, SFace-every-N-frames,
   DoA startle.
+
+
+### One beat clock, not two
+
+The keypad, the page's space bar, the tapped BPM box and the manual-groove toggle are all the same
+clock, and the page now reads it back from the robot rather than remembering what it last did. Any key
+on the keypad's dancing layer turns manual groove on by itself, so the toggle follows the pad rather
+than the other way round; the tempo, the beat and bar, halftime and whether it is actually grooving
+show in one line on the **Controls** tab, on the **Play** tab (where you are standing when you dance
+with it), and in the **keypad card** (where you look when a key does not do what you expected). The
+space bar and **1** work on any tab now, not only on Controls — except in the Dev tab's terminal,
+which wants every key for itself.
+
+Two things behind that were making them look like separate systems. The page drew every card inside
+one `try`, so a single unexpected value anywhere stopped every card *after* it from updating: half the
+page silently went stale, with the only sign a small grey line at the top. Each card now draws inside
+its own guard, the live beat state is drawn first before anything that could fail, and the connection
+line names any card that could not draw. And saving settings — which happens on every keypad press —
+was building the entire mind payload (vision stats, audio history, face history) to read four values
+out of it; it reads the controls directly now, about ten times cheaper, which matters when it is
+happening on the beat.
+
+### The Dev tab: Claude Code on the robot
+
+Describing the robot's behaviour into a chat window is the slow way to fix it. The Dev tab is a **real
+terminal on the Pi, in the pet's own page**, so a Claude Code session can run *on the robot* — look at
+what the camera sees, read the black box, drive the pet through its own API, change the code, and try
+it again. It is the actual CLI in an xterm, so the chat, the tool calls, the diffs and the permission
+prompts are all exactly as they are in a terminal.
+
+**It needs the internet.** Claude Code talks to Anthropic's API; at a campsite there is nothing to talk
+to. This is a bench tool — home, the van, a phone hotspot — and the app itself stays entirely offline,
+which is the whole point of it. The tab tells you plainly whether the robot can currently reach the
+API.
+
+**It is a shell, so it is off by default.** The pet's page has no login: anybody on the same network
+can open it, which is fine for sliders and a terrible idea for a terminal. So the console stays off
+until you switch it on with a passphrase of at least six characters, and the WebSocket re-checks that
+passphrase on every connection rather than trusting the page. Turning it off kills the session. Turn it
+off when you are done, and certainly before the festival.
+
+Setup, once, in the tab itself — there are buttons for each step, and they run in the terminal below
+so you can watch the output and type a password if it asks: paste an **API key** (written to a 0600 file on the robot, never
+logged, never in the trace; the page only ever shows the last four characters), set a **passphrase**,
+then **Install Node** (`apt-get install -y nodejs npm`) and **Install Claude Code**
+(`npm install -g @anthropic-ai/claude-code`, which is a Node program, hence the order). The tab says
+whether each is there and which version. If apt gives you a Node older than 18, the terminal is a real
+shell: `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs`. After that, **Start Claude Code** and talk to it. xterm.js is
+vendored into the package rather than loaded from a CDN, because there is no CDN on a campsite.
+
+**`scripts/petctl.py`** is the same API with a short name on it, for a session in that terminal:
+
+```bash
+python3 scripts/petctl.py see          # state, face, arms, gaze, remembered spots, vision timing — one line
+python3 scripts/petctl.py watch        # ...once a second, while somebody stands in front of it
+python3 scripts/petctl.py camera shot.jpg    # what the camera sees, with the detector overlays drawn on
+python3 scripts/petctl.py do gesture wave    # any control the page has
+python3 scripts/petctl.py trace out.jsonl --last 120
+python3 scripts/petctl.py mark "it looked at the wall"
+```
+
+There is a **`CLAUDE.md`** at the repo root telling the session all of this, plus the house rules (no
+silent defaults, tests before pushing, why the odd numbers are what they are), so you should not have
+to explain the project every time you start one.
+
+### The page is tested by running it
+
+Three page bugs went out in a row — a field the API stopped sending, a variable trapped inside a card's
+closure, an element id that did not exist — and each one only showed up as a blank or half-frozen page
+on the robot, because nothing ever executed the page's JavaScript. Checking that it *parses* was never
+going to catch a ReferenceError two thirds of the way down.
+
+So `tests/test_page.py` takes the real `/api/mind` payload from a pet with as much switched on as a
+bench can manage — taught poses, kandi on both ears, singing, a tapped tempo, a handshake in progress,
+a face and arms in view — runs `refresh()` in node against a stub DOM, and requires every tab to draw
+without a single error. Plus a fresh robot with nothing going on, for the "or none" branches, and the
+degraded payload, to check the error actually reaches the screen. No browser, about a second. It was
+confirmed against the real bug: put the closure back and it fails, naming it.
+
+### When the page will not load
+
+The app runs the **installed** package, not the files in a checkout. Pulling new code changes nothing
+until it is installed and the app restarted — the single most likely reason a fix appears not to have
+worked:
+
+```bash
+cd ~/Virtual-pet-1.0 && git pull && pip install -e .     # then restart the app from the dashboard
+python3 scripts/doctor.py                                 # and check
+```
+
+`scripts/doctor.py` answers, in order, the things a blank page cannot: is the app running at all
+(`/api/health`), which build is it running (the installed version against this checkout — it says so
+plainly when they differ), what is `/api/mind` actually failing with (the real exception and the last
+lines of its traceback), and what the app log says.
+
+Two supporting changes make that possible. A failure in any `/api` route now logs its traceback to the
+app's own logger — FastAPI logs its tracebacks to uvicorn's logger, which is not the one the Log tab
+reads, so a failure in the one endpoint the whole page depends on used to leave nothing at all to go
+on — and returns it in the response body, which the page then shows in red at the top instead of
+going blank. On a robot on a home network serving a page with no login, being able to read the error
+beats hiding it from ourselves. `/api/health` is deliberately trivial, so "is it even running?" stays
+answerable when everything else is broken.
+
+### The black box
+
+Debugging a robot through a chat window is guesswork: "it lost me", "it looked at the wall", "it
+didn't see my peace sign" are all symptoms of numbers nobody can see. So it keeps a **rolling record
+of what it was actually doing**, ten times a second, and the whole thing downloads as one file you can
+hand over.
+
+Each sampled line has what it could see (face and body angles and sizes, whether the pose model
+returned arms and how stale they were), what the brain decided (state, activity, what it is busy with,
+the gaze target), where the head and body actually went, the places it remembers people standing —
+with how many of those sightings were real faces — which spot it has written off, how long the face
+has been lost, and the state of every routine (handshake step, teaching phase, kandi, song section),
+plus the ear-deviation numbers that make it think it is being touched. Thoughts, actions and marks go
+in at full resolution, the moment they happen.
+
+It is a fixed ring of 40,000 lines — about an hour — so it runs for four days without ever filling the
+disk, and it is **on by default**: the point is to already be recording when something goes wrong.
+
+On the Controls tab, under **Black box**: hit **Mark** the instant it misbehaves (it writes a labelled
+line, optionally with a note, so it can be found in a 50,000-line file), then **Download last 5 min**
+or **Download everything**. The file is JSON Lines — one self-contained object per line, greppable —
+and the first line is a header with the build, every setting, the memory summary and the tail of the
+log, so a trace can be read without having to ask what version produced it.
+
+### Keeping hold of people
+
+Two things used to make it lose somebody standing still right in front of it, which is about as
+infuriating as a pet gets.
+
+**It aimed too low.** With the arms being read it dropped its aim a quarter of a frame to fit the body
+in — but that was on whenever a body was in view at all, which is nearly always, so it permanently
+pointed a quarter of a frame below your face, pushing your face up toward the edge where the detector
+is at its worst. Now it only drops the aim while something actually *needs* the arms (a game, the
+handshake, teaching it a pose, the dance-along), it drops it less (a third of a frame rather than a
+quarter), and the aim point is clamped inside the picture — a pixel outside the frame is extrapolated,
+and comes back as nonsense.
+
+**It blacklisted you.** A torso with no face found above it for six seconds was written off as
+furniture and that spot ignored for two minutes. Stand still somewhere the face detector struggles and
+it would decide you were a coat stand and refuse to look at you — repeatedly. Now a place a **face**
+has actually come from is never written off, however long it loses the face for, and the ignore is
+45 seconds rather than two minutes.
+
+The face detector drops out constantly — someone turns their head, the light changes, it blinks for a
+second. A pet that remembers only ONE last position gives up five seconds later and starts scanning the
+room, which points the camera at a wall and makes finding them again impossible; you end up watching it
+stare at nothing with you standing right in front of it.
+
+So it keeps **where people have actually been**: every sighting of anybody — a face, a stranger, a torso
+it can read arms off — is filed as a place in world yaw, sightings within 18° are the same place
+refreshed rather than a new one, and it holds the three most recent. When it loses somebody it works
+back through those three, five seconds each, announcing which one it is on, before it accepts they have
+gone. And for three-quarters of a minute after company, an idle glance goes to one of those places
+rather than off to a wall at 100°. The face-lost grace is three and a half seconds, not two and a half.
+The Senses tab lists the places, with how many sightings each and how long ago, and which one it is
+checking.
+
+### Getting out of its own way
+
+A few limits that only matter where two perfectly reasonable movements meet.
+
+**A tilted head does not also drop.** Rolled right over, the side of the head is already next to the
+body frame; lowering it as well is what knocks them together, which is what repeated groove nudges
+on the keypad used to do after five or six presses. Past 55% of the roll limit the allowed drop
+fades to nothing, so both movements stay available and the corner where they met does not.
+
+**A move that spins the body unwinds, it does not snap.** Library moves are recorded with their own
+body swing, and some of them (the circus one) finish 180° round. That offset used to vanish between
+one tick and the next, so the robot whipped back to front as fast as the motors managed — with kandi
+on its ears, alarming. The body is now blended back with the head, over a window that grows with how
+far it has to come, so the return is always about 60°/s however wild the move was.
+
+**The face is framed higher once the arms are in play.** The camera is in the head, so aiming at a
+face centres that face — and puts the shoulders and elbows out of the bottom of the picture, which
+is why the arm game and the PLUR handshake kept losing them. While arms are being read it aims a
+quarter of a frame lower, so the face rides near the top and the whole of somebody fits in.

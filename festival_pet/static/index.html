@@ -26,8 +26,11 @@
   pre.log { background:#0b0e1a; padding:10px; border-radius:10px; font:12px/1.5 ui-monospace, monospace; max-height:60vh; overflow:auto; white-space:pre-wrap; word-break:break-word; }
   table { width:100%; border-collapse:collapse; font-size:13px; } td, th { padding:4px 6px; text-align:left; border-bottom:1px solid var(--line); }
   .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:13px; } .kv b { color:var(--dim); font-weight:500; }
-  .btns { display:flex; flex-wrap:wrap; gap:6px; } .btns button, select, input[type=range] { font-size:14px; }
-  button.act { background:#243055; color:var(--fg); border:0; border-radius:8px; padding:8px 12px; }
+  .btns { display:flex; flex-wrap:wrap; gap:10px; } .btns button, select, input[type=range] { font-size:15px; }
+  button.act { background:#243055; color:var(--fg); border:0; border-radius:10px; padding:12px 16px; min-height:44px; }
+  input[type=range] { width:100%; height:36px; margin:0 0 4px; accent-color:var(--acc); }
+  .card { position:relative; }
+  .who { position:absolute; top:10px; right:10px; width:64px; height:64px; border-radius:10px; object-fit:cover; border:2px solid var(--warm); }
   button.danger { background:#3a2030; color:#ffb3b3; }
   label { display:block; margin:8px 0 2px; color:var(--dim); font-size:13px; }
   .hidden { display:none; }
@@ -41,34 +44,48 @@
   .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0 12px; }
   .grid-btns { display:flex; flex-wrap:wrap; gap:6px; }
   .grid-btns button { background:#243055; color:var(--fg); border:0; border-radius:8px; padding:9px 12px; font-size:14px; }
-  .grid-btns button:active { background:var(--acc); color:#08130f; }
+  .grid-btns button:active, button.act:active { background:var(--acc); color:#08130f; }
+  .layers { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; margin-top:6px; }
+  .layer { background:#0b0e1a; border-radius:10px; padding:10px; border-top:4px solid var(--line); }
+  .layer h3 { margin:0 0 2px; font-size:14px; } .layer .sub { margin-bottom:8px; }
+  .layer .slot { display:grid; grid-template-columns:1fr 5em auto; gap:6px; align-items:center; margin:4px 0; font-size:13px; }
+  .layer .slot input { width:100%; font-size:14px; text-transform:uppercase; } .layer .slot button { padding:4px 8px; min-height:0; font-size:12px; }
 </style>
+<link rel="stylesheet" href="/static/vendor/xterm.css">
 </head>
 <body>
-<h1>Reachy's Mind</h1>
+<h1>Reachy's Mind <span class="sub" id="ver" style="font-weight:400"></span></h1>
 <div class="sub" id="conn">connecting…</div>
+<pre class="log hidden" id="err" style="border:1px solid #6b2030"></pre>
 <nav>
   <button class="on" data-tab="mind">Mind</button>
   <button data-tab="senses">Senses</button>
   <button data-tab="people">People</button>
   <button data-tab="controls">Controls</button>
+  <button data-tab="play">Play</button>
   <button data-tab="log">Log</button>
+  <button data-tab="dev">Dev</button>
 </nav>
 
 <section id="tab-mind" class="grid">
   <div class="card">
     <h2>Right now</h2>
+    <img id="who" class="who hidden" alt="" onerror="this.classList.add('hidden')">
     <div class="big" id="state">…</div>
     <div class="sub" id="state-sub"></div>
+    <div class="feeling" id="feeling"></div>
+    <div class="sub" id="activity"></div>
     <label>Energy</label><div class="bar"><i id="energy"></i></div>
     <label>Social</label><div class="bar pink"><i id="social"></i></div>
+    <label>Curiosity</label><div class="bar"><i id="curiosity"></i></div>
+    <label>Boredom</label><div class="bar pink"><i id="boredom"></i></div>
     <div class="kv" id="timers"></div>
   </div>
   <div class="card">
     <h2>Thoughts</h2>
     <ul class="thoughts" id="thoughts"></ul>
   </div>
-  <div class="card">
+  <div class="card" id="heard-card">
     <h2>What it heard</h2>
     <ul class="thoughts" id="transcript"></ul>
   </div>
@@ -79,16 +96,31 @@
 </section>
 
 <section id="tab-senses" class="grid hidden">
-  <div class="card"><h2>Eyes</h2><div class="kv" id="eyes"></div></div>
-  <div class="card"><h2>Ears</h2><div class="kv" id="ears"></div></div>
+  <div class="card"><h2>Eyes</h2><div class="kv" id="eyes"></div>
+    <div class="btns" style="margin-top:8px"><button class="act" id="preview-btn" onclick="togglePreview()">Show what it sees</button></div>
+    <img id="preview" class="hidden" alt="" style="width:100%; border-radius:10px; margin-top:8px; background:#0b0e1a">
+  </div>
+  <div class="card"><h2>Body</h2><div class="kv" id="body"></div>
+    <label>Head-pet from the IMU: gyro jitter floor <span id="imurub-v"></span> rad/s <span class="sub">(works with ears off; rub the head and watch "imu rub fraction" climb, set the floor just under what a rub gives)</span></label>
+    <input type="range" min="0.03" max="0.6" step="0.01" id="imurub" oninput="setVal('imu_rub_gyro', this.value, 'imurub-v')">
+    <p><button class="act" onclick="ctl('calibrate','imu')">Calibrate head pets (IMU)</button> <span class="sub" id="calib-imu"></span></p>
+    <div class="sub">Tap it, keep your hands off for 3 s, then rub the head for 4 s. It reads the gyro at rest and while rubbed and sets the floor between them.</div>
+  </div>
+  <div class="card mic"><h2>Ears</h2><div class="kv" id="ears"></div></div>
   <div class="card" style="grid-column:1/-1">
+    <h2>Where the person is (last 20 s, world frame)</h2>
+    <div class="sub">Green = yaw (left/right), orange = pitch (up/down), in degrees from where the pet's body points; the pet's own head motion is already taken out. Dashed lines = the dance detector's amplitude floor (± half of <span id="dance-amp"></span>°). Shaded = it thinks they are dancing. Bob so the orange trace swings past the dashed lines at a steady rate for ~4 s.</div>
+    <canvas id="facechart" height="160" style="width:100%; background:#0b0e1a; border-radius:10px; margin-top:8px"></canvas>
+    <label>Camera latency compensation: <span id="lag-v"></span> ms <span class="sub">(stand still while it grooves; adjust until the orange trace stops copying its bob)</span></label>
+    <input type="range" min="0" max="400" step="10" id="lag" oninput="setVal('camera_lag_ms', this.value, 'lag-v')">
+  </div>
+  <div class="card mic" style="grid-column:1/-1">
     <h2>Microphone levels (last 20 s)</h2>
     <div class="sub">If <b>chunks</b> is not climbing, no audio is arriving at all. Green = loudness (RMS). Orange = head-rub energy with its floor as the dashed line. Pink = belly-scratch band energy with its floor. Blue dots = flatness (0–1). Rub the head or scratch the belly and watch which trace jumps.</div>
     <canvas id="chart" height="160" style="width:100%; background:#0b0e1a; border-radius:10px; margin-top:8px"></canvas>
     <div class="kv" id="levels" style="margin-top:8px"></div>
   </div>
-  <div class="card"><h2>Body</h2><div class="kv" id="body"></div></div>
-  <div class="card"><h2>Head-pet tuning</h2>
+  <div class="card mic"><h2>Head-pet tuning</h2>
     <div class="sub">Easiest: tap <b>Calibrate</b>, stay quiet 3 s, then rub the head for 3 s. Manual: rub energy must exceed the floor, exceed ratio × baseline, and flatness must exceed its minimum.</div>
     <p><button class="act" onclick="ctl('calibrate','rub')">Calibrate head pets</button> <span class="sub" id="calib-rub"></span></p>
     <div class="kv" id="rub"></div>
@@ -99,7 +131,7 @@
     <label>Floor (log10): <span id="rfloor-v"></span></label>
     <input type="range" min="-9" max="1" step="0.1" id="rfloor" oninput="setLog('rub_floor', this.value, 'rfloor-v')">
   </div>
-  <div class="card"><h2>Belly scratch tuning</h2>
+  <div class="card mic"><h2>Belly scratch tuning</h2>
     <div class="sub">Easiest: tap <b>Calibrate</b>, stay quiet 3 s, then scratch for 3 s. It sets the floor and ratio from what it heard.</div>
     <p><button class="act" onclick="ctl('calibrate','scratch')">Calibrate belly scratch</button> <span class="sub" id="calib-scratch"></span></p>
     <div class="kv" id="scratch"></div>
@@ -117,6 +149,7 @@
     <div class="toolbar">
       <span class="sub" id="people-sum"></span>
       <button class="act" id="merge-btn" disabled onclick="mergeSel()">Merge selected</button>
+      <button class="act" onclick="ctl('capture_face')">Capture another view of who it's looking at</button>
       <button class="act danger" onclick="if(confirm('Forget everyone?')) ctl('forget')">Forget everyone</button>
     </div>
     <div class="people" id="people"></div>
@@ -129,21 +162,80 @@
     <div class="btns">
       <button class="act" onclick="ctl('wake')">Wake</button>
       <button class="act" onclick="ctl('sleep')">Sleep</button>
-      <button class="act" id="mute" onclick="toggleMute()">Mute</button>
-      <button class="act" id="pickup" onclick="togglePickup()">Pickup: off</button>
+      <button class="act" id="mute" onclick="cycleVoice()">Voice: full</button>
+      <button class="act" id="pickup" onclick="togglePickup()">Held in hand: off</button>
       <button class="act" id="bodyf" onclick="toggleBody()">Body finder: on</button>
-      <button class="act" id="ears" onclick="toggleEars()">Ears: on</button>
+      <button class="act" id="ears-btn" onclick="toggleEars()">Ears: on</button>
       <button class="act" id="mflip" onclick="toggleFlip()">Mirror game: mirror-image</button>
     </div>
     <div class="sub">Ears off stops all microphone processing (use it if the mics are dead). Mirror game: when someone's face fills the frame for 2 s it goes quiet and copies their head pose; flip if the direction feels wrong. Settings are remembered across restarts.</div>
-    <div class="sub">Pickup uses the IMU, which sits in the head. It is ignored while the pet moves itself, but leave it off unless the Senses tab shows it staying quiet on the desk.</div>
+    <div class="sub">Held in hand: the body never turns (everything else works). When it wants to look somewhere the head cannot reach, it huffs, bounces, wiggles and points that antenna: turn it that way.</div>
     <label>Groove intensity ×<span id="groove-v"></span></label>
     <input type="range" min="0" max="2" step="0.1" id="groove" oninput="setVal('groove_scale', this.value, 'groove-v')">
     <label>Face match strictness <span id="match-v"></span> <span class="sub">(lower = recognises more easily, more mix-ups)</span></label>
     <input type="range" min="0.3" max="0.6" step="0.01" id="match" oninput="setVal('match_threshold', this.value, 'match-v')">
+    <label>Head forward when looking up: <span id="fwd-v"></span> mm <span class="sub">(so the back of the head clears the body; 0 = off)</span></label>
+    <input type="range" min="0" max="25" step="1" id="fwd" oninput="setVal('head_forward_mm', this.value, 'fwd-v')">
     <label>Speaker volume: <span id="vol-v">…</span></label>
     <input type="range" min="0" max="100" step="5" id="vol" onchange="setVolume(this.value)">
     <div class="sub">Releasing the slider plays the daemon's test sound at the new level.</div>
+  </div>
+  <div class="card">
+    <h2>Groove</h2>
+    <div class="btns">
+      <button class="act" id="mgroove" onclick="toggleManualGroove()">Manual groove: off</button>
+      <button class="act big" id="tap-beat" onclick="tapBeat(false)">Tap beat</button>
+      <button class="act big" id="tap-one" onclick="tapBeat(true)">Tap "1"</button>
+    </div>
+    <div class="sub">Tap the beat a few times (space bar works on this tab); tap "1" on the first beat of a bar (key 1) so it counts bars and phrases. Tapping along again re-aligns it. Manual groove on = it dances to this clock and ignores what it hears or sees.</div>
+    <div class="sub" id="tap-v">no tempo tapped</div>
+    <label>BPM <input type="number" id="bpm" min="40" max="220" step="0.1" style="width:6em" onchange="ctl('bpm', parseFloat(this.value) || 0)"> <span class="sub">(type a value, or 0 to clear)</span></label>
+    <label>Head bob ×<span id="g-bob-v"></span></label>
+    <input type="range" min="0" max="2" step="0.1" id="g-bob" oninput="setVal('groove_bob', this.value, 'g-bob-v')">
+    <label>Head sway ×<span id="g-sway-v"></span></label>
+    <input type="range" min="0" max="2" step="0.1" id="g-sway" oninput="setVal('groove_sway', this.value, 'g-sway-v')">
+    <label>Body sway ×<span id="g-body-v"></span></label>
+    <input type="range" min="0" max="2" step="0.1" id="g-body" oninput="setVal('groove_body', this.value, 'g-body-v')">
+    <label>Antennas ×<span id="g-ears-v"></span></label>
+    <input type="range" min="0" max="2" step="0.1" id="g-ears" oninput="setVal('groove_ears', this.value, 'g-ears-v')">
+    <div class="sub">These dials shape every groove, tapped or heard. "Groove intensity" in the Body card is the master.</div>
+  </div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Puppet it</h2>
+    <div class="sub">Tap to fire immediately. Sounds queue behind whatever is playing; gestures and moves preempt.</div>
+    <label>Sounds</label><div class="grid-btns" id="btn-sound"></div>
+    <label>Gestures</label><div class="grid-btns" id="btn-gesture"></div>
+    <label>Library moves</label><div class="grid-btns" id="btn-move"></div>
+  </div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Lexicon: what its sounds mean</h2>
+    <div class="sub">Tap to hear each one.</div>
+    <table id="lexicon"></table>
+  </div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Keypad</h2>
+    <div class="sub">Any paired Bluetooth (or plugged-in USB) keyboard is a hand controller. Pair once here; it reconnects on its own after that. The PCsensor MK424 sends A B C D and pairs with PIN 1234.</div>
+    <div class="kv" id="keypad" style="margin:8px 0"></div>
+    <div class="btns">
+      <button class="act" id="bt-scan" onclick="btScan()">Scan for keyboards (8 s)</button>
+      <label style="display:inline-block;margin:0">PIN <input type="text" id="bt-pin" value="1234" style="width:5em;font-size:15px"></label>
+    </div>
+    <div id="bt-list" class="sub" style="margin:6px 0"></div>
+    <div id="bt-msg" class="sub"></div>
+    <label>Layers <span class="sub">(one tap = one action; the pad's LED colour says which layer is on. Type the key code each key sends: press it and read "last key" above.)</span></label>
+    <div class="layers" id="keymap"></div>
+  </div>
+  <div class="card" style="grid-column:1/-1">
+    <h2>Black box</h2>
+    <div class="sub">Everything it saw and did, ten times a second: faces and bodies with their angles, whether the pose model returned arms, where the brain pointed the gaze against where the head actually went, the places it remembers people standing, which spot it has written off, the state of every routine. It records all the time into a fixed ring (about an hour; it can never fill the disk), so when something goes wrong the evidence is already there. Hit <b>Mark</b> the moment it misbehaves — it writes a labelled line you can find in the file — then download and send it.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act big" onclick="mark()">Mark — it just did it</button>
+      <button class="act" onclick="download(300)">Download last 5 min</button>
+      <button class="act" onclick="download(null)">Download everything</button>
+      <button class="act" id="rec-btn" onclick="toggleRec()">Recording: on</button>
+      <button class="act danger" onclick="ctl('clear_trace', true)">Clear</button>
+    </div>
+    <div class="kv" id="trace"></div>
   </div>
   <div class="card">
     <h2>Power</h2>
@@ -154,12 +246,131 @@
     <div class="sub">Shut down nests the head first, then powers the Pi off. Give it ~20 s before switching off the battery.</div>
     <div class="sub" id="power-msg"></div>
   </div>
+</section>
+
+<section id="tab-play" class="grid hidden">
+  <div class="card">
+    <h2>Simon says: head (close up)</h2>
+    <div class="sub">It shows a head move, then watches your head for the same one (as in a mirror: its left is your right, unless the mirror-game direction is flipped). Copy it and it moves on; ignore it and it shows you again, gets huffy, then sulks. 3–5 random moves per game. Every copied move also stores a fresh view of your face.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act big" id="mime-btn" onclick="ctl('mime', mimeOn && mimeKind === 'head' ? false : 'head')">Start head game</button>
+    </div>
+    <div class="kv" id="mime"></div>
+  </div>
+  <div class="card">
+    <h2>Simon says: arms (flag signals)</h2>
+    <div class="sub">Its antennas are its arms: laid back = down, horizontal in front = out, straight up = up. It shows one position, you copy it (as in a mirror); then that one and a second, you copy both in order; up to five, like the old Simon toy. Stand back far enough for it to see your shoulders and elbows. If it cannot see your arms it plays the head game instead.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act big" id="arms-btn" onclick="ctl('mime', mimeOn && mimeKind === 'arms' ? false : 'arms')">Start arm game</button>
+    </div>
+    <div class="kv" id="armgame"></div>
+  </div>
+  <div class="card">
+    <h2>The beat</h2>
+    <div class="sub">The same clock the keypad taps into, shown here because this is the tab you are on while you are dancing with it. Space bar taps the beat, <b>1</b> taps the "1" — on any tab, not just this one. Any key on the keypad's dancing layer turns manual groove on by itself, so this follows it rather than the other way round.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act big" onclick="tapBeat(false)">Tap beat</button>
+      <button class="act big" onclick="tapBeat(true)">Tap "1"</button>
+      <button class="act" id="mgroove2" onclick="toggleManualGroove()">Manual groove: off</button>
+      <button class="act" onclick="ctl('bpm', 0)">Stop the clock</button>
+    </div>
+    <div class="sub" id="tap-v2">no tempo tapped</div>
+  </div>
+  <div class="card">
+    <h2>Dance-along</h2>
+    <div class="sub">When there is a beat (you dancing, music, or the tapped clock with manual groove on) and it can see your arms, its antennas copy your arms live, as in a mirror. Every eight beats it throws in two beats of its own, then copies again.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act" id="dance-btn" onclick="toggleDanceAlong()">Dance-along: on</button>
+    </div>
+    <div class="kv" id="dancealong"></div>
+  </div>
+  <div class="card">
+    <h2>What it sees of you</h2>
+    <div class="sub">The numbers the games judge by, and the picture they come from. Head: the move counts at ±12° turn, ±8° nod, ±10° tilt, held for 0.4 s. Arms: the angle from hanging down; down under 50°, out, up over 130°. While it is reading your arms it aims a quarter of a frame lower, so your face sits near the top and the rest of you is in shot.</div>
+    <div class="kv" id="yourhead"></div>
+    <div class="btns" style="margin-top:8px"><button class="act" id="preview-btn2" onclick="togglePreview()">Show what it sees</button></div>
+    <img id="preview2" class="hidden" alt="" style="width:100%; border-radius:10px; margin-top:8px; background:#0b0e1a">
+  </div>
+  <div class="card">
+    <h2>Kandi trading</h2>
+    <div class="sub">PLUR: peace (arms up at 45°, hands apart) → love (hands together at your chest) → unity (arms folded across your chest) → respect (one arm up, bent, forearm straight up, fist at head height). It answers each one — down-and-up into a Y for peace, antennas crossed behind its head for love, the Y again for unity — and between them it lays its left ear down and counts your twelve seconds down with the right one. Then it trades: it tilts an ear it is wearing one on until the bracelet slides off the tip into your hand, then holds that same ear out, dead still, for one back. Tell it below which ears are loaded.</div>
+    <label>Walk it through by hand <span class="sub">(when the light is bad or it just will not see your arms: tap for each pose in turn and it answers exactly as it would have, countdown and all. After respect, pick an ear below and it does the trade.)</span></label>
+    <div class="btns" style="margin:4px 0">
+      <button class="act big" id="plur-next" onclick="ctl('plur', 'next')">Start: peace</button>
+      <button class="act" onclick="ctl('plur', false)">Stop</button>
+    </div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act" id="tr-left" onclick="tradeEar(0)">Trade left ear</button>
+      <button class="act" id="tr-right" onclick="tradeEar(1)">Trade right ear</button>
+    </div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act" id="br-left" onclick="toggleEar(0)">Left ear: empty</button>
+      <button class="act" id="br-right" onclick="toggleEar(1)">Right ear: empty</button>
+    </div>
+    <div class="sub">Left and right are the robot's own. A trade button runs the whole exchange from that ear and counts down while it waits; press it again to stop. The ear toggles stay on through a trade, on the assumption you will hang a replacement on it.</div>
+    <label>Shed tilt <span id="kroll-v"></span>° <span class="sub">(how far it leans to drop one. If it tilts the wrong ear down, use a negative number.)</span></label>
+    <input type="range" min="-40" max="40" step="1" id="kroll" oninput="setVal('kandi_roll', this.value, 'kroll-v')">
+    <label>Steadiness while wearing one: <span id="kdamp-v"></span> <span class="sub">(0 = moves as usual, 1 = barely moves its head. Bracelets hanging off its ears swing about on the big moves.)</span></label>
+    <input type="range" min="0" max="1" step="0.05" id="kdamp" oninput="setVal('kandi_damp', this.value, 'kdamp-v')">
+    <label>Teach it the handshake <span class="sub">(it runs the four poses <b>and the hug</b> as one routine — teaching it the hug is what stops a double peace sign being read as a cuddle, because the question becomes "which of these is it most like" rather than "is this a peace sign". Each pose is remembered over its last five goes and matched against the median of them, so one bad go cannot spoil it.</span></label>
+<label><span class="sub">( Per pose: it calls for it, counts down on its left antenna while you get into it, beeps when it starts watching, beeps yes or no, takes a breath, next. It concentrates the whole way through — gaze locked on you, nothing else started, the pose model on every frame. Stand back far enough for it to see your shoulders and elbows. Do it a few times: the goes are averaged.)</span></label>
+    <div class="btns" style="margin:4px 0">
+      <button class="act big" id="train-btn" onclick="toggleTrain()">Teach the handshake</button>
+    </div>
+    <div class="grid-btns" style="margin:4px 0">
+      <button onclick="ctl('train_plur', 'peace')">just peace</button>
+      <button onclick="ctl('train_plur', 'love')">just love</button>
+      <button onclick="ctl('train_plur', 'unity')">just unity</button>
+      <button onclick="ctl('train_plur', 'respect')">just respect</button>
+      <button onclick="ctl('train_plur', 'hug')">just hug</button>
+      <button onclick="ctl('forget_plur', true)">forget all</button>
+    </div>
+    <div class="kv" id="kandi"></div>
+  </div>
+  <div class="card">
+    <h2>Singing</h2>
+    <div class="sub"><b>Bass</b> songs, built the way the genre is: 140 bpm over a sparse halftime kit (kick on the 1, snare on the 3, offbeat hats) so there is always a backbeat to count against, with a wobbling bass note, wahs, lasers or stabs on top. Fixed four-bar phrases: two bars of kit to find the beat, the A bass, a build whose snare roll stops dead for a quarter-note, the drop on the downbeat of bar 5, B, a fill, C a minor third up, and a last hit left to ring. (The speaker carries nothing under ~300 Hz, so the bass is implied by the harmonics and the moving filter rather than played low; the body bobs at half tempo, on the 1 and the 3.) With singing on it makes up a song every few minutes when it is idle or hanging out with someone, bobs along, and takes a bow. Save the good ones: it mixes saved songs with new ideas. Separately, it hums a made-up little song to itself now and then while pottering about, which no switch turns off: four counted-in taps so you can find the beat, then four (or, now and then, eight) bars of 4/4 on one motif. It sets its own bob to that tempo, so you can groove along with it.</div>
+    <div class="btns" style="margin:8px 0">
+      <button class="act" id="sing-btn" onclick="toggleSinging()">Singing: off</button>
+      <button class="act" onclick="ctl('sing')">Sing now</button>
+      <button class="act" onclick="ctl('sound', 'jingle')">Jingle</button>
+      <button class="act" onclick="ctl('save_song')">Save last song</button>
+    </div>
+    <div class="kv" id="song"></div>
+  </div>
+</section>
+
+<section id="tab-dev" class="hidden">
   <div class="card" style="grid-column:1/-1">
-    <h2>Puppet it</h2>
-    <div class="sub">Tap to fire immediately. Sounds queue behind whatever is playing; gestures and moves preempt.</div>
-    <label>Sounds</label><div class="grid-btns" id="btn-sound"></div>
-    <label>Gestures</label><div class="grid-btns" id="btn-gesture"></div>
-    <label>Library moves</label><div class="grid-btns" id="btn-move"></div>
+    <h2>Claude Code, on this robot</h2>
+    <div class="sub">A real terminal on the Pi, in this page. The point is that a session running <em>here</em> can look at what the camera sees, read the black box, drive the pet through its own API and edit the code — instead of any of it being described to it second-hand. It is the actual CLI, so the chat, the tool calls, the diffs and the permission prompts are all exactly as they are in a terminal.</div>
+    <div class="sub" style="color:var(--warm)"><b>This is a shell on the robot.</b> Anybody on this network who knows the passphrase has one too. Leave it off unless you are using it, and it needs the internet — at the festival there is none, so this is a bench tool.</div>
+    <div class="kv" id="devstat" style="margin:10px 0"></div>
+    <div id="dev-setup">
+      <label>1 · Anthropic API key <span class="sub">(from console.anthropic.com. Stored in a 0600 file on the robot, never logged, never in the trace; the page only ever sees the last four characters.)</span></label>
+      <div class="btns">
+        <input type="password" id="dev-key" placeholder="sk-ant-..." style="flex:1;min-width:16em;font-size:15px">
+        <button class="act" onclick="devKey()">Save key</button>
+        <button class="act danger" onclick="devPost('clear_key', true)">Forget key</button>
+      </div>
+      <label>2 · Passphrase <span class="sub">(at least 6 characters; it gates the terminal on every connection, not just in this page)</span></label>
+      <div class="btns">
+        <input type="password" id="dev-pass" placeholder="passphrase" style="flex:1;min-width:16em;font-size:15px">
+        <button class="act" id="dev-onoff" onclick="devToggle()">Turn the console on</button>
+      </div>
+      <label>3 · Install, if they are not there yet <span class="sub">(both need the internet, both are once. Node first — Claude Code is a Node program. If apt gives you a Node older than 18, the terminal below is a real shell: <code>curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs</code>. Watch the output; if it asks for a password, type it there.)</span></label>
+      <div class="btns">
+        <button class="act" onclick="devRun('sudo apt-get update && sudo apt-get install -y nodejs npm && node --version')">1 · Install Node</button>
+      <button class="act" onclick="devRun(devInstall)">2 · Install Claude Code</button>
+        <button class="act big" onclick="devRun('claude')">Start Claude Code</button>
+        <button class="act" onclick="devRun('')">Plain shell</button>
+        <button class="act" onclick="devRun('python3 scripts/petctl.py watch')">Watch what it sees</button>
+        <button class="act danger" onclick="devSend('\u0003')">Ctrl-C</button>
+      </div>
+    </div>
+    <div id="term" style="height:60vh;margin-top:12px;border-radius:10px;overflow:hidden;background:#000"></div>
+    <div class="sub" id="dev-msg" style="margin-top:6px"></div>
+    <div class="sub">There is a <code>CLAUDE.md</code> in the repo telling the session how to drive the pet (<code>scripts/petctl.py see</code>, <code>camera shot.jpg</code>, <code>trace out.jsonl</code>), so you should not have to explain any of it.</div>
   </div>
 </section>
 
@@ -167,14 +378,17 @@
   <div class="card"><h2>App log</h2><pre class="log" id="log"></pre></div>
 </section>
 
+<style>.feeling{font-size:1.1em;margin:4px 0 8px}.feeling b{color:#ffb86b;text-transform:capitalize}.act.big{font-size:1.15em;padding:14px 22px}.act.hit{filter:brightness(1.6)}</style>
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/xterm-addon-fit.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const v = id => $(id).value;
-let tab = 'mind', muted = false, slidersInit = false;
+let tab = 'mind', voice = 'full', slidersInit = false, lastImuCal = null;
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   tab = b.dataset.tab;
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
-  ['mind','senses','people','controls','log'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== tab));
+  ['mind','senses','people','controls','play','log','dev'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== tab));
   refresh();
 });
 function kv(el, obj) {
@@ -199,9 +413,63 @@ function drawChart(hist, c) {
   for (const [col, v] of [['#ffb86b', c.rub_floor], ['#ff8ac9', c.scratch_floor]]) { g.setLineDash([4, 4]); g.strokeStyle = col; g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke(); g.setLineDash([]); }
   g.fillStyle = '#5aa0ff'; hist.forEach((h, i) => { g.fillRect(x(i) - 1, H - 4 - h.flat * (H - 14), 2, 2); });
 }
-function toggleMute() { muted = !muted; ctl('mute', muted); $('mute').textContent = muted ? 'Unmute' : 'Mute'; }
-let pickup = false, bodyf = true, volLoaded = false, ears = true, mflip = true;
-function toggleEars() { ears = !ears; ctl('ears', ears); $('ears').textContent = 'Ears: ' + (ears ? 'on' : 'off'); }
+const VOICE_NEXT = {full: 'quiet', quiet: 'off', off: 'full'}, VOICE_LABEL = {full: 'Voice: full', quiet: 'Voice: quiet (about half)', off: 'Voice: off'};
+function cycleVoice() { voice = VOICE_NEXT[voice]; ctl('voice', voice); $('mute').textContent = VOICE_LABEL[voice]; }
+let pickup = false, bodyf = true, volLoaded = false, ears = true, mflip = true, mgroove = false;
+function toggleEars() { ears = !ears; ctl('ears', ears); $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off'); }
+const LAYER_INFO = {
+  dancing: {title: '1 · Dancing', color: '#7cf5c9', blurb: 'Any key here turns manual groove on. Left / right say which way to groove: it leans that way (head, antennas, a few degrees of body) and keeps dancing with you, never turning away. Keep tapping the same way and the lean grows and it tilts its head over. Left-right-left-right within a second: stop dancing. Faster than 150 bpm it grooves at halftime.',
+    labels: {groove_left: 'groove left', tap: 'tap the beat', downbeat: 'tap the "1"', groove_right: 'groove right'}},
+  petting: {title: '2 · Petting', color: '#ff8ac9', blurb: 'Virtual petting, for people who are shy of touching it. Presses keep a hand on it rather than firing an animation each time, so drumming on all four is one long cuddle that builds up: hello, that is nice, ohhh right there, melted. Leave off for a few seconds and it ebbs away.',
+    labels: {head_pat: 'head pat', chin_scratch: 'chin scratch', ear_rub: 'ear rub', belly_rub: 'belly rub'}},
+};
+let lastKeymap = '', keypadLayers = null;
+function drawKeymap(km) {
+  if (!keypadLayers) return;
+  const key = JSON.stringify(km); if (key === lastKeymap) return; lastKeymap = key;
+  $('keymap').innerHTML = Object.entries(keypadLayers).map(([layer, actions]) => { const info = LAYER_INFO[layer]; return `
+    <div class="layer" style="border-top-color:${info.color}"><h3>${info.title}</h3><div class="sub">${info.blurb}</div>
+    ${actions.map((a, i) => `<div class="slot"><span>${info.labels[a]}</span><input type="text" value="${km[layer][i] || ''}" placeholder="key" onchange="setKey('${layer}', ${i}, this.value)"><button class="act" onclick="ctl('key', '${a}')">try</button></div>`).join('')}</div>`; }).join('');
+}
+function setKey(layer, slot, key) { if (!key) return; ctl('keymap', `${layer}:${slot}:${key.trim().toUpperCase()}`); lastKeymap = ''; }
+async function btScan() {
+  $('bt-scan').disabled = true; $('bt-msg').textContent = 'scanning… put the keypad in pairing mode now';
+  try {
+    const r = await fetch('/api/bt/scan', {method: 'POST'}); const j = await r.json();
+    if (!r.ok) throw new Error(j.detail);
+    $('bt-list').innerHTML = j.devices.length ? j.devices.map(dev => `<div>${dev.name} <span class="sub">${dev.mac}</span> <button class="act" onclick="btPair('${dev.mac}')">pair</button></div>`).join('') : 'nothing found: is it in pairing mode and close by?';
+    $('bt-msg').textContent = '';
+  } catch (e) { $('bt-msg').textContent = 'scan failed: ' + e.message; }
+  $('bt-scan').disabled = false;
+}
+async function btPair(mac) {
+  $('bt-msg').textContent = 'pairing ' + mac + '…';
+  const r = await fetch('/api/bt/pair', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cmd: 'pair', value: mac + '|' + $('bt-pin').value})});
+  const j = await r.json(); $('bt-msg').textContent = (r.ok ? 'paired: ' : 'failed: ') + j.detail; btStatus();
+}
+async function btForget(mac) { await fetch('/api/bt/forget', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cmd: 'forget', value: mac})}); btStatus(); }
+let btInfo = null;
+async function btStatus() { try { const r = await fetch('/api/bt'); btInfo = r.ok ? await r.json() : {error: (await r.json()).detail}; } catch (e) { btInfo = {error: String(e)}; } }
+let preview = false, previewTimer = null;
+function togglePreview() {
+  preview = !preview; ctl('preview', preview);
+  for (const b of ['preview-btn', 'preview-btn2']) $(b).textContent = preview ? 'Hide what it sees' : 'Show what it sees';
+  for (const i of ['preview', 'preview2']) $(i).classList.toggle('hidden', !preview);
+  clearInterval(previewTimer);
+  if (preview) previewTimer = setInterval(() => { const img = tab === 'senses' ? $('preview') : tab === 'play' ? $('preview2') : null; if (img) img.src = '/api/camera.jpg?t=' + Date.now(); }, 250);
+}
+function toggleManualGroove() { mgroove = !mgroove; ctl('manual_groove', mgroove); refresh(); }
+function tapBeat(one) {
+  ctl('tap', !!one);
+  const b = $(one ? 'tap-one' : 'tap-beat');
+  if (b) { b.classList.add('hit'); setTimeout(() => b.classList.remove('hit'), 120); }
+}
+document.addEventListener('keydown', e => {
+  // Any tab: tapping a beat is something you do while watching the robot, not while watching the Controls
+  // tab. (Not while typing in a field, and not in the Dev tab's terminal, which wants every key itself.)
+  if (tab === 'dev' || ['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.closest('#term')) return;
+  if (e.key === ' ') { e.preventDefault(); tapBeat(false); } else if (e.key === '1') tapBeat(true);
+});
 function toggleFlip() { mflip = !mflip; ctl('mimic_flip', mflip); $('mflip').textContent = 'Mirror game: ' + (mflip ? 'mirror-image' : 'same direction'); }
 async function setVolume(v) {
   $('vol-v').textContent = v;
@@ -218,14 +486,41 @@ async function power(action) {
   try { const r = await fetch('/api/power/' + action, {method:'POST'}); const j = await r.json(); $('power-msg').textContent = r.ok ? j.detail : ('failed: ' + j.detail); }
   catch (e) { $('power-msg').textContent = 'connection dropped (expected once it powers off)'; }
 }
+let recording = true, markCount = 0;
+function toggleRec() { recording = !recording; ctl('record', recording); $('rec-btn').textContent = 'Recording: ' + (recording ? 'on' : 'off'); }
+async function mark() {
+  const note = prompt('What just happened? (optional — it is labelled in the file either way)', '');
+  if (note === null) return;
+  await ctl('mark', note || true);
+  markCount++;
+}
+function download(lastS) {
+  const q = lastS ? ('?last_s=' + lastS) : '';
+  window.location = '/api/trace.jsonl' + q;
+}
 function toggleBody() { bodyf = !bodyf; ctl('body_finder', bodyf); $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
-function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off'); }
+function togglePickup() { pickup = !pickup; ctl('pickup', pickup); $('pickup').textContent = 'Held in hand: ' + (pickup ? 'on' : 'off'); }
 async function loadCatalog() {
   let c;
   try { c = await (await fetch('/api/catalog')).json(); } catch (e) { setTimeout(loadCatalog, 2000); return; }  // app still starting
+  keypadLayers = c.keypad;
   for (const [id, kind, list] of [['btn-sound', 'sound', c.sounds], ['btn-gesture', 'gesture', c.gestures], ['btn-move', 'move', c.moves]])
     $(id).innerHTML = list.map(x => `<button onclick="ctl('${kind}', '${x}')">${x.replace(/_/g, ' ')}</button>`).join('');
+  $('lexicon').innerHTML = c.sounds.map(x => `<tr><td><button class="act" style="min-height:0;padding:6px 12px" onclick="ctl('sound', '${x}')">${x.replace(/_/g, ' ')}</button></td><td>${c.meanings[x]}</td></tr>`).join('');
 }
+let mimeOn = false, mimeKind = 'head', singing = false, danceAlong = true, kandiSide = null, kandiBusy = false, wearing = [];
+// One button per ear does the whole exchange from that ear, and cancels it while it is running.
+let training = false;
+function toggleTrain() { ctl('train_plur', training ? false : true); }
+const SIDES = ['left', 'right'];  // antenna 0 is the robot's LEFT ear, as the hardware numbers them
+function tradeEar(i) { if (kandiBusy && kandiSide === i) ctl('kandi', false); else ctl('kandi', SIDES[i]); }
+function toggleEar(i) {
+  const on = SIDES.map(name => wearing.includes(name));
+  on[i] = !on[i];
+  ctl('bracelet', on[0] && on[1] ? 'both' : on[0] ? SIDES[0] : on[1] ? SIDES[1] : 'none');
+}
+function toggleSinging() { singing = !singing; ctl('singing', singing); $('sing-btn').textContent = 'Singing: ' + (singing ? 'on' : 'off'); }
+function toggleDanceAlong() { danceAlong = !danceAlong; ctl('dance_along', danceAlong); $('dance-btn').textContent = 'Dance-along: ' + (danceAlong ? 'on' : 'off'); }
 let selected = [];
 function toggleSel(id) {
   selected = selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id].slice(-2);
@@ -247,37 +542,166 @@ async function delPerson(id, ev) {
 }
 let lastPeopleKey = '', lastCal = null;
 async function refresh() {
-  try {
+  let d;
+  try {  // only a failed request means the robot is away; a script error while drawing is reported, not treated as offline
     if (tab === 'log') {
-      const l = await (await fetch('/api/log?n=300')).json();
+      const r = await fetch('/api/log?n=300'); if (!r.ok) throw new Error('HTTP ' + r.status);
+      const l = await r.json();
       $('log').textContent = l.lines.join('\n'); $('conn').textContent = 'live';
       return;
     }
-    const d = await (await fetch('/api/mind')).json();
+    const r = await fetch('/api/mind');
+    if (!r.ok) {
+      // The robot answered, it just could not build the page's data. Show WHY, here, rather than
+      // leaving a blank page and an error only the browser console knows about.
+      let why = 'HTTP ' + r.status;
+      try { const j = await r.json(); why = (j.detail || why) + (j.traceback ? '\n\n' + j.traceback.slice(-12).join('\n') : ''); } catch (e) {}
+      $('conn').innerHTML = `<b style="color:var(--warm)">the robot is running but /api/mind is failing</b> — tell Claude this:`;
+      $('err').textContent = why;
+      $('err').classList.remove('hidden');
+      return;
+    }
+    d = await r.json();
+    if (d.error) {  // the robot answered but could not build the page's data: show why, keep drawing
+      $('conn').innerHTML = `<b style="color:var(--warm)">the robot is running (v${d.build.version}) but cannot build the page — tell Claude this:</b>`;
+      $('err').textContent = d.error + '\n\n' + (d.traceback || []).join('\n');
+      $('err').classList.remove('hidden');
+      return;
+    }
+    $('err').classList.add('hidden');
+  } catch (e) { $('conn').textContent = 'offline: ' + e; return; }
+  const failed = [];
+  // the song card computes these, and the Mind tab's timers show them too: they outlive that card
+  let sg = null, songRows = {};
+  // Every card draws inside its own guard. With one try around the whole lot, a single unexpected null
+  // anywhere stopped every card AFTER it from updating — which is exactly what "the tempo isn't showing
+  // and the toggle is wrong" looks like from the outside: half a live page, no error you would notice.
+  const card = (name, fn) => { try { fn(); } catch (e) { failed.push(name); console.error('card ' + name, e); } };
+  try {
     const m = d.mind, s = d.senses;
     $('conn').textContent = 'live · ' + new Date().toLocaleTimeString();
-    $('state').textContent = m.state;
+    $('ver').textContent = 'v' + d.build.version;
+    // The beat clock first: the keypad turns manual groove on and taps the tempo behind the page's back,
+    // so whatever the page last thought is worth nothing. Everything that shows it reads from here.
+    const tap = s.tap, kp0 = s.keypad;
+    mgroove = d.controls.manual_groove;
+    const grooveLine = (tap.bpm ? `${tap.bpm} bpm${tap.halftime ? ' · halftime' : ''} · beat ${tap.beat} of bar ${tap.bar}${tap.downbeat_known ? '' : ' (no "1" yet)'}` : 'no tempo tapped')
+      + ' · manual groove ' + (mgroove ? 'ON' : 'off') + (s.music.grooving ? ` · grooving (intensity ${s.music.intensity})` : '');
+    for (const id of ['tap-v', 'tap-v2']) if ($(id)) $(id).textContent = grooveLine;
+    for (const id of ['mgroove', 'mgroove2']) if ($(id)) $(id).textContent = 'Manual groove: ' + (mgroove ? 'on' : 'off');
+    if (document.activeElement !== $('bpm')) $('bpm').value = tap.bpm || '';
+    const STATE_EMOJI = {SLEEPING: '😴', WAKING: '🥱', IDLE: m.energy < 0.3 ? '😪' : '🙂', ENGAGED: '😊', SEARCHING: '🤔', HELD: '🤗'};
+    $('state').textContent = (STATE_EMOJI[m.state] || '') + ' ' + m.state + (m.dizzy ? ' 😵' : '') + (m.mimicking ? ' 🪞' : '') + (d.mime.active ? (d.mime.kind === 'arms' ? ' 🚩' : ' 🎭') : '') + (d.song.singing ? ' 🎵' : '') + (s.dance.dancing ? ' 🕺' : '') + (d.dance_along.copying ? ' 💃' : '');
     $('state-sub').textContent = `for ${m.state_for_s}s` + (m.engaged_person ? ` · with person #${m.engaged_person} (${m.engaged_tier})` : '') + (m.dizzy ? ' · dizzy' : '') + (m.mimicking ? ' · mirror game' : '');
+    const FEEL = {nod: '👍', tilt: '🤨', wiggle: '😆', bounce: '🤩', perk: '👀', droop: '😞', startle: '😳', snuggle: '🥰', dizzy: '😵‍💫', shake_off: '😤', search: '🔍', glance: '👀', shy: '☺️', nod_off: '😴', sneeze: '🤧', hiccup: '😮', tada: '🎉', flinch: '😖', lean: '😌', shake: '🙅', point: '👉', bow: '🙇',
+      hello_new: '👋', hello_friend: '😄', hello_bestie: '🥳', curious: '🧐', happy: '😊', excited: '🤩', content: '😌', purr: '😻', giggle: '🤭', surprised: '😲', confused: '😕', sad: '😢', lonely: '🥺', sleepy: '😪', yawn: '🥱', wake: '🌅', annoyed: '😠', low_battery: '🪫', name: '❓', ticklish: '😂', sing: '🎵', jingle: '🎶', peace: '✌️', heart: '💗', coo: '🥰', wave: '👋', hug: '🤗', fanfare: '📣', mirror_start: '🪞', mirror_end: '🪞', mime_start: '🎭', mime_end: '🎭', mime_cue: '👁️', yes: '✅', huff: '😤', no_no: '🙅'};
+    const f = d.feeling, fe = x => x ? `${FEEL[x.name.split(':')[0]] || ''} <b>${x.name}</b> <small>${x.t}s ago</small>` : '—';
+    $('feeling').innerHTML = `feeling: ${fe(f.motion)} · sounding: ${fe(f.sound)}`;
     $('energy').style.width = (m.energy * 100) + '%'; $('social').style.width = (m.social * 100) + '%';
-    kv('timers', {'alone for': m.alone_for_s + ' s', 'lonely in': m.lonely_in_s + ' s', 'sleep in': m.sleep_in_s + ' s',
+    const kd = d.kandi;
+    card('kandi', () => {
+      kandiBusy = kd.offering || kd.giving; kandiSide = kd.side === null ? null : (kd.side === 'left' ? 1 : 0); wearing = kd.wearing;
+      for (const [i, name] of [[0, 'right'], [1, 'left']]) {
+        const busy = kandiBusy && kandiSide === i;
+        $('tr-' + name).textContent = busy ? (kd.giving ? `${name}: handing it over…` : `${name}: waiting ${kd.waiting_s}s — tap to stop`) : `Trade ${name} ear`;
+        $('br-' + name).textContent = name[0].toUpperCase() + name.slice(1) + ' ear: ' + (wearing.includes(name) ? 'bracelet' : 'empty');
+      }
+      kv('kandi', {handshake: kd.step ? `${kd.step}/4 done` : '—',
+        trading: kd.giving ? `tilting the ${kd.side} ear to drop one` : kd.offering ? (kd.got_it ? 'something landed on it — settling' : `${kd.side} ear held out, ${kd.waiting_s}s left`) : '—',
+        wearing: wearing.length ? wearing.join(' + ') + ' ear' + (wearing.length > 1 ? 's' : '') : 'nothing',
+        settling: kd.settling_s ? `${kd.settling_s}s of smaller moves` : '—',
+        learning: kd.training ? `${kd.training.step}: ${{ready: 'get into the pose', watch: `WATCHING (${kd.training.seen} readings)`, gap: 'ok…'}[kd.training.phase]} ${kd.training.left_s}s` + (kd.training.queue.length ? ` · then ${kd.training.queue.join(', ')}` : ' · last one') : '—',
+        concentrating: kd.focused ? 'yes — gaze locked on you, everything else on hold' : 'no',
+      'by hand': kd.by_hand ? `walked through by hand — next tap does ${kd.step_name}` : '—',
+        taught: Object.keys(kd.trained).length ? Object.entries(kd.trained).map(([k, f]) => `${k}: arms ${f.hi_deg}°/${f.lo_deg}°, hands ${f.sep} apart, ${f.above} above <span class="sub">(${f.goes} go${f.goes === 1 ? '' : 's'} averaged)</span>`).join('<br>') : 'nothing yet (using the built-in guesses)',
+        'arm numbers now': d.arms && d.arms.features ? `arms ${d.arms.features.hi_deg}°/${d.arms.features.lo_deg}° · hands ${d.arms.features.sep} apart · ${d.arms.features.above} above the shoulders · forearms ${d.arms.features.hi_forearm}°/${d.arms.features.lo_forearm}° off upright` : '—'});
+    });
+    $('plur-next').textContent = (kd.step ? 'Next: ' : 'Start: ') + kd.step_name;
+    training = !!kd.training;
+    $('train-btn').textContent = training ? `Teaching: ${kd.training.step} (tap to stop)` : 'Teach the handshake';
+    card('song', () => {
+      sg = d.song;
+      songRows = sg.next_in_s === null ? {} : {'song': sg.singing ? `singing ${sg.last.name} (${sg.last.style}, ${sg.last.bpm} bpm) 🎵${sg.section ? ' · ' + sg.section : ''}` : (sg.last ? `last: ${sg.last.name} (${sg.last.style})${sg.last.saved ? ' (saved)' : ''}` : 'none yet'), 'set': sg.set.songs ? `song ${sg.set.songs}${sg.set.watched === null ? '' : `, ${Math.round(sg.set.watched * 100)}% watched`}` + (sg.set.encore_in_s ? ` · encore in ${sg.set.encore_in_s} s` : '') : '—', 'next song': sg.singing ? '—' : (sg.next_in_s > 0 ? `not for ${sg.next_in_s} s` : 'when it feels like one')};
+      $('curiosity').style.width = (m.drives.curiosity * 100) + '%'; $('boredom').style.width = (m.drives.boredom * 100) + '%';
+    });
+    const ACT = {hangout: '🫧 hanging out', watch: '👀 watching them', look_around: '🔭 looking around', mirror: '🪞 mirror game', mime: '🎭 Simon says', sing: '🎵 singing', rest: '😪 resting', ask_attention: '🥺 wants attention'};
+    const scores = Object.entries(m.scores || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace('_', ' ')} ${v.toFixed(2)}`).join(' · ');
+    $('activity').innerHTML = `doing: <b>${ACT[m.activity] || m.activity}</b> for ${m.activity_for_s}s` + (m.runner_up ? ` · nearly: ${m.runner_up.replace('_', ' ')} (margin ${m.margin})` : '') + `<br><small>${scores}</small>` + (Object.keys(m.cooldowns || {}).length ? `<br><small>not again yet: ${Object.entries(m.cooldowns).map(([k, v]) => `${k} ${v}s`).join(', ')}</small>` : '');
+    kv('timers', {...songRows, 'alone for': m.alone_for_s + ' s', 'lonely in': m.lonely_in_s + ' s', 'sleep in': m.sleep_in_s + ' s',
       'next reaction': m.next_reaction_in_s === null ? '—' : m.next_reaction_in_s + ' s', 'next glance': m.next_glance_in_s === null ? '—' : m.next_glance_in_s + ' s',
-      'listening for trick': m.listening_for_trick_s > 0 ? m.listening_for_trick_s + ' s' : 'no', 'little dance': m.little_dance_s > 0 ? m.little_dance_s + ' s' : '—', 'next sneeze': m.next_sneeze_in_s + ' s', 'gaze': m.gaze ? m.gaze.map(x => x.toFixed(0)).join('°, ') + '°' : 'free'});
+      'listening for trick': m.listening_for_trick_s > 0 ? m.listening_for_trick_s + ' s' : 'no', 'little dance': m.little_dance_s > 0 ? m.little_dance_s + ' s' : '—', 'next sneeze': m.next_sneeze_in_s + ' s', 'rethink in': m.next_decision_in_s + ' s', 'gaze': m.gaze ? m.gaze.map(x => x.toFixed(0)).join('°, ') + '°' : 'free'});
     $('thoughts').innerHTML = m.thoughts.map(t => `<li><small>${t.t}s ago</small>${t.text}</li>`).join('') || '<li class="sub">…</li>';
     $('actions').innerHTML = d.recent_actions.map(a => `<li><small>${a.t}s ago</small>${a.a}</li>`).join('');
     $('transcript').innerHTML = d.transcript.map(x => `<li><small>${x.t}s ago</small>“${x.text}”${x.intents.length ? ' <span class="tier">→ ' + x.intents.join(', ') + '</span>' : ''}</li>`).join('') || '<li class="sub">nothing yet</li>';
     $('state-sub').textContent += d.asleep ? ' · motors off, camera off' : '';
-    kv('eyes', Object.assign(s.face ? s.face : {face: 'none'}, {body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
-      'dancing?': s.dance.dancing ? `yes, ${s.dance.bpm} bpm (conf ${s.dance.confidence})` : `no (conf ${s.dance.confidence}, amp ${s.dance.amplitude})`,
-      'mirror game': s.mimic ? `copying: yaw ${s.mimic.yaw}° pitch ${s.mimic.pitch}° roll ${s.mimic.roll}°` : 'off'}));
-    kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '° (+ = left)', 'mic array DoA': s.doa ? `${s.doa.angle_deg}° (0 = left, 90 = front), speech: ${s.doa.speech}` : '—', 'last speech': s.speech_s_ago === null ? 'never' : s.speech_s_ago + ' s ago'});
-    kv('body', {held: s.held, shaken: s.shaken, 'head being petted': s.head_pet.rubbing, 'imu accel dev / gyro': s.imu.accel_dev + ' / ' + s.imu.gyro, 'imu gated (self-moving)': s.imu.gated, 'head rate rad/s': s.head_rate, 'ear deviation': s.ears.dev.join(' / '), 'ear droop baseline': s.ears.baseline.join(' / ')});
-    kv('scratch', s.scratch);
-    kv('rub', s.head_pet);
-    kv('levels', s.levels);
-    drawChart(d.audio_history, d.controls);
-    const cal = d.calibration;
-    for (const k of ['rub', 'scratch']) $('calib-' + k).textContent = cal && cal.kind === k ? (cal.phase === 'done' ? `done: ratio ×${cal.set.observed_ratio.toFixed(1)} observed → thresholds set` : cal.phase === 'failed' ? 'failed: ' + cal.reason : cal.phase) : '';
-    if (cal && cal.phase === 'done' && cal.kind !== lastCal) { lastCal = cal.kind; slidersInit = false; }
+    const fc = s.face || {};  // fixed rows so nothing jumps when the face comes and goes
+    const v = s.vision;
+    card('eyes', () => {
+      const camera = !v ? 'no vision on this pet' : !v.alive ? '⚠️ vision thread died: ' + (v.last_error || 'no error recorded') : !v.active ? 'paused (asleep)'
+        : v.frame_age_s === null ? '⚠️ no frame from the camera yet' + (v.no_frame ? ` (${v.no_frame} empty reads)` : '') : v.frame_age_s > 2 ? `⚠️ last frame ${v.frame_age_s} s ago` + (v.last_error ? ' · ' + v.last_error : '')
+        : `ok · ${v.frames} frames · detect ${v.detect_ms.toFixed(0)} ms` + (v.pose ? ` · pose ${v.pose_ms.toFixed(0)} ms${v.pose_live ? ' (live)' : ''}` : '') + (v.refined ? ' · landmarks from a close-up' : '') + (v.errors ? ` · ${v.errors} errors, last: ${v.last_error}` : '');
+      kv('eyes', {camera, face: s.face ? 'yes' : 'none', track: fc.track ?? '—', yaw: s.face ? fc.yaw + '°' : '—', pitch: s.face ? fc.pitch + '°' : '—', size: fc.size ?? '—',
+        person: s.face ? (fc.person === null ? 'stranger' : '#' + fc.person) : '—', similarity: fc.similarity ?? '—', tilt: s.face ? fc.tilt + '°' : '—', 'head turned / nodded': s.face ? `${fc.head_yaw}° / ${fc.head_pitch}°` : '—', smile: s.face ? fc.smile : '—',
+        body: s.body ? `yaw ${s.body.yaw}° pitch ${s.body.pitch}° size ${s.body.size}` : 'none',
+        'dancing?': s.dance.dancing ? `yes, ${s.dance.bpm} bpm (conf ${s.dance.confidence}), holds ${s.dance.holds_for_s} s` : `no (conf ${s.dance.confidence}, amp ${s.dance.amplitude}°)`,
+        'mirror game': s.mimic ? `copying: yaw ${s.mimic.yaw}° pitch ${s.mimic.pitch}° roll ${s.mimic.roll}°` : 'off',
+        'where people have been': m.seen_spots.length ? m.seen_spots.map((x, i) => `${i + 1}: ${x.yaw}° (${x.seen} sightings, ${x.s_ago}s ago)`).join(' · ') : 'nobody yet',
+        'checking place': m.searching_spot ? `#${m.searching_spot} of ${m.seen_spots.length}` : '—'});
+    });
+    card('charts', () => {
+      $('dance-amp').textContent = d.dance_params.min_amp; drawFaceChart(d.face_history, d.dance_params);
+      document.querySelectorAll('.card.mic').forEach(c => c.classList.toggle('hidden', !d.controls.ears));
+    });
+    if (m.engaged_person) { const src = `/api/people/${m.engaged_person}/face.jpg`; if (!$('who').src.endsWith(src)) { $('who').src = src; } $('who').classList.remove('hidden'); } else $('who').classList.add('hidden');
+    card('black box', () => {
+      const tr = d.trace;
+      recording = tr.on; $('rec-btn').textContent = 'Recording: ' + (tr.on ? 'on' : 'off');
+      kv('trace', {recording: tr.on ? 'yes' : 'NO — nothing is being kept', 'held': `${tr.rows.toLocaleString()} rows covering ${Math.round(tr.covers_s / 60)} min` + (tr.dropped ? ` (${tr.dropped.toLocaleString()} older rows rolled off the end)` : ''),
+        marks: tr.marks || '—', 'about': (tr.bytes_est / 1e6).toFixed(1) + ' MB if downloaded now', 'running for': Math.round(tr.since_s / 60) + ' min'});
+      drawKeymap(d.controls.keymap);
+    });
+    // sg: the song block, declared above
+    kv('song', {now: sg.singing ? 'singing 🎵' : 'quiet', 'last song': sg.last ? `${sg.last.name} · ${sg.last.bpm} bpm · ${sg.last.bars.join(' ')}${sg.last.saved ? ' (saved)' : ''}` : '—', repertoire: sg.repertoire.length ? sg.repertoire.join(', ') : 'nothing saved yet', 'next song in': sg.next_in_s === null ? 'singing is off' : sg.next_in_s + ' s'});
+    card('games', () => {
+      const mg = d.mime; mimeOn = mg.active; mimeKind = mg.kind;
+      const headOn = mimeOn && mimeKind === 'head', armsOn = mimeOn && mimeKind === 'arms';
+      $('mime-btn').textContent = headOn ? 'Stop head game' : 'Start head game';
+      $('arms-btn').textContent = armsOn ? 'Stop arm game' : 'Start arm game';
+      const gameState = on => on ? mg.state : (mg.outcome && !mimeOn ? 'over: ' + mg.outcome : mimeOn ? 'the other game is on' : 'not playing');
+      kv('mime', {state: gameState(headOn), move: headOn ? mg.move : '—', step: headOn ? `${mg.step} of ${mg.of}` : '—', attempt: headOn ? mg.attempt : '—', 'time to copy': headOn && mg.time_left_s !== null ? mg.time_left_s + ' s' : '—',
+        'your rest pose (yaw/pitch/roll)': headOn && mg.baseline ? mg.baseline.map(x => x.toFixed(0) + '°').join(' / ') : '—', 'your head now': s.face ? `${s.face.head_yaw}° / ${s.face.head_pitch}° / ${s.face.tilt}°` : '—'});
+      const ar = d.arms, arms = ar ? `L ${ar.left} (${ar.left_deg}°) · R ${ar.right} (${ar.right_deg}°) · conf ${ar.conf}` : (v && v.pose ? 'not seen' : 'no pose model on this robot');
+      kv('armgame', {state: gameState(armsOn), round: armsOn ? `${mg.round} of ${d.mime.of === mg.round ? mg.of : 5}` : '—', 'waiting for': armsOn && mg.expect_arms ? `move ${mg.step} of ${mg.of}: your left ${mg.expect_arms[0]}, right ${mg.expect_arms[1]}` : '—', attempt: armsOn ? mg.attempt : '—', 'time to copy': armsOn && mg.time_left_s !== null ? mg.time_left_s + ' s' : '—', 'your arms': arms});
+      const da = d.dance_along; danceAlong = da.on; $('dance-btn').textContent = 'Dance-along: ' + (da.on ? 'on' : 'off');
+      kv('dancealong', {now: !da.on ? 'off' : da.flourish ? 'my turn: a riff of my own 🎉' : da.copying ? 'copying your arms 🕺' : (s.music.grooving ? 'beat on, waiting to see your arms' : 'no beat (dance, play music, or tap one in)'), antennas: da.antennas ? `left ${da.antennas[0]}° · right ${da.antennas[1]}°` : '—', 'your arms': arms, 'pose rate': v && v.pose ? (v.pose_live ? `every frame (${v.pose_ms.toFixed(0)} ms)` : `idle, 2/s (${v.pose_ms.toFixed(0)} ms)`) : '—'});
+      kv('yourhead', {'turned (yaw)': s.face ? s.face.head_yaw + '°' : '—', 'nodded (pitch)': s.face ? s.face.head_pitch + '°' : '—', 'tilted (roll)': s.face ? s.face.tilt + '°' : '—', 'smile': s.face ? s.face.smile + (s.face.smile >= 0.8 ? ' 😀' : '') : '—', 'left arm': ar ? `${ar.left} (${ar.left_deg}°)` : '—', 'right arm': ar ? `${ar.right} (${ar.right_deg}°)` : '—',
+        'kandi handshake': ar && ar.plur ? (ar.plur.holding_still_s ? `holding still for ${ar.plur.holding_still_s} s — put it on` : `${ar.plur.step}/4 done, waiting for ${ar.plur.next}`) : '—'});
+    });
+    $('heard-card').classList.toggle('hidden', !d.controls.ears);
+    card('senses', () => {
+      const kp = s.keypad, bt = btInfo || {};
+      kv('keypad', {'the beat right now': grooveLine,
+        'keyboards seen by the app': kp.devices.length ? kp.devices.join(', ') : 'none', 'last key': kp.last_key ? `${kp.last_key.key} (${kp.last_key.t}s ago)` + (kp.last_key.does ? ` → ${kp.last_key.does[0]}: ${kp.last_key.does[1].replace('_', ' ')}` : ' → not on the pad') : '—', 'input access': kp.error || 'ok',
+        'groove nudge': Math.abs(kp.lean) > 0.05 ? `leaning ${kp.lean > 0 ? 'left' : 'right'} ${Math.abs(kp.lean).toFixed(2)}` : '—',
+        'cuddles': kp.cuddle > 0.01 ? `${Math.round(kp.cuddle * 100)}%` + (kp.cuddle > 0.9 ? ' (melted)' : '') : '—',
+        'bluetooth': bt.error ? bt.error : bt.powered === undefined ? '…' : (bt.powered ? 'on' : 'off'),
+        'paired': bt.devices ? (bt.devices.length ? bt.devices.map(x => `${x.name} ${x.connected ? '(connected)' : '(not connected)'} <button class="act" style="padding:2px 8px;min-height:0" onclick="btForget('${x.mac}')">forget</button>`).join('<br>') : 'nothing paired yet') : '—'});
+      kv('ears', {music: s.music.bpm ? `${s.music.bpm} bpm (conf ${s.music.confidence})` : 'none', grooving: s.music.grooving ? `yes, intensity ${s.music.intensity}` : 'no', 'listening for words': s.listening, 'voice from': s.voice_yaw === null ? '—' : s.voice_yaw.toFixed(0) + '° (+ = left)', 'mic array DoA': s.doa ? `${s.doa.angle_deg}° (0 = left, 90 = front), speech: ${s.doa.speech}` : '—', 'last speech': s.speech_s_ago === null ? 'never' : s.speech_s_ago + ' s ago'});
+      kv('body', {held: s.held, shaken: s.shaken, 'head being petted (mics)': s.head_pet.rubbing, 'head being petted (imu)': s.imu_rub.rubbing, 'imu rub fraction': s.imu_rub.fraction, 'imu accel dev / gyro': s.imu.accel_dev + ' / ' + s.imu.gyro, 'imu gated (self-moving)': s.imu.gated, 'head rate rad/s': s.head_rate, 'ear deviation': s.ears.dev.join(' / '), 'ear droop baseline': s.ears.baseline.join(' / ')});
+      kv('scratch', s.scratch);
+      kv('rub', s.head_pet);
+      kv('levels', s.levels);
+      drawChart(d.audio_history, d.controls);
+    });
+    card('calibration', () => {
+      const ic = d.imu_calibration;
+      $('calib-imu').textContent = !ic ? '' : ic.phase === 'done' ? `done: still ${ic.baseline_p90}, rubbing ${ic.rub_p25} rad/s → floor ${ic.gyro_lo}` : ic.phase === 'failed' ? 'failed: ' + ic.reason : ic.phase;
+      if (ic && ic.phase === 'done' && lastImuCal !== ic.gyro_lo) { lastImuCal = ic.gyro_lo; $('imurub').value = ic.gyro_lo; $('imurub-v').textContent = ic.gyro_lo; }
+      const cal = d.calibration;
+      for (const k of ['rub', 'scratch']) $('calib-' + k).textContent = cal && cal.kind === k ? (cal.phase === 'done' ? `done: ratio ×${cal.set.observed_ratio.toFixed(1)} observed → thresholds set` : cal.phase === 'failed' ? 'failed: ' + cal.reason : cal.phase) : '';
+      if (cal && cal.phase === 'done' && cal.kind !== lastCal) { lastCal = cal.kind; slidersInit = false; }
+    });
+    card('settings', () => {
     if (!slidersInit) { slidersInit = true;
       $('ratio').value = d.controls.scratch_onset_ratio; $('ratio-v').textContent = d.controls.scratch_onset_ratio;
       $('rubr').value = d.controls.rub_level_ratio; $('rub-v').textContent = d.controls.rub_level_ratio;
@@ -286,28 +710,117 @@ async function refresh() {
       $('sfloor').value = Math.log10(d.controls.scratch_floor).toFixed(1); $('sfloor-v').textContent = $('sfloor').value + ' (' + d.controls.scratch_floor.toExponential(1) + ')';
       $('groove').value = d.controls.groove_scale; $('groove-v').textContent = d.controls.groove_scale;
       $('match').value = d.controls.match_threshold; $('match-v').textContent = d.controls.match_threshold;
-      muted = d.controls.muted; $('mute').textContent = muted ? 'Unmute' : 'Mute';
-      pickup = d.controls.pickup; $('pickup').textContent = 'Pickup: ' + (pickup ? 'on' : 'off');
+      voice = d.controls.voice; $('mute').textContent = VOICE_LABEL[voice];
+      pickup = d.controls.pickup; $('pickup').textContent = 'Held in hand: ' + (pickup ? 'on' : 'off');
       if (d.controls.body_finder !== null) { bodyf = d.controls.body_finder; $('bodyf').textContent = 'Body finder: ' + (bodyf ? 'on' : 'off'); }
-      ears = d.controls.ears; $('ears').textContent = 'Ears: ' + (ears ? 'on' : 'off');
-      mflip = d.controls.mimic_flip; $('mflip').textContent = 'Mirror game: ' + (mflip ? 'mirror-image' : 'same direction'); }
-    const t = d.memory.tiers;
-    $('people-sum').textContent = `${d.memory.people} people · ${t.bestie} besties · ${t.friend} friends`;
-    const key = JSON.stringify(d.memory.top.map(p => [p.id, p.encounters, p.pets, p.holds, p.affection, p.has_face]));
-    if (key !== lastPeopleKey) {  // only re-render when something changed, so taps are not lost
-      lastPeopleKey = key;
-      $('people').innerHTML = d.memory.top.map(p => `
-        <div class="person ${selected.includes(p.id) ? 'sel' : ''}" data-id="${p.id}" onclick="toggleSel(${p.id})">
-          ${p.has_face ? `<img src="/api/people/${p.id}/face.jpg?v=${p.encounters}" alt="">` : '<div class="noface">?</div>'}
-          <div class="id">#${p.id} <span class="tier">${p.tier}</span></div>
-          <div class="meta">${p.encounters} visits · ${Math.round(p.attention_s)} s · ${p.pets} pets · ${p.holds} holds</div>
-          <div class="meta">♥ ${p.affection} · seen ${new Date(p.last_seen*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
-          <button class="act danger" onclick="delPerson(${p.id}, event)">forget</button>
-        </div>`).join('') || '<div class="sub">nobody yet</div>';
-    }
-  } catch (e) { $('conn').textContent = 'offline: ' + e; }
+      ears = d.controls.ears; $('ears-btn').textContent = 'Ears: ' + (ears ? 'on' : 'off');
+      singing = d.controls.singing; $('sing-btn').textContent = 'Singing: ' + (singing ? 'on' : 'off');
+      danceAlong = d.controls.dance_along; $('dance-btn').textContent = 'Dance-along: ' + (danceAlong ? 'on' : 'off');
+      $('kroll').value = d.controls.kandi_roll; $('kroll-v').textContent = d.controls.kandi_roll;
+      $('kdamp').value = d.controls.kandi_damp; $('kdamp-v').textContent = d.controls.kandi_damp;
+      $('imurub').value = d.controls.imu_rub_gyro; $('imurub-v').textContent = d.controls.imu_rub_gyro;
+      $('fwd').value = d.controls.head_forward_mm; $('fwd-v').textContent = d.controls.head_forward_mm;
+      if (d.controls.camera_lag_ms !== null) { $('lag').value = d.controls.camera_lag_ms; $('lag-v').textContent = d.controls.camera_lag_ms; } else { $('lag').disabled = true; $('lag-v').textContent = 'n/a'; }
+      btStatus();
+      for (const k of ['bob', 'sway', 'body', 'ears']) { $('g-' + k).value = d.controls['groove_' + k]; $('g-' + k + '-v').textContent = d.controls['groove_' + k]; }
+      mflip = d.controls.mimic_flip; $('mflip').textContent = 'Mirror game: ' + (mflip ? 'mirror-image' : 'same direction'); } });
+    card('people', () => {
+      const t = d.memory.tiers;
+      $('people-sum').textContent = `${d.memory.people} people · ${t.bestie} besties · ${t.friend} friends`;
+      const key = JSON.stringify(d.memory.top.map(p => [p.id, p.encounters, p.pets, p.holds, p.affection, p.has_face, p.views]));
+      if (key !== lastPeopleKey) {  // only re-render when something changed, so taps are not lost
+        lastPeopleKey = key;
+        $('people').innerHTML = d.memory.top.map(p => `
+          <div class="person ${selected.includes(p.id) ? 'sel' : ''}" data-id="${p.id}" onclick="toggleSel(${p.id})">
+            ${p.has_face ? `<img src="/api/people/${p.id}/face.jpg?v=${p.encounters}" alt="">` : '<div class="noface">?</div>'}
+            <div class="id">#${p.id} <span class="tier">${p.tier}</span></div>
+            <div class="meta">${p.encounters} visits · ${Math.round(p.attention_s)} s · ${p.pets} pets · ${p.holds} holds · ${p.views} view${p.views === 1 ? '' : 's'}</div>
+            <div class="meta">♥ ${p.affection} · seen ${new Date(p.last_seen*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+            <button class="act danger" onclick="delPerson(${p.id}, event)">forget</button>
+          </div>`).join('') || '<div class="sub">nobody yet</div>';
+      }
+    });
+  } catch (e) { $('conn').textContent = 'live, but the page hit an error drawing: ' + e; console.error(e); }
+  if (failed.length) $('conn').textContent += ' · these cards could not draw: ' + failed.join(', ');
 }
+function drawFaceChart(hist, params) {
+  const cv = $('facechart'); const W = cv.width = cv.clientWidth, H = cv.height; const g = cv.getContext('2d');
+  g.clearRect(0, 0, W, H); if (!hist.length) return;
+  const x = t => W + t / 20 * W, R = 40;  // ±40° window
+  const y = v => H / 2 - Math.max(-R, Math.min(R, v)) / R * (H / 2 - 6);
+  g.fillStyle = '#20264a'; let run = null;
+  hist.forEach((h, i) => { if (h.dancing && run === null) run = h.t; if ((!h.dancing || i === hist.length - 1) && run !== null) { g.fillRect(x(run), 0, x(h.t) - x(run), H); run = null; } });
+  g.strokeStyle = '#1e2340'; for (const v of [-30, -20, -10, 0, 10, 20, 30]) { g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke(); g.fillStyle = '#556'; g.font = '10px sans-serif'; g.fillText(v + '°', 2, y(v) - 2); }
+  const mean = hist.reduce((a, h) => a + h.pitch, 0) / hist.length;
+  g.setLineDash([4, 4]); g.strokeStyle = '#ffb86b'; for (const v of [mean - params.min_amp / 2, mean + params.min_amp / 2]) { g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke(); } g.setLineDash([]);
+  for (const [key, col] of [['yaw', '#7cf5c9'], ['pitch', '#ffb86b']]) {
+    g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath(); let pen = false;
+    hist.forEach((h, i) => { const gap = i && h.t - hist[i - 1].t > 1.0; if (!pen || gap) { g.moveTo(x(h.t), y(h[key])); pen = true; } else g.lineTo(x(h.t), y(h[key])); });
+    g.stroke();
+  }
+  g.fillStyle = '#8b8fa8'; hist.forEach(h => { if (h.kind === 'body') g.fillRect(x(h.t) - 1, H - 5, 2, 3); });
+}
+// ---------------------------------------------------------------- the Dev tab
+let term = null, fit = null, sock = null, devInstall = 'npm install -g @anthropic-ai/claude-code';
+async function devStatus() {
+  try { const r = await fetch('/api/dev'); return r.ok ? await r.json() : null; } catch (e) { return null; }
+}
+async function devPost(cmd, value) {
+  const r = await fetch('/api/dev', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cmd, value})});
+  const j = await r.json();
+  if (!r.ok) { $('dev-msg').textContent = j.detail; return null; }
+  $('dev-msg').textContent = '';
+  drawDev(j);
+  return j;
+}
+function devKey() { const k = v('dev-key'); if (k) { devPost('key', k); $('dev-key').value = ''; } }
+async function devToggle() {
+  const st = await devStatus();
+  if (st && st.enabled) return devPost('disable', true);
+  const pass = v('dev-pass');
+  if (!pass) { $('dev-msg').textContent = 'set a passphrase first: this is a shell on the robot'; return; }
+  await devPost('enable', pass);
+  devOpen('');
+}
+function drawDev(st) {
+  if (!st) { kv('devstat', {status: 'the app did not answer'}); return; }
+  $('dev-onoff').textContent = st.enabled ? 'Turn the console OFF' : 'Turn the console on';
+  devInstall = st.install_cmd;
+  kv('devstat', {
+    console: st.enabled ? (st.running ? `on — running ${st.cmd}` : 'on — no session yet') : 'OFF',
+    'api key': st.key_set ? `set (…${st.key_tail})` : 'NOT SET — Claude Code cannot start without one',
+    'node': st.node ? `${st.node_version} at ${st.node}` : 'NOT INSTALLED — sudo apt install nodejs npm, or use nvm',
+    'claude code': st.claude ? `${st.claude_version} at ${st.claude}` : 'not installed yet — use the button below',
+    'internet': st.online ? 'reachable' : 'NO — Claude Code needs it; this is a bench tool, not a festival one',
+    'working directory': st.workdir});
+}
+function devOpen(cmd) {
+  if (!term) {
+    term = new Terminal({fontSize: 13, theme: {background: '#000000', foreground: '#e8e8f0'}, cursorBlink: true, scrollback: 5000});
+    fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open($('term'));
+    term.onData(d => devSend(d));
+    window.addEventListener('resize', () => { if (tab === 'dev') devFit(); });
+  }
+  devFit();
+  // drop the old socket's handlers first: its close fires asynchronously, and '[session closed]'
+  // landing in the middle of the new command's output is how three of them ended up stacked with
+  // nothing else on screen.
+  if (sock) { sock.onclose = null; sock.onmessage = null; try { sock.close(); } catch (e) {} }
+  if (cmd) term.write('\r\n\x1b[38;5;110m$ ' + cmd + '\x1b[0m\r\n');
+  const pass = encodeURIComponent(v('dev-pass'));
+  const q = `?token=${pass}&cols=${term.cols}&rows=${term.rows}` + (cmd ? '&cmd=' + encodeURIComponent(cmd) : '');
+  sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/dev' + q);
+  sock.binaryType = 'arraybuffer';
+  sock.onmessage = e => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+  sock.onclose = () => term.write('\r\n[disconnected]\r\n');
+}
+function devFit() { if (fit) { try { fit.fit(); } catch (e) {} } if (sock && sock.readyState === 1) sock.send('\x00resize:' + term.cols + ',' + term.rows); }
+function devSend(d) { if (sock && sock.readyState === 1) sock.send(d); else $('dev-msg').textContent = 'no session: turn the console on first'; }
+function devRun(cmd) { devOpen(cmd); }
 loadCatalog(); loadVolume(); refresh(); setInterval(refresh, 500);
+setInterval(async () => { if (tab === 'dev') drawDev(await devStatus()); }, 3000);
 </script>
 </body>
 </html>
